@@ -5,7 +5,7 @@
 
 import { matchClock } from '../core/math';
 import { AUDIO_ENABLED } from '../core/audio';
-import { abilityIcon, playerAtlas, ABILITY_GLYPHS } from '../core/sprites';
+import { abilityIcon, getStripAtlas, playerAtlas, ABILITY_GLYPHS } from '../core/sprites';
 import {
   ABILITIES,
   META_TRACKS,
@@ -54,13 +54,18 @@ function statIconUrl(id: string, color: string): string {
 }
 
 function portraitUrl(p: PlayerDef, kit?: { shirt: string; shorts: string; socks: string; trim: string }): string {
-  const atlas = playerAtlas(p, kit);
+  // prefer the generated 2.5D strip (frame 0 bust crop); fall back to procedural
+  const strip = getStripAtlas(p.id, kit?.shirt);
   const c = document.createElement('canvas');
   c.width = 128;
   c.height = 128;
   const ctx = c.getContext('2d')!;
   ctx.imageSmoothingEnabled = true;
-  // head + torso crop from frame 0
+  if (strip) {
+    ctx.drawImage(strip.canvas, 36, 0, 184, 184, 0, 0, 128, 128);
+    return c.toDataURL();
+  }
+  const atlas = playerAtlas(p, kit);
   ctx.drawImage(atlas.canvas, 0, 0, atlas.fw, atlas.fh, -38, -6, 204, 255);
   return c.toDataURL();
 }

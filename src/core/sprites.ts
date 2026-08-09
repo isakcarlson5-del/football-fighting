@@ -24,6 +24,8 @@ export interface Atlas {
   fw: number;
   fh: number;
   frames: number;
+  feetY: number; // pixels from frame top to the feet baseline
+  flippable: boolean; // may be horizontally mirrored for left movement
 }
 
 const cache = new Map<string, Atlas>();
@@ -52,9 +54,83 @@ function buildAtlas(key: string, paint: (ctx: CanvasRenderingContext2D, frame: n
   fctx.globalCompositeOperation = 'source-in';
   fctx.fillStyle = '#ffffff';
   fctx.fillRect(0, 0, flash.width, flash.height);
-  const atlas = { canvas, flash, fw: FW, fh: FH, frames: FRAMES };
+  const atlas = { canvas, flash, fw: FW, fh: FH, frames: FRAMES, feetY: FH - 7, flippable: true };
   cache.set(key, atlas);
   return atlas;
+}
+
+/* ------------------------------------------------------------------ */
+/* Raster strip atlases (generated player art)                         */
+/* ------------------------------------------------------------------ */
+
+const STRIP_FW = 256;
+const STRIP_FH = 320;
+const STRIP_FEET = 312; // 8px bottom padding in the delivered strips
+const stripCache = new Map<string, Atlas | null>(); // null = unavailable -> procedural fallback
+const stripPending = new Map<string, Promise<Atlas | null>>();
+
+/**
+ * Loads a generated 1x4 run-cycle strip (1024x320, RGBA) into an Atlas with
+ * a white flash variant. `tint` optionally recolors the torso zone (skins).
+ * Returns null when the file is missing/unreadable so callers fall back to
+ * the procedural atlas.
+ */
+export function loadStripAtlas(id: string, url: string, tint?: string): Promise<Atlas | null> {
+  const key = `strip:${id}:${tint ?? 'base'}`;
+  const cached = stripCache.get(key);
+  if (cached !== undefined) return Promise.resolve(cached);
+  const pending = stripPending.get(key);
+  if (pending) return pending;
+  const p = new Promise<Atlas | null>((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      if (img.width !== STRIP_FW * 4 || img.height !== STRIP_FH) {
+        stripCache.set(key, null);
+        resolve(null);
+        return;
+      }
+      const canvas = makeCanvas(STRIP_FW * 4, STRIP_FH);
+      const ctx = canvas.getContext('2d')!;
+      ctx.drawImage(img, 0, 0);
+      if (tint) {
+        // recolor the shirt zone only (skins); number/arms largely untouched
+        ctx.globalCompositeOperation = 'hue';
+        ctx.globalAlpha = 0.92;
+        ctx.fillStyle = tint;
+        for (let f = 0; f < 4; f++) ctx.fillRect(f * STRIP_FW + 62, 96, 132, 96);
+        ctx.globalAlpha = 1;
+        ctx.globalCompositeOperation = 'source-over';
+      }
+      const flash = makeCanvas(STRIP_FW * 4, STRIP_FH);
+      const fctx = flash.getContext('2d')!;
+      fctx.drawImage(canvas, 0, 0);
+      fctx.globalCompositeOperation = 'source-in';
+      fctx.fillStyle = '#ffffff';
+      fctx.fillRect(0, 0, flash.width, flash.height);
+      // front-facing strips with printed shirt numbers are never mirrored:
+      // a flipped "19" reads garbled. Direction feel comes from the run cycle.
+      const atlas: Atlas = { canvas, flash, fw: STRIP_FW, fh: STRIP_FH, frames: 4, feetY: STRIP_FEET, flippable: false };
+      stripCache.set(key, atlas);
+      resolve(atlas);
+    };
+    img.onerror = () => {
+      stripCache.set(key, null);
+      resolve(null);
+    };
+    img.src = url;
+  });
+  stripPending.set(key, p);
+  return p;
+}
+
+/** Synchronously returns a loaded strip atlas, or null if not ready/missing. */
+export function getStripAtlas(id: string, tint?: string): Atlas | null {
+  return stripCache.get(`strip:${id}:${tint ?? 'base'}`) ?? null;
+}
+
+/** Kick off loading all four player strips (fallbacks stay procedural). */
+export function primePlayerStrips(playerIds: string[]): void {
+  for (const id of playerIds) void loadStripAtlas(id, `art/players/${id}.png`);
 }
 
 /* ------------------------------------------------------------------ */
@@ -748,8 +824,42 @@ export function coinSprite(): HTMLCanvasElement {
   return c;
 }
 
-export function bottleSprite(): HTMLCanvasElement {
-  const c = makeCanvas(12, 20);
+/** Sports drink pickup (heal). */
+export function drinkSprite(): HTMLCanvasElement {
+  const c = makeCanvas(16, 22);
+  const ctx = c.getContext('2d')!;
+  ctx.translate(8, 11);
+  ctx.strokeStyle = OUTLINE;
+  ctx.lineWidth = 1.6;
+  // bottle body
+  rr(ctx, -5.5, -6, 11, 14, 3.5);
+  const g = ctx.createLinearGradient(-5.5, 0, 5.5, 0);
+  g.addColorStop(0, '#1d7a45');
+  g.addColorStop(0.45, '#37d67a');
+  g.addColorStop(1, '#156236');
+  ctx.fillStyle = g;
+  ctx.fill();
+  ctx.stroke();
+  // cap
+  rr(ctx, -3, -10, 6, 4.5, 1.6);
+  ctx.fillStyle = '#f5f7fa';
+  ctx.fill();
+  ctx.stroke();
+  // energy bolt
+  ctx.fillStyle = '#f5f7fa';
+  ctx.beginPath();
+  ctx.moveTo(1.5, -3.5);
+  ctx.lineTo(-2.5, 1.5);
+  ctx.lineTo(0, 1.5);
+  ctx.lineTo(-1.5, 5);
+  ctx.lineTo(2.5, 0.5);
+  ctx.lineTo(0, 0.5);
+  ctx.closePath();
+  ctx.fill();
+  return c;
+}
+
+export function bottleSprite(): HTMLCanvasElement {  const c = makeCanvas(12, 20);
   const ctx = c.getContext('2d')!;
   ctx.translate(6, 10);
   ctx.strokeStyle = OUTLINE;

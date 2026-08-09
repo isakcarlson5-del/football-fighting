@@ -6,6 +6,7 @@
 import './styles.css';
 import { AudioEngine } from './core/audio';
 import { Input } from './core/input';
+import { loadStripAtlas, primePlayerStrips } from './core/sprites';
 import { PLAYERS, META_TRACKS, metaCost, type MetaTrackId } from './game/data';
 import { Save } from './game/meta';
 import { Renderer } from './game/render';
@@ -358,6 +359,11 @@ window.addEventListener('keydown', () => audio.unlock(), { once: true });
 
 // boot
 onResize();
+primePlayerStrips(PLAYERS.map((p) => p.id));
+// when generated strips arrive, refresh the select screen portraits if open
+Promise.all(PLAYERS.map((p) => loadStripAtlas(p.id, `art/players/${p.id}.png`))).then(() => {
+  if (document.querySelector('.char-grid')) ui.showSelect();
+});
 ui.showMenu(menuArtUrl);
 requestAnimationFrame(frame);
 

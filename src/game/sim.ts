@@ -89,7 +89,7 @@ export interface Bottle {
 
 export interface Pickup {
   active: boolean;
-  kind: 'xp' | 'coin';
+  kind: 'xp' | 'coin' | 'heal';
   tier: 1 | 2 | 3;
   x: number;
   y: number;
@@ -301,7 +301,7 @@ export class Sim {
     return this.powerMult * (1 + this.player.stats.power * 0.08);
   }
   get pickupRadius(): number {
-    return 115 * this.magnetMult * (1 + this.player.stats.magnet * 0.25);
+    return 130 * this.magnetMult * (1 + this.player.stats.magnet * 0.25);
   }
   get regen(): number {
     return this.player.stats.regen * 0.4;
@@ -518,6 +518,23 @@ export class Sim {
       p.vy = Math.sin(a) * 70;
       p.value = 1;
       p.t = 0;
+    }
+    // sports drink (heal) drops: tanks/elites are the comeback moments
+    const healChance = e.boss ? 0 : e.elite ? 1 : e.def.id === 'mascot' ? 0.4 : e.def.id === 'steward' ? 0.22 : 0;
+    if (this.rng.chance(healChance)) {
+      const p = this.alloc(this.pickups);
+      if (p) {
+        p.active = true;
+        p.kind = 'heal';
+        p.tier = 1;
+        p.x = e.x;
+        p.y = e.y;
+        const a = this.rng.range(0, TAU);
+        p.vx = Math.cos(a) * 60;
+        p.vy = Math.sin(a) * 60;
+        p.value = 25;
+        p.t = 0;
+      }
     }
   }
 
@@ -758,7 +775,7 @@ export class Sim {
     if (lvl === 0) return;
     const p = this.player;
     const count = [0, 1, 2, 2, 3, 4][lvl] + (this.def.id === 'messi' ? 1 : 0);
-    const dmg = [0, 12, 12, 18, 18, 26][lvl] * this.damageMult;
+    const dmg = [0, 14, 14, 20, 20, 28][lvl] * this.damageMult;
     const pierce = lvl >= 4 ? 1 : 0;
     const ric = lvl >= 5 ? 1 : 0;
     // aim at nearest, spread additional balls
@@ -1085,7 +1102,7 @@ export class Sim {
 
       // contact damage
       if (e.attackCd <= 0 && dist2(e.x, e.y, p.x, p.y) < (e.radius + 18) * (e.radius + 18)) {
-        e.attackCd = 0.8;
+        e.attackCd = 0.9;
         this.hurtPlayer(e.damage);
       }
     }
@@ -1260,6 +1277,10 @@ export class Sim {
         if (pk.kind === 'xp') {
           this.gainXp(pk.value);
           this.events.push({ type: 'xp' });
+        } else if (pk.kind === 'heal') {
+          p.hp = Math.min(p.maxHp, p.hp + pk.value);
+          this.events.push({ type: 'xp' });
+          this.burst(p.x, p.y, 10, '#37d67a');
         } else {
           this.coins += pk.value;
           this.events.push({ type: 'coin' });

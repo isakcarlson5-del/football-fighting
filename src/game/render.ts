@@ -5,7 +5,7 @@
  */
 
 import { clamp, TAU } from '../core/math';
-import { ballSprite, bossAtlas, bottleSprite, coinSprite, enemyAtlas, guardAtlas, playerAtlas, xpSprite, type Atlas } from '../core/sprites';
+import { ballSprite, bossAtlas, bottleSprite, coinSprite, enemyAtlas, getStripAtlas, guardAtlas, loadStripAtlas, playerAtlas, xpSprite, type Atlas } from '../core/sprites';
 import { BOSSES, SKINS, type PlayerDef } from './data';
 import { ARENA_H, ARENA_W, type Sim } from './sim';
 import type { Save } from './meta';
@@ -284,10 +284,16 @@ export class Renderer {
 
   private atlasFor(def: PlayerDef, save: Save): Atlas {
     const skinId = save.equippedSkin(def.id);
+    const skin = skinId ? SKINS.find((s) => s.id === skinId) : undefined;
+    const tint = skin?.kit.shirt;
+    // prefer the generated 2.5D strip; fall back to the procedural atlas
+    const strip = getStripAtlas(def.id, tint);
+    if (strip) return strip;
+    // trigger a lazy load (primed at boot; skin variants load on demand)
+    void loadStripAtlas(def.id, `art/players/${def.id}.png`, tint);
     const key = `p:${def.id}:${skinId ?? 'base'}`;
     let a = this.atlasCache.get(key);
     if (!a) {
-      const skin = skinId ? SKINS.find((s) => s.id === skinId) : undefined;
       a = playerAtlas(def, skin?.kit);
       this.atlasCache.set(key, a);
     }
@@ -474,15 +480,15 @@ export class Renderer {
           ctx.stroke();
         }
         const frame = Math.floor(p.animT * (p.moving ? 11 : 4)) % atlas.frames;
-        const sc = ENTITY_SCALE;
+        const sc = ENTITY_SCALE * (80 / atlas.fh);
         const dw = atlas.fw * sc;
         const dh = atlas.fh * sc;
         const blink = p.iframes > 0 && Math.floor(time * 20) % 2 === 0;
         ctx.save();
         ctx.translate(x, y);
-        if (p.face < 0) ctx.scale(-1, 1);
+        if (p.face < 0 && atlas.flippable) ctx.scale(-1, 1);
         if (blink) ctx.globalAlpha = 0.45;
-        ctx.drawImage(atlas.canvas, frame * atlas.fw, 0, atlas.fw, atlas.fh, -dw / 2, -dh + 11, dw, dh);
+        ctx.drawImage(atlas.canvas, frame * atlas.fw, 0, atlas.fw, atlas.fh, -dw / 2, -atlas.feetY * sc, dw, dh);
         ctx.restore();
         // orbit balls (with ground shadows to sell height)
         const orbitLvl = sim.abilityLevel('orbit');

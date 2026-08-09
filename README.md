@@ -7,8 +7,10 @@ automatically; you steer the movement. Earn XP from fallen opponents, draft
 upgrades each level, beat the half-time and final bosses, and spend your
 winnings on permanent upgrades and cosmetic kits between runs.
 
-Built with TypeScript + Vite + Canvas 2D. All sprites are procedural (drawn in
-code at boot); menu/background art is generated and shipped as local files.
+Built with TypeScript + Vite + Canvas 2D. The four player characters are
+generated 2.5D sprite strips (`public/art/players/`, with a procedural in-code
+fallback); enemies, pickups and effects are procedural (drawn in code at boot);
+menu/background art is generated and shipped as local files.
 No paid APIs, no paid assets, no network calls at runtime.
 
 ## Run it locally

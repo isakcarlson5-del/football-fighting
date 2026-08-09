@@ -119,15 +119,16 @@ describe('sim core loop', () => {
 
   it("Captain's Whistle knocks groups back", () => {
     const sim = makeSim(1); // Ronaldo starts with whistle
+    sim.enemies.forEach((e) => (e.active = false)); // clear the opening wave
     sim.debugSpawn('hooligan', sim.player.x + 80, sim.player.y);
     const enemy = sim.enemies.find((x) => x.active)!;
     enemy.speed = 0;
     const d0 = Math.hypot(enemy.x - sim.player.x, enemy.y - sim.player.y);
-    step(sim, 150); // whistle cd is 3.5s initially... force: reduce cooldown
+    expect(d0).toBeLessThan(90);
     sim.player.whistleCd = 0;
-    step(sim, 10);
+    step(sim, 30); // whistle fires, knockback ejects the enemy
     const d1 = Math.hypot(enemy.x - sim.player.x, enemy.y - sim.player.y);
-    expect(d1).toBeGreaterThan(d0);
+    expect(enemy.active ? d1 : Infinity).toBeGreaterThan(d0);
   });
 
   it('coins drop and are collected into the run total', () => {

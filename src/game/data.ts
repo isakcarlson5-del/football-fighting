@@ -47,11 +47,11 @@ export const ABILITIES: Record<AbilityId, AbilityDef> = {
     color: '#ffd166',
     tagline: 'Auto-kicks footballs at the nearest threat.',
     levels: [
-      { desc: 'Kick 1 ball at the nearest threat. 12 damage.' },
+      { desc: 'Kick 1 ball at the nearest threat. 14 damage.' },
       { desc: '+1 ball (2 total).' },
-      { desc: '18 damage, faster kicking.' },
+      { desc: '20 damage, faster kicking.' },
       { desc: '+1 ball (3 total), balls pierce one extra target.' },
-      { desc: '4 balls, 26 damage, balls ricochet to a second target.' },
+      { desc: '4 balls, 28 damage, balls ricochet to a second target.' },
     ],
   },
   orbit: {
@@ -210,11 +210,11 @@ export interface EnemyDef {
 
 export const ENEMIES: Record<Exclude<EnemyId, 'referee' | 'captain'>, EnemyDef> = {
   hooligan: {
-    id: 'hooligan', name: 'Hooligan', hp: 20, speed: 55, damage: 8, xp: 1,
+    id: 'hooligan', name: 'Hooligan', hp: 20, speed: 55, damage: 7, xp: 2,
     radius: 16, unlockAt: 0, weight: 100, coinChance: 0.22, behavior: 'chase', scale: 1,
   },
   ultra: {
-    id: 'ultra', name: 'Ultra', hp: 14, speed: 98, damage: 6, xp: 1,
+    id: 'ultra', name: 'Ultra', hp: 14, speed: 98, damage: 6, xp: 2,
     radius: 14, unlockAt: 60, weight: 55, coinChance: 0.2, behavior: 'chase', scale: 0.92,
   },
   thrower: {
@@ -266,7 +266,7 @@ export const BOSS2_AT = 540;
 /** Enemy hp multiplier over run time (seconds). */
 export function hpScale(t: number): number {
   const m = t / 60;
-  return 1 + m * 0.32 + m * m * 0.022;
+  return 1 + m * 0.27 + m * m * 0.02;
 }
 
 /** Spawn interval seconds, shrinking over the run. */
