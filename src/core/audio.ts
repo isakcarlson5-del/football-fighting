@@ -2,11 +2,9 @@
  * WebAudio synthesized sound: SFX + adaptive music. No external audio assets.
  * Everything is generated from oscillators/noise so the bundle stays tiny.
  *
- * MASTER KILL-SWITCH: the game is fully silent until the user explicitly
- * asks for sound again. All entry points no-op while AUDIO_ENABLED is false.
+ * Autoplay-safe: the AudioContext is only created/resumed after a user
+ * gesture (unlock()). Mute + master/sfx/music volumes persist via Save.
  */
-
-export const AUDIO_ENABLED = false;
 
 export class AudioEngine {
   private ctx: AudioContext | null = null;
@@ -15,12 +13,13 @@ export class AudioEngine {
   private sfxGain: GainNode | null = null;
   private crowd: { src: AudioBufferSourceNode; gain: GainNode } | null = null;
   muted = false;
+  volumes = { master: 0.9, sfx: 1, music: 0.7 };
   private musicTimer: ReturnType<typeof setInterval> | null = null;
   private step = 0;
 
   /** Must be called from a user gesture before any sound plays. */
   unlock(): void {
-    if (!AUDIO_ENABLED) return;
+
     if (this.ctx) {
       if (this.ctx.state === 'suspended') void this.ctx.resume();
       return;
@@ -42,7 +41,20 @@ export class AudioEngine {
 
   setMuted(m: boolean): void {
     this.muted = m;
-    if (this.master && this.ctx) this.master.gain.setTargetAtTime(m ? 0 : 1, this.ctx.currentTime, 0.02);
+    this.applyVolumes();
+  }
+
+  setVolumes(v: { master: number; sfx: number; music: number }): void {
+    this.volumes = v;
+    this.applyVolumes();
+  }
+
+  private applyVolumes(): void {
+    if (!this.ctx) return;
+    const t = this.ctx.currentTime;
+    if (this.master) this.master.gain.setTargetAtTime(this.muted ? 0 : this.volumes.master, t, 0.02);
+    if (this.sfxGain) this.sfxGain.gain.setTargetAtTime(this.volumes.sfx * 0.9, t, 0.02);
+    if (this.musicGain) this.musicGain.gain.setTargetAtTime(this.volumes.music * 0.6, t, 0.02);
   }
 
   private now(): number {
@@ -53,7 +65,7 @@ export class AudioEngine {
     freq: number; freqEnd?: number; dur: number; type?: OscillatorType;
     gain?: number; when?: number; dest?: GainNode;
   }): void {
-    if (!AUDIO_ENABLED || !this.ctx || !this.sfxGain) return;
+    if (!this.ctx || !this.sfxGain) return;
     const t = opts.when ?? this.now();
     const osc = this.ctx.createOscillator();
     osc.type = opts.type ?? 'sine';
@@ -68,7 +80,7 @@ export class AudioEngine {
   }
 
   private noise(opts: { dur: number; gain?: number; freq?: number; q?: number; when?: number; sweepTo?: number }): void {
-    if (!AUDIO_ENABLED || !this.ctx || !this.sfxGain) return;
+    if (!this.ctx || !this.sfxGain) return;
     const t = opts.when ?? this.now();
     const len = Math.ceil(this.ctx.sampleRate * opts.dur);
     const buf = this.ctx.createBuffer(1, len, this.ctx.sampleRate);
@@ -149,7 +161,7 @@ export class AudioEngine {
 
   /** Stadium crowd bed + simple driving loop during a run. */
   startMusic(): void {
-    if (!AUDIO_ENABLED || !this.ctx || !this.musicGain || this.musicTimer) return;
+    if (!this.ctx || !this.musicGain || this.musicTimer) return;
     // Crowd bed: looping filtered noise
     const len = this.ctx.sampleRate * 2;
     const buf = this.ctx.createBuffer(1, len, this.ctx.sampleRate);
@@ -207,7 +219,7 @@ export class AudioEngine {
 
   /** Crowd roar swell (goals, level-up, boss kills). */
   roar(intensity = 1): void {
-    if (!AUDIO_ENABLED || !this.ctx || !this.musicGain) return;
+    if (!this.ctx || !this.musicGain) return;
     const t = this.now();
     this.noise({ dur: 1.2, gain: 0.25 * intensity, freq: 800, sweepTo: 500, q: 0.4, when: t });
   }

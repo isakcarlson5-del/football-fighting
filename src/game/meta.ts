@@ -11,6 +11,7 @@ export interface SaveData {
   equipped: Record<string, string>; // playerId -> skinId
   stats: { runs: number; wins: number; totalKills: number; bestTime: number; bestLevel: number };
   muted: boolean;
+  volume: { master: number; sfx: number; music: number };
 }
 
 function defaults(): SaveData {
@@ -21,6 +22,7 @@ function defaults(): SaveData {
     equipped: {},
     stats: { runs: 0, wins: 0, totalKills: 0, bestTime: 0, bestLevel: 0 },
     muted: false,
+    volume: { master: 0.9, sfx: 1, music: 0.7 },
   };
 }
 
@@ -36,7 +38,13 @@ export class Save {
       const raw = storage.getItem(KEY);
       if (raw) {
         const parsed = JSON.parse(raw) as Partial<SaveData>;
-        this.data = { ...defaults(), ...parsed, ranks: { ...defaults().ranks, ...parsed.ranks }, stats: { ...defaults().stats, ...parsed.stats } };
+        this.data = {
+          ...defaults(),
+          ...parsed,
+          ranks: { ...defaults().ranks, ...parsed.ranks },
+          stats: { ...defaults().stats, ...parsed.stats },
+          volume: { ...defaults().volume, ...parsed.volume },
+        };
       }
     } catch {
       // Corrupt save: fall back to defaults rather than crashing.

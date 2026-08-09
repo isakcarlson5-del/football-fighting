@@ -22,6 +22,7 @@ const uiRoot = document.getElementById('ui') as HTMLElement;
 const save = new Save(typeof localStorage !== 'undefined' ? localStorage : null);
 const audio = new AudioEngine();
 audio.muted = save.data.muted;
+audio.setVolumes({ ...save.data.volume });
 const input = new Input(window);
 const renderer = new Renderer(canvas);
 
@@ -117,6 +118,11 @@ const ui = new UI(uiRoot, {
       ui.hidePause();
       ui.showPause();
     }
+  },
+  onVolume(kind, value) {
+    save.data.volume[kind] = value;
+    save.persist();
+    audio.setVolumes({ ...save.data.volume });
   },
 },
 save,

@@ -4,7 +4,6 @@
  */
 
 import { matchClock } from '../core/math';
-import { AUDIO_ENABLED } from '../core/audio';
 import { abilityIcon, getStripAtlas, playerAtlas, ABILITY_GLYPHS } from '../core/sprites';
 import {
   ABILITIES,
@@ -31,6 +30,7 @@ export interface UiHooks {
   onBuySkin(id: string): void;
   onEquipSkin(playerId: string, skinId: string | null): void;
   onToggleMute(): void;
+  onVolume(kind: 'master' | 'sfx' | 'music', value: number): void;
 }
 
 const ICON_CACHE = new Map<string, string>();
@@ -152,7 +152,7 @@ export class UI {
       </div>
       <div class="menu-meta">
         <span class="coin-chip"><span class="dot"></span>${this.save.data.coins}</span>
-        ${AUDIO_ENABLED ? `<button class="btn small secondary" data-act="mute">${this.save.data.muted ? 'Unmute' : 'Mute'}</button>` : ''}
+        <button class="btn small secondary" data-act="mute">${this.save.data.muted ? 'Unmute' : 'Mute'}</button>
       </div>
       <div class="best-stats">BEST: ${matchClock(s.bestTime)} survived &nbsp;·&nbsp; ${s.totalKills} career KOs &nbsp;·&nbsp; ${s.wins} full-time wins</div>
       <div class="controls-hint"><kbd>WASD</kbd> / <kbd>arrows</kbd> to move — everything else is automatic. Touch: drag left side.</div>
@@ -387,10 +387,27 @@ export class UI {
       <div class="menu-buttons">
         <button class="btn" data-act="resume">Play On</button>
         <button class="btn secondary" data-act="restart">Restart Match</button>
-        ${AUDIO_ENABLED ? `<button class="btn secondary" data-act="mute">${this.save.data.muted ? 'Unmute' : 'Mute'}</button>` : ''}
+        <button class="btn secondary" data-act="mute">${this.save.data.muted ? 'Unmute' : 'Mute'}</button>
         <button class="btn danger" data-act="quit">Abandon Match</button>
       </div>
+      <div class="panel" style="width:min(340px,86vw);display:flex;flex-direction:column;gap:10px">
+        ${(['master', 'sfx', 'music'] as const)
+          .map(
+            (k) => `
+          <label style="display:grid;grid-template-columns:70px 1fr;align-items:center;gap:10px;font-size:12px;text-transform:uppercase;letter-spacing:.12em">
+            ${k}
+            <input type="range" min="0" max="100" value="${Math.round(this.save.data.volume[k] * 100)}" data-vol="${k}" style="accent-color:var(--gold)">
+          </label>`,
+          )
+          .join('')}
+      </div>
     `;
+    el.querySelectorAll('[data-vol]').forEach((inp) =>
+      inp.addEventListener('input', () => {
+        const t = inp as HTMLInputElement;
+        this.hooks.onVolume(t.dataset.vol as 'master' | 'sfx' | 'music', Number(t.value) / 100);
+      }),
+    );
     el.querySelector('[data-act="resume"]')!.addEventListener('click', () => this.hooks.onResume());
     el.querySelector('[data-act="restart"]')!.addEventListener('click', () => this.hooks.onRestart());
     el.querySelector('[data-act="mute"]')?.addEventListener('click', () => this.hooks.onToggleMute());
