@@ -540,6 +540,31 @@ button {
   padding: 1px 6px;
   border: 2px solid #0a0d18;
 }
+/* attack-lane tags: GROUND hugs the pitch, AERIAL flies over near mobs */
+.ability-slot.lane-ground {
+  border-color: rgba(55, 214, 122, 0.65);
+}
+.ability-slot.lane-aerial {
+  border-color: rgba(76, 201, 240, 0.65);
+}
+.lane-tag {
+  display: inline-block;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  border-radius: 6px;
+  padding: 1px 6px 0;
+  margin-left: 6px;
+  vertical-align: 1px;
+}
+.lane-tag.lane-ground {
+  color: #0d2818;
+  background: var(--green);
+}
+.lane-tag.lane-aerial {
+  color: #0a1830;
+  background: var(--sky);
+}
 
 #boss-plate {
   position: absolute;

@@ -50,9 +50,18 @@ describe('data integrity', () => {
     expect(sigs.size).toBe(4);
     for (const p of PLAYERS) expect(ABILITY_IDS).toContain(p.startAbility);
   });
-  it('has exactly the 5 spec abilities with 5 levels each', () => {
-    expect(ABILITY_IDS.sort()).toEqual(['dash', 'guard', 'orbit', 'strike', 'whistle']);
+  it('has exactly the 6 spec abilities with 5 levels each', () => {
+    expect(ABILITY_IDS.sort()).toEqual(['dash', 'guard', 'orbit', 'pressure', 'strike', 'whistle']);
     for (const id of ABILITY_IDS) expect(ABILITIES[id].levels).toHaveLength(5);
+  });
+  it('every offensive ability is lane-typed (ground/aerial + band + delivery + force)', () => {
+    for (const id of ABILITY_IDS) {
+      const a = ABILITIES[id];
+      expect(['ground', 'aerial']).toContain(a.lane);
+      expect(['near', 'far']).toContain(a.rangeBand);
+      expect(['ring', 'sweep', 'trap', 'lob', 'direct', 'barrage']).toContain(a.delivery);
+      expect(['none', 'push', 'pull']).toContain(a.force);
+    }
   });
   it('has the 4 required meta tracks', () => {
     expect(META_TRACKS.map((t) => t.id).sort()).toEqual(['guard', 'magnet', 'move', 'power']);

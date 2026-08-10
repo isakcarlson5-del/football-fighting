@@ -24,7 +24,13 @@ export interface PlayerDef {
   kit: { shirt: string; shorts: string; socks: string; trim: string };
 }
 
-export type AbilityId = 'strike' | 'orbit' | 'whistle' | 'dash' | 'guard';
+export type AbilityId = 'strike' | 'orbit' | 'whistle' | 'dash' | 'guard' | 'pressure';
+
+/** Attack-lane semantics: every offensive ability plays differently by lane. */
+export type Lane = 'ground' | 'aerial';
+export type RangeBand = 'near' | 'far';
+export type Delivery = 'ring' | 'sweep' | 'trap' | 'lob' | 'direct' | 'barrage';
+export type Force = 'none' | 'push' | 'pull';
 
 export interface AbilityLevel {
   desc: string;
@@ -36,6 +42,11 @@ export interface AbilityDef {
   icon: string; // short label used on procedural icon
   color: string;
   tagline: string;
+  /** Attack-lane typing (ground hugs the pitch, aerial flies over near mobs). */
+  lane: Lane;
+  rangeBand: RangeBand;
+  delivery: Delivery;
+  force: Force;
   levels: AbilityLevel[]; // length = max level
 }
 
@@ -45,13 +56,17 @@ export const ABILITIES: Record<AbilityId, AbilityDef> = {
     name: 'Precision Strike',
     icon: 'PS',
     color: '#ffd166',
-    tagline: 'Auto-kicks footballs at the nearest threat.',
+    tagline: 'Lobs footballs over the press onto distant high-priority threats.',
+    lane: 'aerial',
+    rangeBand: 'far',
+    delivery: 'lob',
+    force: 'none',
     levels: [
-      { desc: 'Kick 1 ball at the nearest threat. 14 damage.' },
-      { desc: '+1 ball (2 total).' },
+      { desc: 'AERIAL · Lob 1 ball at a distant threat (ranged first). 14 damage splash on landing.' },
+      { desc: '+1 ball (2 total). Volleys spread across living targets.' },
       { desc: '20 damage, faster kicking.' },
-      { desc: '+1 ball (3 total), balls pierce one extra target.' },
-      { desc: '4 balls, 28 damage, balls ricochet to a second target.' },
+      { desc: '+1 ball (3 total), wider landing splash.' },
+      { desc: '4 balls, 28 damage, balls ricochet on to a second target.' },
     ],
   },
   orbit: {
@@ -60,8 +75,12 @@ export const ABILITIES: Record<AbilityId, AbilityDef> = {
     icon: 'OP',
     color: '#4cc9f0',
     tagline: 'Footballs circle you, pressing anyone who gets close.',
+    lane: 'ground',
+    rangeBand: 'near',
+    delivery: 'ring',
+    force: 'push',
     levels: [
-      { desc: '2 balls orbit you. 10 damage on contact.' },
+      { desc: 'GROUND · 2 balls orbit you. 10 damage on contact.' },
       { desc: '+1 orbiting ball (3 total).' },
       { desc: 'Wider orbit, 14 damage.' },
       { desc: '+1 orbiting ball (4 total), faster spin.' },
@@ -74,8 +93,12 @@ export const ABILITIES: Record<AbilityId, AbilityDef> = {
     icon: 'CW',
     color: '#f5f7fa',
     tagline: 'A periodic shockwave that blasts back a group of enemies.',
+    lane: 'ground',
+    rangeBand: 'near',
+    delivery: 'ring',
+    force: 'push',
     levels: [
-      { desc: 'Every 3.5s: shockwave, 15 damage, knocks enemies back.' },
+      { desc: 'GROUND · Every 3.5s: shockwave, 15 damage, knocks enemies back.' },
       { desc: 'Bigger shockwave radius.' },
       { desc: '22 damage, blows every 3.0s.' },
       { desc: 'Huge radius, heavy knockback, brief stun.' },
@@ -88,8 +111,12 @@ export const ABILITIES: Record<AbilityId, AbilityDef> = {
     icon: 'ND',
     color: '#80ed99',
     tagline: 'A burst of speed straight through danger, hitting everything in the way.',
+    lane: 'ground',
+    rangeBand: 'near',
+    delivery: 'sweep',
+    force: 'push',
     levels: [
-      { desc: 'Every 5s: dash forward, 20 damage, untouchable mid-dash.' },
+      { desc: 'GROUND · Every 5s: dash forward, 20 damage, untouchable mid-dash.' },
       { desc: '30 damage, longer dash.' },
       { desc: 'Every 4s.' },
       { desc: 'Two dash charges.' },
@@ -102,17 +129,39 @@ export const ABILITIES: Record<AbilityId, AbilityDef> = {
     icon: 'SD',
     color: '#ff6b6b',
     tagline: 'Calls in a bodyguard who protects you and flattens nearby threats.',
+    lane: 'ground',
+    rangeBand: 'near',
+    delivery: 'direct',
+    force: 'push',
     levels: [
-      { desc: '1 bodyguard punches nearby threats. 12 damage.' },
+      { desc: 'GROUND · 1 bodyguard punches nearby threats. 12 damage.' },
       { desc: 'Bodyguard hits harder: 18 damage.' },
       { desc: '+1 bodyguard (2 total).' },
       { desc: 'Guards knock enemies back and body-block bottles.' },
       { desc: '+1 bodyguard (3 total), 30 damage, faster swings.' },
     ],
   },
+  pressure: {
+    id: 'pressure',
+    name: 'Pitch Pressure',
+    icon: 'PP',
+    color: '#37d67a',
+    tagline: 'An expanding pressure ring that stamps down and shoves close mobs back.',
+    lane: 'ground',
+    rangeBand: 'near',
+    delivery: 'ring',
+    force: 'push',
+    levels: [
+      { desc: 'GROUND · Every 2.6s: expanding ring, 12 damage, shoves close enemies back.' },
+      { desc: '18 damage, wider ring.' },
+      { desc: 'Two staggered pulses per cast.' },
+      { desc: '24 damage, huge ring, heavier shove.' },
+      { desc: 'Vortex: drags the crowd in, then detonates a 26-damage triple pulse.' },
+    ],
+  },
 };
 
-export const ABILITY_IDS: AbilityId[] = ['strike', 'orbit', 'whistle', 'dash', 'guard'];
+export const ABILITY_IDS: AbilityId[] = ['strike', 'orbit', 'whistle', 'dash', 'guard', 'pressure'];
 
 export const PLAYERS: PlayerDef[] = [
   {

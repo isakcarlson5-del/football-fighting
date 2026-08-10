@@ -474,7 +474,9 @@ export class Renderer {
         const sc = ENTITY_SCALE * (e.boss ? BOSSES[e.boss].scale : e.def.scale) * (e.elite ? 1.22 : 1);
         const x = toSX(e.x);
         const y = toSY(e.y);
-        this.shadow(ctx, x, y, e.radius * sc * 0.8);
+        // airborne mobs lift off the pitch; the shadow stays on the grass
+        const lift = e.airT > 0 ? Math.sin(Math.PI * (1 - e.airT / 0.38)) * 22 : 0;
+        this.shadow(ctx, x, y, e.radius * sc * 0.8 * (1 - lift / 60));
         if (e.elite) {
           const pulse = 0.5 + 0.3 * Math.sin(time * 6);
           ctx.strokeStyle = `rgba(255,210,63,${pulse})`;
@@ -501,7 +503,7 @@ export class Renderer {
         const dw = atlas.fw * sc;
         const dh = atlas.fh * sc;
         ctx.save();
-        ctx.translate(x, y);
+        ctx.translate(x, y - lift);
         if (e.face < 0) ctx.scale(-1, 1);
         ctx.drawImage(img, frame * atlas.fw, 0, atlas.fw, atlas.fh, -dw / 2, -dh + 6 * sc, dw, dh);
         ctx.restore();
@@ -557,6 +559,12 @@ export class Renderer {
         const blink = p.iframes > 0 && Math.floor(time * 20) % 2 === 0;
         ctx.save();
         ctx.translate(x, y);
+        // active kick frame: quick forward lean synced to the lob launch
+        if (p.kickT > 0) {
+          const k = Math.sin(Math.PI * (1 - p.kickT / 0.22));
+          ctx.translate(p.face * k * 7, -k * 2);
+          ctx.rotate(p.face * k * 0.09);
+        }
         if (p.face < 0 && atlas.flippable) ctx.scale(-1, 1);
         if (blink) ctx.globalAlpha = 0.45;
         ctx.drawImage(atlas.canvas, frame * atlas.fw, 0, atlas.fw, atlas.fh, -dw / 2, -atlas.feetY * sc + bobY, dw, dh);
@@ -593,20 +601,22 @@ export class Renderer {
       }
     }
 
-    // balls (projectiles)
+    // balls (AERIAL lobs: height via z, moving ground shadow sells the arc)
     for (const b of sim.balls) {
       if (!b.active) continue;
       const x = toSX(b.x);
       const y = toSY(b.y);
-      // ground shadow sells the flight height
-      ctx.fillStyle = 'rgba(4,10,6,0.3)';
+      const hFrac = clamp(b.z / 240, 0, 1);
+      // ground shadow tracks the landing point, shrinking/fading with height
+      ctx.fillStyle = `rgba(4,10,6,${0.3 * (1 - hFrac * 0.6)})`;
       ctx.beginPath();
-      ctx.ellipse(x, y + 2, 7, 3, 0, 0, TAU);
+      ctx.ellipse(x, y + 2, 7 * (1 - hFrac * 0.45), 3 * (1 - hFrac * 0.45), 0, 0, TAU);
       ctx.fill();
       ctx.save();
-      ctx.translate(x, y - 16);
+      ctx.translate(x, y - 16 - b.z);
       ctx.rotate(b.spin * time * 4);
-      ctx.drawImage(this.ball, -11, -11, 22, 22);
+      const bs = 1 + hFrac * 0.12; // slight forced perspective near the apex
+      ctx.drawImage(this.ball, -11 * bs, -11 * bs, 22 * bs, 22 * bs);
       ctx.restore();
     }
     // bottles
@@ -628,6 +638,47 @@ export class Renderer {
       ctx.beginPath();
       ctx.ellipse(toSX(r.x), toSY(r.y), r.r, r.r * TILT, 0, 0, TAU);
       ctx.stroke();
+    }
+
+    // pitch pressure rings (GROUND lane: pitch-hugging expanding front)
+    for (const pr of sim.pressures) {
+      if (!pr.active) continue;
+      const u = pr.r / pr.maxR;
+      const a = (1 - u) * 0.8 + 0.15;
+      ctx.fillStyle = `rgba(55,214,122,${0.07 * (1 - u)})`;
+      ctx.beginPath();
+      ctx.ellipse(toSX(pr.x), toSY(pr.y), pr.r, pr.r * TILT, 0, 0, TAU);
+      ctx.fill();
+      ctx.strokeStyle = `rgba(55,214,122,${a})`;
+      ctx.lineWidth = 7 * (1 - u) + 2;
+      ctx.beginPath();
+      ctx.ellipse(toSX(pr.x), toSY(pr.y), pr.r, pr.r * TILT, 0, 0, TAU);
+      ctx.stroke();
+      ctx.strokeStyle = `rgba(245,247,250,${a * 0.5})`;
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.ellipse(toSX(pr.x), toSY(pr.y), Math.max(1, pr.r - 7), (pr.r - 7) * TILT, 0, 0, TAU);
+      ctx.stroke();
+    }
+
+    // landing reticles for incoming aerial lobs
+    for (const rc of sim.reticles) {
+      if (!rc.active) continue;
+      const u = clamp(rc.t / rc.max, 0, 1); // 1 -> 0 as the ball descends
+      const rr = 16 + 34 * u;
+      const x = toSX(rc.x);
+      const y = toSY(rc.y);
+      ctx.strokeStyle = `rgba(255,209,102,${0.3 + (1 - u) * 0.6})`;
+      ctx.lineWidth = 2.5;
+      ctx.setLineDash([7, 6]);
+      ctx.beginPath();
+      ctx.ellipse(x, y, rr, rr * TILT, 0, 0, TAU);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = `rgba(255,209,102,${0.35 + (1 - u) * 0.5})`;
+      ctx.beginPath();
+      ctx.ellipse(x, y, 3.5, 2, 0, 0, TAU);
+      ctx.fill();
     }
 
     // particles

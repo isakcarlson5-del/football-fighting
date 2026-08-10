@@ -885,7 +885,7 @@ export function bottleSprite(): HTMLCanvasElement {  const c = makeCanvas(12, 20
 }
 
 /** Circular ability badge icon used in the DOM UI. */
-export function abilityIcon(glyph: 'ball' | 'orbit' | 'whistle' | 'dash' | 'shield', color: string, size = 64): HTMLCanvasElement {
+export function abilityIcon(glyph: 'ball' | 'orbit' | 'whistle' | 'dash' | 'shield' | 'pressure', color: string, size = 64): HTMLCanvasElement {
   const c = makeCanvas(size, size);
   const ctx = c.getContext('2d')!;
   const r = size / 2;
@@ -977,14 +977,33 @@ export function abilityIcon(glyph: 'ball' | 'orbit' | 'whistle' | 'dash' | 'shie
       ctx.fill();
       break;
     }
+    case 'pressure': {
+      // ground-stomp: downward arrow + expanding pressure waves
+      ctx.beginPath();
+      ctx.moveTo(0, -20 * s);
+      ctx.lineTo(0, -3 * s);
+      ctx.moveTo(-7 * s, -10 * s);
+      ctx.lineTo(0, -2 * s);
+      ctx.lineTo(7 * s, -10 * s);
+      ctx.stroke();
+      for (let i = 1; i <= 3; i++) {
+        ctx.globalAlpha = 1.05 - i * 0.24;
+        ctx.beginPath();
+        ctx.arc(0, 2 * s, 4 * s + i * 7 * s, Math.PI * 0.18, Math.PI * 0.82);
+        ctx.stroke();
+      }
+      ctx.globalAlpha = 1;
+      break;
+    }
   }
   return c;
 }
 
-export const ABILITY_GLYPHS: Record<string, 'ball' | 'orbit' | 'whistle' | 'dash' | 'shield'> = {
+export const ABILITY_GLYPHS: Record<string, 'ball' | 'orbit' | 'whistle' | 'dash' | 'shield' | 'pressure'> = {
   strike: 'ball',
   orbit: 'orbit',
   whistle: 'whistle',
   dash: 'dash',
   guard: 'shield',
+  pressure: 'pressure',
 };

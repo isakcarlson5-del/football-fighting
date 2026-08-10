@@ -28,6 +28,7 @@ export const ARENA_W = 2600;
 export const ARENA_H = 1416; // tuned playfield height; the renderer maps the arena plate's grass rect onto this exactly
 const MAX_ENEMIES = 240;
 const CELL = 72;
+const LOB_GRAVITY = 1500; // aerial lob downward acceleration (world units/s²)
 
 /* ------------------------------------------------------------------ */
 /* Entity types                                                        */
@@ -57,24 +58,34 @@ export interface Enemy {
   face: number; // -1 | 1
   animT: number;
   rangedCd: number;
+  /** >0: briefly airborne (big knockback). Ground effects sweep harmlessly
+   *  underneath; aerial attacks connect normally. Never a permanent immunity. */
+  airT: number;
   // boss ability timers
   bossCd: number;
   bossCd2: number;
   telegraph: number; // 0 = none, else seconds remaining of visible telegraph
 }
 
+/** AERIAL lane: a lobbed ball with real height (z) flying to a reserved far
+ *  target; it passes over near enemies and lands with a splash. */
 export interface Ball {
   active: boolean;
   x: number;
   y: number;
   vx: number;
   vy: number;
+  z: number; // height above the pitch
+  vz: number;
   dmg: number;
-  pierce: number;
-  ricochet: number;
-  life: number;
+  splash: number; // landing splash radius
+  ricochet: number; // re-lob bounces remaining
   spin: number;
-  hitSet: number[]; // enemy indexes already hit (pierce)
+  tx: number; // landing target point
+  ty: number;
+  targetIdx: number; // reserved enemy index (-1 = ground target)
+  flightT: number;
+  maxFlightT: number;
 }
 
 export interface Bottle {
@@ -152,6 +163,28 @@ export interface Ring {
   color: string;
 }
 
+/** GROUND lane: an expanding pitch-hugging pressure ring that damages and
+ *  shoves close mobs as the ring front passes them (once per ring). */
+export interface Pressure {
+  active: boolean;
+  x: number;
+  y: number;
+  r: number;
+  maxR: number;
+  dmg: number;
+  knock: number;
+  hitSet: number[];
+}
+
+/** Landing marker for an incoming aerial lob (purely visual, no gameplay). */
+export interface Reticle {
+  active: boolean;
+  x: number;
+  y: number;
+  t: number;
+  max: number;
+}
+
 export type SimEvent =
   | { type: 'hit'; x: number; y: number }
   | { type: 'kill'; x: number; y: number; elite: boolean }
@@ -160,6 +193,8 @@ export type SimEvent =
   | { type: 'coin' }
   | { type: 'levelup' }
   | { type: 'whistle'; x: number; y: number }
+  | { type: 'pressure'; x: number; y: number }
+  | { type: 'lobLand'; x: number; y: number }
   | { type: 'dash' }
   | { type: 'hurt' }
   | { type: 'punch' }
@@ -192,6 +227,10 @@ export interface PlayerState {
   strikeCd: number;
   whistleCd: number;
   whistlePulse: number;
+  pressureCd: number;
+  pressureQueue: number; // staggered pulses still to release
+  pressureQueueT: number;
+  kickT: number; // >0 during the lob's kick animation (active frame)
   dashCds: number[];
   dashT: number; // >0 while dashing
   dashDx: number;
@@ -226,6 +265,8 @@ export class Sim {
   dmgNums: DmgNum[] = [];
   telegraphs: Telegraph[] = [];
   rings: Ring[] = [];
+  pressures: Pressure[] = [];
+  reticles: Reticle[] = [];
   events: SimEvent[] = [];
   pendingLevelups = 0;
   boss1Spawned = false;
@@ -275,6 +316,10 @@ export class Sim {
       strikeCd: 0.4,
       whistleCd: 2,
       whistlePulse: -1,
+      pressureCd: 1.2,
+      pressureQueue: 0,
+      pressureQueueT: 0,
+      kickT: 0,
       dashCds: [0],
       dashT: 0,
       dashDx: 1,
@@ -327,16 +372,18 @@ export class Sim {
       this.enemies.push({
         active: false, def: ENEMIES.hooligan, x: 0, y: 0, hp: 1, maxHp: 1, speed: 0, damage: 0,
         radius: 10, xp: 1, elite: false, boss: '', kx: 0, ky: 0, flash: 0, attackCd: 0, orbitCd: 0,
-        dashMark: -1, stun: 0, slow: 0, face: 1, animT: 0, rangedCd: 2, bossCd: 4, bossCd2: 8, telegraph: 0,
+        dashMark: -1, stun: 0, slow: 0, face: 1, animT: 0, rangedCd: 2, airT: 0, bossCd: 4, bossCd2: 8, telegraph: 0,
       });
     }
-    for (let i = 0; i < 400; i++) this.balls.push({ active: false, x: 0, y: 0, vx: 0, vy: 0, dmg: 0, pierce: 0, ricochet: 0, life: 0, spin: 0, hitSet: [] });
+    for (let i = 0; i < 400; i++) this.balls.push({ active: false, x: 0, y: 0, vx: 0, vy: 0, z: 0, vz: 0, dmg: 0, splash: 60, ricochet: 0, spin: 0, tx: 0, ty: 0, targetIdx: -1, flightT: 0, maxFlightT: 1 });
     for (let i = 0; i < 200; i++) this.bottles.push({ active: false, x: 0, y: 0, vx: 0, vy: 0, dmg: 0, life: 0 });
     for (let i = 0; i < 500; i++) this.pickups.push({ active: false, kind: 'xp', tier: 1, x: 0, y: 0, vx: 0, vy: 0, value: 1, t: 0 });
     for (let i = 0; i < 600; i++) this.particles.push({ active: false, x: 0, y: 0, vx: 0, vy: 0, life: 0, maxLife: 1, size: 2, color: '#fff', grav: 0 });
     for (let i = 0; i < 120; i++) this.dmgNums.push({ active: false, x: 0, y: 0, value: '', life: 0, crit: false });
     for (let i = 0; i < 16; i++) this.telegraphs.push({ active: false, x: 0, y: 0, r: 0, t: 0, max: 1, kind: 'flare' });
     for (let i = 0; i < 16; i++) this.rings.push({ active: false, x: 0, y: 0, r: 0, maxR: 100, life: 0, color: '#fff' });
+    for (let i = 0; i < 24; i++) this.pressures.push({ active: false, x: 0, y: 0, r: 0, maxR: 100, dmg: 0, knock: 0, hitSet: [] });
+    for (let i = 0; i < 32; i++) this.reticles.push({ active: false, x: 0, y: 0, t: 0, max: 1 });
     this.refreshGuards();
   }
 
@@ -441,6 +488,7 @@ export class Sim {
     e.slow = 0;
     e.animT = this.rng.range(0, 1);
     e.rangedCd = this.rng.range(1, 2.6);
+    e.airT = 0;
     e.telegraph = 0;
     return e;
   }
@@ -473,6 +521,7 @@ export class Sim {
     e.slow = 0;
     e.animT = 0;
     e.rangedCd = 2;
+    e.airT = 0;
     e.bossCd = 5;
     e.bossCd2 = 9;
     e.telegraph = 0;
@@ -551,6 +600,9 @@ export class Sim {
     e.flash = 0.12;
     e.kx += kx;
     e.ky += ky;
+    // a heavy shove launches the enemy briefly airborne: ground effects sweep
+    // underneath while it flies, aerial attacks still connect (no immunity)
+    if (!e.boss && Math.hypot(kx, ky) > 330) e.airT = Math.max(e.airT, 0.38);
     if (opts?.stun) e.stun = Math.max(e.stun, opts.stun);
     this.spawnDmgNum(e.x, e.y - e.radius - 6, final, crit);
     this.events.push({ type: 'hit', x: e.x, y: e.y });
@@ -770,34 +822,168 @@ export class Sim {
 
   /* ---------------- abilities ---------------- */
 
+  /* AERIAL lane: far-band targeting with damage reservation */
+
+  /** Damage already inbound on enemy `idx` from lobs still in flight. */
+  private reservedDmg(idx: number): number {
+    let sum = 0;
+    for (const b of this.balls) if (b.active && b.targetIdx === idx) sum += b.dmg;
+    return sum;
+  }
+
+  /** Aerial lobs prefer threats outside this near band (they fly over closer mobs). */
+  static AERIAL_NEAR_BAND = 260;
+  static AERIAL_MAX_RANGE = 700;
+
+  /**
+   * Picks the best far-band target for an aerial lob: ranged/support threats
+   * first, then bosses/elites, then the nearest of those. Targets whose
+   * reserved inbound damage already projects a kill are skipped, so volleys
+   * distribute over living threats instead of overkill-stacking one corpse.
+   * Falls back to the nearest enemy in range when no far target qualifies.
+   */
+  pickAerialTarget(fromX: number, fromY: number): number {
+    const band2 = Sim.AERIAL_NEAR_BAND * Sim.AERIAL_NEAR_BAND;
+    const max2 = Sim.AERIAL_MAX_RANGE * Sim.AERIAL_MAX_RANGE;
+    let best = -1;
+    let bestScore = -Infinity;
+    for (let i = 0; i < this.enemies.length; i++) {
+      const e = this.enemies[i];
+      if (!e.active) continue;
+      const d2 = dist2(fromX, fromY, e.x, e.y);
+      if (d2 < band2 || d2 > max2) continue; // far band only
+      if (this.reservedDmg(i) >= e.hp) continue; // projected dead: leave it
+      let score = 0;
+      if (e.def.behavior === 'ranged') score += 400; // support/ranged first
+      if (e.boss) score += 260;
+      else if (e.elite) score += 160;
+      score -= Math.sqrt(d2) * 0.5;
+      if (score > bestScore) {
+        bestScore = score;
+        best = i;
+      }
+    }
+    if (best >= 0) return best;
+    return this.nearestEnemy(fromX, fromY, Sim.AERIAL_MAX_RANGE);
+  }
+
   private fireStrike(): void {
     const lvl = this.abilityLevel('strike');
     if (lvl === 0) return;
     const p = this.player;
     const count = [0, 1, 2, 2, 3, 4][lvl] + (this.def.id === 'messi' ? 1 : 0);
     const dmg = [0, 14, 14, 20, 20, 28][lvl] * this.damageMult;
-    const pierce = lvl >= 4 ? 1 : 0;
+    const splash = lvl >= 4 ? 92 : 66;
     const ric = lvl >= 5 ? 1 : 0;
-    // aim at nearest, spread additional balls
-    const near = this.nearestEnemy(p.x, p.y, 700);
-    const baseA = near >= 0 ? Math.atan2(this.enemies[near].y - p.y, this.enemies[near].x - p.x) : this.rng.range(0, TAU);
+    let launched = 0;
     for (let i = 0; i < count; i++) {
+      const ti = this.pickAerialTarget(p.x, p.y);
+      if (ti < 0) break;
       const b = this.alloc(this.balls);
       if (!b) return;
-      const a = baseA + (i - (count - 1) / 2) * 0.22;
-      b.active = true;
-      b.x = p.x;
-      b.y = p.y;
-      b.vx = Math.cos(a) * 460;
-      b.vy = Math.sin(a) * 460;
-      b.dmg = dmg;
-      b.pierce = pierce;
-      b.ricochet = ric;
-      b.life = 1.15;
-      b.spin = this.rng.range(6, 12);
-      b.hitSet.length = 0;
+      const e = this.enemies[ti];
+      this.lob(b, p.x, p.y, e.x, e.y, dmg, splash, ric, ti);
+      launched++;
     }
-    this.events.push({ type: 'kick' });
+    if (launched > 0) {
+      p.kickT = 0.22; // active kick frame, synced to the launch
+      this.burst(p.x + p.face * 22, p.y, 4, '#ffd166');
+      this.events.push({ type: 'kick' });
+    }
+  }
+
+  /** Launches a lobbed ball on a ballistic arc that lands exactly on (tx,ty). */
+  private lob(b: Ball, x: number, y: number, tx: number, ty: number, dmg: number, splash: number, ric: number, targetIdx: number): void {
+    const d = Math.hypot(tx - x, ty - y);
+    const T = Math.max(0.45, Math.min(1.15, d / 560));
+    b.active = true;
+    b.x = x;
+    b.y = y;
+    b.z = 0;
+    b.vx = (tx - x) / T;
+    b.vy = (ty - y) / T;
+    b.vz = 0.5 * LOB_GRAVITY * T; // apex at T/2, touches down exactly at T
+    b.dmg = dmg;
+    b.splash = splash;
+    b.ricochet = ric;
+    b.spin = this.rng.range(6, 12);
+    b.tx = tx;
+    b.ty = ty;
+    b.targetIdx = targetIdx;
+    b.flightT = 0;
+    b.maxFlightT = T;
+    this.reticle(tx, ty, T);
+  }
+
+  /** Landing impact: group splash + shove, then optional ricochet re-lob. */
+  private lobImpact(b: Ball): void {
+    const r = b.splash;
+    const n = this.query(b.x, b.y, r + 40, this.scratch);
+    for (let i = 0; i < n; i++) {
+      const idx = this.scratch[i];
+      const e = this.enemies[idx];
+      if (!e.active) continue;
+      if (dist2(b.x, b.y, e.x, e.y) > (r + e.radius) * (r + e.radius)) continue;
+      const d = Math.hypot(e.x - b.x, e.y - b.y) || 1;
+      this.damageEnemy(idx, b.dmg, ((e.x - b.x) / d) * 200, ((e.y - b.y) / d) * 200);
+    }
+    this.burst(b.x, b.y, 10, '#ffd166');
+    this.ring(b.x, b.y, r, '#ffd166');
+    this.events.push({ type: 'lobLand', x: b.x, y: b.y });
+    if (b.ricochet > 0) {
+      const ti = this.pickAerialTarget(b.x, b.y);
+      if (ti >= 0) {
+        const e = this.enemies[ti];
+        this.lob(b, b.x, b.y, e.x, e.y, b.dmg, b.splash, b.ricochet - 1, ti);
+      }
+    }
+  }
+
+  /* GROUND lane: expanding pressure ring */
+
+  private firePressure(): void {
+    const lvl = this.abilityLevel('pressure');
+    if (lvl === 0) return;
+    const p = this.player;
+    p.pressureQueue = lvl >= 5 ? 2 : lvl >= 3 ? 1 : 0;
+    p.pressureQueueT = 0.45;
+    this.pressurePulse(lvl);
+    this.events.push({ type: 'pressure', x: p.x, y: p.y });
+  }
+
+  private pressurePulse(lvl: number): void {
+    const p = this.player;
+    const ring = this.alloc(this.pressures);
+    if (!ring) return;
+    ring.active = true;
+    ring.x = p.x;
+    ring.y = p.y;
+    ring.r = 26;
+    ring.maxR = [0, 150, 170, 170, 205, 225][lvl];
+    ring.dmg = [0, 12, 18, 18, 24, 26][lvl] * this.damageMult;
+    ring.knock = [0, 260, 260, 260, 345, 385][lvl];
+    ring.hitSet.length = 0;
+    if (lvl >= 5) {
+      // vortex: drag the crowd inward before the blast wave reaches them
+      const n = this.query(p.x, p.y, ring.maxR + 60, this.scratch);
+      for (let i = 0; i < n; i++) {
+        const e = this.enemies[this.scratch[i]];
+        if (!e.active || e.boss) continue;
+        const d = Math.hypot(p.x - e.x, p.y - e.y) || 1;
+        e.kx += ((p.x - e.x) / d) * 230;
+        e.ky += ((p.y - e.y) / d) * 230;
+      }
+    }
+  }
+
+  private reticle(x: number, y: number, t: number): void {
+    const r = this.alloc(this.reticles);
+    if (!r) return;
+    r.active = true;
+    r.x = x;
+    r.y = y;
+    r.t = t;
+    r.max = t;
   }
 
   private fireWhistle(): void {
@@ -817,6 +1003,7 @@ export class Sim {
     for (let i = 0; i < n; i++) {
       const idx = this.scratch[i];
       const e = this.enemies[idx];
+      if (e.airT > 0) continue; // GROUND lane: sweeps harmlessly under airborne mobs
       const d2 = dist2(x, y, e.x, e.y);
       if (d2 > (r + e.radius) * (r + e.radius)) continue;
       const d = Math.sqrt(d2) || 1;
@@ -878,7 +1065,18 @@ export class Sim {
     p.iframes = Math.max(0, p.iframes - dt);
     p.strikeCd -= dt;
     p.whistleCd -= dt;
+    p.pressureCd -= dt;
+    p.kickT = Math.max(0, p.kickT - dt);
     for (let i = 0; i < p.dashCds.length; i++) p.dashCds[i] -= dt;
+    if (p.pressureQueue > 0) {
+      p.pressureQueueT -= dt;
+      if (p.pressureQueueT <= 0) {
+        p.pressureQueue--;
+        p.pressureQueueT = 0.45; // staggered so launched mobs land before the next pulse
+        this.pressurePulse(this.abilityLevel('pressure'));
+        this.events.push({ type: 'pressure', x: p.x, y: p.y });
+      }
+    }
     if (p.whistlePulse > 0) {
       p.whistlePulse -= dt;
       if (p.whistlePulse <= 0) {
@@ -915,6 +1113,7 @@ export class Sim {
       for (let i = 0; i < n; i++) {
         const idx = this.scratch[i];
         const e = this.enemies[idx];
+        if (e.airT > 0) continue; // GROUND lane: dash sweep passes under airborne mobs
         if (dist2(p.x, p.y, e.x, e.y) < (e.radius + 42) * (e.radius + 42) && e.dashMark !== p.dashId) {
           e.dashMark = p.dashId;
           const d = Math.hypot(e.x - p.x, e.y - p.y) || 1;
@@ -945,12 +1144,17 @@ export class Sim {
     if (p.strikeCd <= 0 && this.abilityLevel('strike') > 0) {
       const lvl = this.abilityLevel('strike');
       p.strikeCd = [0, 0.9, 0.9, 0.8, 0.8, 0.65][lvl];
-      if (this.nearestEnemy(p.x, p.y, 700) >= 0) this.fireStrike();
+      if (this.nearestEnemy(p.x, p.y, Sim.AERIAL_MAX_RANGE) >= 0) this.fireStrike();
     }
     if (p.whistleCd <= 0 && this.abilityLevel('whistle') > 0) {
       const lvl = this.abilityLevel('whistle');
       p.whistleCd = [0, 3.5, 3.5, 3.0, 3.0, 2.2][lvl];
       this.fireWhistle();
+    }
+    if (p.pressureCd <= 0 && this.abilityLevel('pressure') > 0) {
+      const lvl = this.abilityLevel('pressure');
+      p.pressureCd = [0, 2.6, 2.6, 2.3, 2.3, 2.0][lvl];
+      this.firePressure();
     }
     this.tryDash();
 
@@ -971,7 +1175,7 @@ export class Sim {
         for (let i = 0; i < n; i++) {
           const idx = this.scratch[i];
           const e = this.enemies[idx];
-          if (e.orbitCd > 0) continue;
+          if (e.orbitCd > 0 || e.airT > 0) continue; // GROUND lane: orbit misses airborne mobs
           if (dist2(ox, oy, e.x, e.y) < (e.radius + 18) * (e.radius + 18)) {
             e.orbitCd = 0.38;
             const d = Math.hypot(e.x - p.x, e.y - p.y) || 1;
@@ -1025,6 +1229,7 @@ export class Sim {
       e.attackCd = Math.max(0, e.attackCd - dt);
       e.orbitCd = Math.max(0, e.orbitCd - dt);
       e.stun = Math.max(0, e.stun - dt);
+      e.airT = Math.max(0, e.airT - dt);
       e.animT += dt;
       // knockback decay
       e.x += e.kx * dt;
@@ -1103,53 +1308,41 @@ export class Sim {
         e.y += ((dy / d) * (e.speed * slowMult - press) + sy) * dt;
       }
 
-      // contact damage
-      if (e.attackCd <= 0 && dist2(e.x, e.y, p.x, p.y) < (e.radius + 18) * (e.radius + 18)) {
+      // contact damage (airborne mobs are mid-flight and can't strike)
+      if (e.airT <= 0 && e.attackCd <= 0 && dist2(e.x, e.y, p.x, p.y) < (e.radius + 18) * (e.radius + 18)) {
         e.attackCd = 0.9;
         this.hurtPlayer(e.damage);
       }
     }
 
-    /* balls */
+    /* balls (AERIAL lane: lobbed ballistics, damage only on landing) */
     for (const b of this.balls) {
       if (!b.active) continue;
-      b.life -= dt;
+      b.flightT += dt;
       b.x += b.vx * dt;
       b.y += b.vy * dt;
-      if (b.life <= 0 || b.x < 0 || b.x > ARENA_W || b.y < 0 || b.y > ARENA_H) {
-        b.active = false;
-        continue;
-      }
-      const n = this.query(b.x, b.y, 34, this.scratch);
+      b.z += b.vz * dt;
+      b.vz -= LOB_GRAVITY * dt;
+      if (b.z > 0) continue; // still airborne: passes over ground-level mobs
+      b.active = false;
+      this.lobImpact(b);
+    }
+
+    /* pressure rings (GROUND lane: expanding damaging front) */
+    for (const pr of this.pressures) {
+      if (!pr.active) continue;
+      pr.r += pr.maxR * 2.1 * dt; // expand to maxR in ~0.48s
+      const n = this.query(pr.x, pr.y, pr.r + 70, this.scratch);
       for (let i = 0; i < n; i++) {
         const idx = this.scratch[i];
         const e = this.enemies[idx];
-        if (!e.active || b.hitSet.includes(idx)) continue;
-        if (dist2(b.x, b.y, e.x, e.y) < (e.radius + 10) * (e.radius + 10)) {
-          const d = Math.hypot(e.x - b.x, e.y - b.y) || 1;
-          this.damageEnemy(idx, b.dmg, ((e.x - b.x) / d) * 160, ((e.y - b.y) / d) * 160);
-          if (b.pierce > 0) {
-            b.pierce--;
-            b.hitSet.push(idx);
-          } else if (b.ricochet > 0) {
-            b.ricochet--;
-            b.hitSet.push(idx);
-            const ni = this.nearestEnemy(e.x, e.y, 300);
-            if (ni >= 0 && !b.hitSet.includes(ni)) {
-              const ne = this.enemies[ni];
-              const dd = Math.hypot(ne.x - b.x, ne.y - b.y) || 1;
-              b.vx = ((ne.x - b.x) / dd) * 460;
-              b.vy = ((ne.y - b.y) / dd) * 460;
-              b.life = Math.max(b.life, 0.6);
-            } else {
-              b.active = false;
-            }
-          } else {
-            b.active = false;
-          }
-          break;
-        }
+        if (!e.active || e.airT > 0 || pr.hitSet.includes(idx)) continue;
+        if (dist2(pr.x, pr.y, e.x, e.y) > (pr.r + e.radius) * (pr.r + e.radius)) continue;
+        pr.hitSet.push(idx);
+        const d = Math.hypot(e.x - pr.x, e.y - pr.y) || 1;
+        this.damageEnemy(idx, pr.dmg, ((e.x - pr.x) / d) * pr.knock, ((e.y - pr.y) / d) * pr.knock);
       }
+      if (pr.r >= pr.maxR) pr.active = false;
     }
 
     /* bottles */
@@ -1205,7 +1398,7 @@ export class Sim {
           tx = e.x;
           ty = e.y;
           const dd = Math.hypot(e.x - g.x, e.y - g.y);
-          if (dd < e.radius + 24 && g.swingCd <= 0) {
+          if (e.airT <= 0 && dd < e.radius + 24 && g.swingCd <= 0) {
             g.swingCd = swingCd;
             const d2 = dd || 1;
             this.damageEnemy(ti, dmg, ((e.x - g.x) / d2) * knock, ((e.y - g.y) / d2) * knock);
@@ -1379,6 +1572,11 @@ export class Sim {
       r.life -= dt;
       r.r += (r.maxR - r.r) * dt * 10;
       if (r.life <= 0) r.active = false;
+    }
+    for (const rc of this.reticles) {
+      if (!rc.active) continue;
+      rc.t -= dt;
+      if (rc.t <= 0) rc.active = false;
     }
   }
 

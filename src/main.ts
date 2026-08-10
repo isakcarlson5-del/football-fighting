@@ -187,6 +187,14 @@ function drainEvents(): void {
         if (throttled('whistle', 150)) audio.shockwave();
         renderer.addShake(2.5);
         break;
+      case 'pressure':
+        if (throttled('pressure', 200)) audio.shockwave();
+        renderer.addShake(1.5);
+        break;
+      case 'lobLand':
+        if (throttled('lobLand', 90)) audio.punch();
+        renderer.addShake(1.2);
+        break;
       case 'dash':
         audio.dash();
         break;

@@ -303,7 +303,7 @@ export class UI {
       r.dock!.innerHTML = Object.entries(p.abilities)
         .map(([id, lvl]) => {
           const def = ABILITIES[id as AbilityId];
-          return `<div class="ability-slot" title="${def.name} Lv${lvl}"><img src="${iconUrl(id as AbilityId)}" alt="${def.name}"><span class="lvl">${lvl}</span></div>`;
+          return `<div class="ability-slot lane-${def.lane}" title="${def.name} Lv${lvl} · ${def.lane.toUpperCase()}"><img src="${iconUrl(id as AbilityId)}" alt="${def.name}"><span class="lvl">${lvl}</span></div>`;
         })
         .join('');
     }
@@ -341,10 +341,14 @@ export class UI {
         .map((o, i) => {
           const icon = o.kind === 'ability' ? iconUrl(o.id as AbilityId) : o.kind === 'stat' ? statIconUrl(o.id, o.color) : statIconUrl('heal', o.color);
           const tag = o.kind === 'ability' ? (o.level === 1 ? 'New ability' : `Ability · Lv${o.level}`) : o.kind === 'stat' ? 'Training' : 'Recovery';
+          // every offensive ability is lane-typed: GROUND hugs the pitch,
+          // AERIAL flies over near mobs onto far high-priority threats
+          const lane = o.kind === 'ability' ? ABILITIES[o.id as AbilityId].lane : null;
+          const laneChip = lane ? `<span class="lane-tag lane-${lane}">${lane.toUpperCase()}</span>` : '';
           return `
           <div class="upgrade-card" data-idx="${i}" style="--uc:${o.color}">
             <img src="${icon}" alt="">
-            <div class="uc-tag">${tag}</div>
+            <div class="uc-tag">${tag} ${laneChip}</div>
             <div class="uc-name">${o.name}</div>
             <div class="uc-desc">${o.desc}</div>
           </div>`;
