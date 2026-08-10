@@ -68,6 +68,21 @@ await page.waitForTimeout(80);
 await page.screenshot({ path: `${OUT}/44-ai-enemy-lineup-b.png` });
 await page.evaluate(() => window.__FF.getSim().enemies.forEach((e) => { e.active = false; }));
 
+await page.evaluate(() => {
+  const ff = window.__FF;
+  const sim = ff.getSim();
+  ff.debugSpawn('drummer', -210, -105);
+  ff.debugSpawn('vuvuzela', 0, -220);
+  ff.debugSpawn('mascot', 210, -105);
+  for (const e of sim.enemies.filter((enemy) => enemy.active)) {
+    e.hp = 9999;
+    e.maxHp = 9999;
+  }
+});
+await page.waitForTimeout(80);
+await page.screenshot({ path: `${OUT}/45-ai-enemy-lineup-c.png` });
+await page.evaluate(() => window.__FF.getSim().enemies.forEach((e) => { e.active = false; }));
+
 // level-up
 await page.evaluate(() => window.__FF.giveXp(40));
 await page.waitForSelector('#levelup-screen');
@@ -89,7 +104,7 @@ await page.evaluate(() => {
   }, 100);
   sim.boss0Spawned = true;
   ff.setTime(210);
-  const types = ['invader', 'sprinter', 'lobber', 'steward', 'flare', 'flag', 'foam'];
+  const types = ['invader', 'sprinter', 'lobber', 'steward', 'flare', 'flag', 'foam', 'drummer', 'vuvuzela', 'mascot'];
   for (let i = 0; i < 16; i++) {
     const a = (i / 16) * Math.PI * 2;
     ff.debugSpawn(types[i % types.length], Math.cos(a) * 330, Math.sin(a) * 250, i % 6 === 0);

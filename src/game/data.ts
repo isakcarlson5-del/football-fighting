@@ -308,7 +308,7 @@ export const ENEMIES: Record<Exclude<EnemyId, 'official' | 'captain' | 'drumboss
   },
   vuvuzela: {
     id: 'vuvuzela', name: 'Vuvuzela Blaster', hp: 40, speed: 50, damage: 9, xp: 4,
-    radius: 15, unlockAt: 300, weight: 24, coinChance: 0.3, behavior: 'cone', scale: 1,
+    radius: 15, unlockAt: 300, weight: 24, coinChance: 0.3, behavior: 'cone', scale: 1.15,
   },
   mascot: {
     id: 'mascot', name: 'Rival Mascot', hp: 130, speed: 46, damage: 18, xp: 8,
