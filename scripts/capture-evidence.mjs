@@ -214,6 +214,48 @@ await page.waitForTimeout(120);
 await page.screenshot({ path: `${OUT}/53-generated-pickups.png` });
 await page.evaluate(() => window.__FF.startRun('messi'));
 
+// Pooled combat feedback: normal, heavy and critical directional contacts,
+// plus a distinct AERIAL landing burst. Freeze the short-lived effects so the
+// screenshot proves their origins stay readable over the character art.
+await page.keyboard.press('p');
+await page.evaluate(() => {
+  document.getElementById('pause-screen')?.remove();
+  const banner = document.getElementById('banner');
+  if (banner) banner.style.display = 'none';
+  const ff = window.__FF;
+  const sim = ff.getSim();
+  sim.enemies.forEach((e) => { e.active = false; });
+  ff.debugSpawn('steward', -230, -95);
+  ff.debugSpawn('invader', -70, -160);
+  ff.debugSpawn('sprinter', 110, -150);
+  const staged = sim.enemies.filter((e) => e.active);
+  staged.forEach((e) => {
+    e.hp = 9999;
+    e.maxHp = 9999;
+    e.speed = 0;
+  });
+  const indexes = staged.map((enemy) => sim.enemies.indexOf(enemy));
+  sim.damageEnemy(indexes[0], 12, 300, 40, { crit: false });
+  sim.damageEnemy(indexes[1], 34, -370, 20, { crit: false });
+  sim.damageEnemy(indexes[2], 46, 360, -80, { crit: true });
+  staged.forEach((e) => { e.flash = 0; });
+  const landing = sim.impacts.find((impact) => !impact.active);
+  Object.assign(landing, {
+    active: true,
+    x: sim.player.x + 285,
+    y: sim.player.y - 55,
+    life: 0.24,
+    maxLife: 0.28,
+    angle: -0.5,
+    strength: 1.55,
+    color: '#ffd166',
+    kind: 'landing',
+  });
+});
+await page.waitForTimeout(60);
+await page.screenshot({ path: `${OUT}/54-combat-impact-vfx.png` });
+await page.evaluate(() => window.__FF.startRun('messi'));
+
 // level-up
 await page.evaluate(() => window.__FF.giveXp(40));
 await page.waitForSelector('#levelup-screen');

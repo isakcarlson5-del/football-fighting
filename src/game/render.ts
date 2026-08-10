@@ -856,6 +856,52 @@ export class Renderer {
     }
     ctx.globalAlpha = 1;
 
+    // Directional contact flashes. A bright core pins the exact collision
+    // point while short tapered rays communicate the incoming force.
+    for (const impact of sim.impacts) {
+      if (!impact.active) continue;
+      const remaining = clamp(impact.life / impact.maxLife, 0, 1);
+      const age = 1 - remaining;
+      const x = toSX(impact.x);
+      const groundY = toSY(impact.y);
+      const angle = Math.atan2(Math.sin(impact.angle) * TILT, Math.cos(impact.angle));
+      const alpha = Math.min(1, remaining * 1.8);
+      const size = (12 + age * 15) * impact.strength;
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      if (impact.kind === 'landing') {
+        ctx.fillStyle = `rgba(255,209,102,${0.16 * remaining})`;
+        ctx.strokeStyle = `rgba(255,226,146,${0.9 * remaining})`;
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.ellipse(x, groundY, size * 1.5, size * 0.62, 0, 0, TAU);
+        ctx.fill();
+        ctx.stroke();
+      }
+      ctx.translate(x, groundY - (impact.kind === 'landing' ? 8 : 22));
+      ctx.rotate(angle);
+      ctx.strokeStyle = impact.color;
+      ctx.lineCap = 'round';
+      ctx.lineWidth = 3.2 * impact.strength * remaining + 1;
+      const rayCount = impact.strength > 1.25 ? 7 : impact.strength > 1 ? 5 : 3;
+      for (let i = 0; i < rayCount; i++) {
+        const rayAngle = (i / rayCount) * TAU;
+        const directionalBias = 0.72 + Math.max(0, Math.cos(rayAngle)) * 0.38;
+        const inner = 3 + (i % 2) * 1.2;
+        const outer = size * directionalBias * (0.8 + (i % 2) * 0.2);
+        ctx.beginPath();
+        ctx.moveTo(Math.cos(rayAngle) * inner, Math.sin(rayAngle) * inner);
+        ctx.lineTo(Math.cos(rayAngle) * outer, Math.sin(rayAngle) * outer);
+        ctx.stroke();
+      }
+      ctx.fillStyle = '#ffffff';
+      ctx.beginPath();
+      ctx.arc(0, 0, Math.max(2, 5 * remaining * impact.strength), 0, TAU);
+      ctx.fill();
+      ctx.restore();
+    }
+    ctx.globalAlpha = 1;
+
     // damage numbers
     ctx.textAlign = 'center';
     for (const d of sim.dmgNums) {

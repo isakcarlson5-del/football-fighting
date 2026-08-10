@@ -72,6 +72,19 @@ describe('sim core loop', () => {
     expect(sim.pickups.some((pk) => pk.active && pk.kind === 'xp')).toBe(true);
   });
 
+  it('spawns and expires pooled directional contact impacts', () => {
+    const sim = makeSim();
+    sim.enemies.forEach((e) => (e.active = false));
+    sim.debugSpawn('steward', sim.player.x + 100, sim.player.y);
+    const enemyIndex = sim.enemies.findIndex((e) => e.active);
+    sim.damageEnemy(enemyIndex, 5, 360, 0, { crit: true });
+    const impact = sim.impacts.find((fx) => fx.active);
+    expect(impact).toMatchObject({ kind: 'contact', color: '#ffd23f' });
+    expect(impact!.strength).toBeGreaterThan(1);
+    step(sim, 20);
+    expect(sim.impacts.some((fx) => fx.active)).toBe(false);
+  });
+
   it('XP pickup raises level and queues level-up choices', () => {
     const sim = makeSim();
     sim.debugGiveXp(sim.player.xpNext + 1);

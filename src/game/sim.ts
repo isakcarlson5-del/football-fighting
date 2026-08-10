@@ -166,6 +166,21 @@ export interface DmgNum {
   crit: boolean;
 }
 
+/** Short pooled contact burst. These are intentionally separate from the
+ *  general particle pool so dense combat keeps one readable impact origin per
+ *  hit without allocating or flooding the pitch with debris. */
+export interface Impact {
+  active: boolean;
+  x: number;
+  y: number;
+  life: number;
+  maxLife: number;
+  angle: number;
+  strength: number;
+  color: string;
+  kind: 'contact' | 'landing';
+}
+
 export interface Telegraph {
   active: boolean;
   x: number;
@@ -224,7 +239,7 @@ export interface Corpse {
 }
 
 export type SimEvent =
-  | { type: 'hit'; x: number; y: number }
+  | { type: 'hit'; x: number; y: number; heavy: boolean; crit: boolean }
   | { type: 'kill'; x: number; y: number; elite: boolean }
   | { type: 'kick' }
   | { type: 'xp' }
@@ -307,6 +322,7 @@ export class Sim {
   pickups: Pickup[] = [];
   guards: Guard[] = [];
   particles: Particle[] = [];
+  impacts: Impact[] = [];
   dmgNums: DmgNum[] = [];
   telegraphs: Telegraph[] = [];
   rings: Ring[] = [];
@@ -430,6 +446,7 @@ export class Sim {
     for (let i = 0; i < 200; i++) this.bottles.push({ active: false, x: 0, y: 0, vx: 0, vy: 0, dmg: 0, life: 0 });
     for (let i = 0; i < 500; i++) this.pickups.push({ active: false, kind: 'xp', tier: 1, x: 0, y: 0, vx: 0, vy: 0, value: 1, t: 0 });
     for (let i = 0; i < 600; i++) this.particles.push({ active: false, x: 0, y: 0, vx: 0, vy: 0, life: 0, maxLife: 1, size: 2, color: '#fff', grav: 0 });
+    for (let i = 0; i < 96; i++) this.impacts.push({ active: false, x: 0, y: 0, life: 0, maxLife: 0.2, angle: 0, strength: 1, color: '#fff', kind: 'contact' });
     for (let i = 0; i < 120; i++) this.dmgNums.push({ active: false, x: 0, y: 0, value: '', life: 0, crit: false });
     for (let i = 0; i < 16; i++) this.telegraphs.push({ active: false, x: 0, y: 0, r: 0, t: 0, max: 1, kind: 'flare', dmg: 0, dir: 0 });
     for (let i = 0; i < 16; i++) this.rings.push({ active: false, x: 0, y: 0, r: 0, maxR: 100, life: 0, color: '#fff' });
@@ -671,8 +688,10 @@ export class Sim {
     // underneath while it flies, aerial attacks still connect (no immunity)
     if (!e.boss && Math.hypot(kx, ky) > 330) e.airT = Math.max(e.airT, 0.38);
     if (opts?.stun) e.stun = Math.max(e.stun, opts.stun);
+    const heavy = Math.hypot(kx, ky) > 250 || final >= 28;
+    this.spawnImpact(e.x, e.y, kx, ky, crit, 'contact', heavy);
     this.spawnDmgNum(e.x, e.y - e.radius - 6, final, crit);
-    this.events.push({ type: 'hit', x: e.x, y: e.y });
+    this.events.push({ type: 'hit', x: e.x, y: e.y, heavy, crit });
     if (e.hp <= 0) this.killEnemy(i);
   }
 
@@ -804,6 +823,30 @@ export class Sim {
     d.value = String(value);
     d.life = 0.7;
     d.crit = crit;
+  }
+
+  /** Creates one directional contact flash. The fixed pool keeps this effect
+   *  mobile-safe even when orbit, guards and splash damage land together. */
+  private spawnImpact(
+    x: number,
+    y: number,
+    kx: number,
+    ky: number,
+    crit: boolean,
+    kind: Impact['kind'],
+    heavy = false,
+  ): void {
+    const impact = this.alloc(this.impacts);
+    if (!impact) return;
+    const force = Math.hypot(kx, ky);
+    impact.active = true;
+    impact.x = x;
+    impact.y = y;
+    impact.angle = force > 1 ? Math.atan2(ky, kx) : this.rng.range(0, TAU);
+    impact.strength = kind === 'landing' ? 1.55 : crit ? 1.4 : heavy ? 1.18 : 0.9;
+    impact.color = kind === 'landing' ? '#ffd166' : crit ? '#ffd23f' : heavy ? '#f5f7fa' : '#d9f3ff';
+    impact.kind = kind;
+    impact.life = impact.maxLife = kind === 'landing' ? 0.28 : crit || heavy ? 0.22 : 0.16;
   }
 
   private ring(x: number, y: number, maxR: number, color: string): void {
@@ -1056,6 +1099,7 @@ export class Sim {
       const d = Math.hypot(e.x - b.x, e.y - b.y) || 1;
       this.damageEnemy(idx, b.dmg, ((e.x - b.x) / d) * 200, ((e.y - b.y) / d) * 200);
     }
+    this.spawnImpact(b.x, b.y, 0, 0, false, 'landing', true);
     this.burst(b.x, b.y, 10, '#ffd166');
     this.ring(b.x, b.y, r, '#ffd166');
     this.events.push({ type: 'lobLand', x: b.x, y: b.y });
@@ -1924,6 +1968,11 @@ export class Sim {
       pt.vy += pt.grav * dt;
       pt.x += pt.vx * dt;
       pt.y += pt.vy * dt;
+    }
+    for (const impact of this.impacts) {
+      if (!impact.active) continue;
+      impact.life -= dt;
+      if (impact.life <= 0) impact.active = false;
     }
     for (const d of this.dmgNums) {
       if (!d.active) continue;

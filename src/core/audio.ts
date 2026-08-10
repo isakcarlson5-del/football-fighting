@@ -106,8 +106,16 @@ export class AudioEngine {
     this.tone({ freq: 220, freqEnd: 60, dur: 0.12, type: 'triangle', gain: 0.5 });
     this.noise({ dur: 0.06, gain: 0.15, freq: 900 });
   }
-  hit(): void {
-    this.tone({ freq: 140, freqEnd: 50, dur: 0.09, type: 'square', gain: 0.28 });
+  hit(heavy = false, crit = false): void {
+    this.tone({
+      freq: crit ? 210 : heavy ? 165 : 140,
+      freqEnd: heavy || crit ? 42 : 50,
+      dur: heavy || crit ? 0.13 : 0.09,
+      type: heavy ? 'triangle' : 'square',
+      gain: heavy || crit ? 0.38 : 0.28,
+    });
+    if (heavy || crit) this.noise({ dur: 0.055, gain: crit ? 0.18 : 0.12, freq: crit ? 2100 : 1200 });
+    if (crit) this.tone({ freq: 920, freqEnd: 1450, dur: 0.08, type: 'sine', gain: 0.1 });
   }
   hurt(): void {
     this.tone({ freq: 320, freqEnd: 90, dur: 0.25, type: 'sawtooth', gain: 0.3 });

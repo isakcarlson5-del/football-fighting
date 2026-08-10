@@ -166,7 +166,9 @@ function drainEvents(): void {
         if (throttled('kick', 90)) audio.kick();
         break;
       case 'hit':
-        if (throttled('hit', 80)) audio.hit();
+        if (throttled(ev.crit ? 'critHit' : ev.heavy ? 'heavyHit' : 'hit', ev.crit ? 45 : ev.heavy ? 65 : 85)) {
+          audio.hit(ev.heavy, ev.crit);
+        }
         break;
       case 'kill':
         renderer.addShake(ev.elite ? 5 : 1.6);
