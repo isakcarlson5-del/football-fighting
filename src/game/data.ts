@@ -24,7 +24,13 @@ export interface PlayerDef {
   kit: { shirt: string; shorts: string; socks: string; trim: string };
 }
 
-export type AbilityId = 'strike' | 'orbit' | 'whistle' | 'dash' | 'guard' | 'pressure' | 'blast';
+export type AbilityId =
+  | 'strike' | 'curveball' | 'bootseekers'
+  | 'orbit' | 'whistle' | 'dash' | 'guard' | 'pressure' | 'blast';
+
+/** The pace pass deliberately gives the player a small reaction advantage. */
+export const PLAYER_PACE_MULT = 1.3;
+export const ENEMY_PACE_MULT = 1.25;
 
 /** Attack-lane semantics: every offensive ability plays differently by lane. */
 export type Lane = 'ground' | 'aerial' | 'hybrid';
@@ -67,6 +73,42 @@ export const ABILITIES: Record<AbilityId, AbilityDef> = {
       { desc: '20 damage, faster kicking.' },
       { desc: '+1 ball (3 total), wider landing splash.' },
       { desc: '4 balls, 28 damage, balls ricochet on to a second target.' },
+    ],
+  },
+  curveball: {
+    id: 'curveball',
+    name: 'Curveball Swarm',
+    icon: 'CS',
+    color: '#47d7ff',
+    tagline: 'A fan of bending footballs hunts priority threats beyond the press.',
+    lane: 'aerial',
+    rangeBand: 'far',
+    delivery: 'barrage',
+    force: 'none',
+    levels: [
+      { desc: 'AERIAL · Every 3.4s: 3 tracking curveballs hunt distant threats for 11 damage.' },
+      { desc: '4 curveballs, 13 damage, tighter turns and smarter target spread.' },
+      { desc: '16 damage; each ball chains once into another living threat.' },
+      { desc: '5 faster curveballs, 18 damage, every 2.7s.' },
+      { desc: 'Golden curve: 7 balls, 22 damage, one chain each, every 2.35s.' },
+    ],
+  },
+  bootseekers: {
+    id: 'bootseekers',
+    name: 'Golden Boot Seekers',
+    icon: 'GB',
+    color: '#ffbf36',
+    tagline: 'Golden cleats arc over the crowd and crush the enemy back line.',
+    lane: 'aerial',
+    rangeBand: 'far',
+    delivery: 'barrage',
+    force: 'push',
+    levels: [
+      { desc: 'AERIAL · Every 4.5s: a homing Golden Boot lands for 28 damage and a small airburst.' },
+      { desc: 'Launch 2 boots. Splash grows and secondary targets take 55% damage.' },
+      { desc: '38 damage, wider blast, stronger knockback and quicker tracking.' },
+      { desc: 'Launch 3 boots every 3.6s; 42 damage and heavy back-line disruption.' },
+      { desc: 'Finals volley: 4 boots, 55 damage, huge airbursts every 3.1s.' },
     ],
   },
   orbit: {
@@ -179,7 +221,9 @@ export const ABILITIES: Record<AbilityId, AbilityDef> = {
   },
 };
 
-export const ABILITY_IDS: AbilityId[] = ['strike', 'orbit', 'whistle', 'dash', 'guard', 'pressure', 'blast'];
+export const ABILITY_IDS: AbilityId[] = [
+  'strike', 'curveball', 'bootseekers', 'orbit', 'whistle', 'dash', 'guard', 'pressure', 'blast',
+];
 
 export const PLAYERS: PlayerDef[] = [
   {

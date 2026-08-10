@@ -69,6 +69,8 @@ export class Renderer {
   private scale = 1;
   private shake = 0;
   private ball: HTMLCanvasElement;
+  private curveballSpr: SpriteBitmap;
+  private goldenBootSpr: SpriteBitmap;
   private xpSpr: SpriteBitmap[];
   private coinSpr: SpriteBitmap;
   private healSpr: SpriteBitmap;
@@ -87,6 +89,8 @@ export class Renderer {
     this.ctx = canvas.getContext('2d', { alpha: false })!;
     this.pitch = this.buildPitch();
     this.ball = ballSprite(22);
+    this.curveballSpr = this.ball;
+    this.goldenBootSpr = this.ball;
     this.xpSpr = [xpSprite(1), xpSprite(2), xpSprite(3)];
     this.coinSpr = coinSprite();
     this.healSpr = drinkSprite();
@@ -105,6 +109,12 @@ export class Renderer {
     });
     this.loadPickupSprite('art/pickups/trophy.png', (img) => {
       this.trophySpr = img;
+    });
+    this.loadPickupSprite('art/projectiles/curveball.png', (img) => {
+      this.curveballSpr = img;
+    });
+    this.loadPickupSprite('art/projectiles/golden-boot.png', (img) => {
+      this.goldenBootSpr = img;
     });
     void loadStripAtlas('ally-bodyguard', 'art/allies/bodyguard.png');
     for (let i = 0; i < 400; i++) this.crowdSeed.push(Math.random());
@@ -797,6 +807,48 @@ export class Renderer {
       ctx.rotate(b.spin * time * 4);
       const bs = 1 + hFrac * 0.12; // slight forced perspective near the apex
       ctx.drawImage(this.ball, -11 * bs, -11 * bs, 22 * bs, 22 * bs);
+      ctx.restore();
+    }
+    // homing AERIAL seekers: elevated sprites, ground shadows and clean velocity trails
+    for (const s of sim.seekers) {
+      if (!s.active) continue;
+      const x = toSX(s.x);
+      const y = toSY(s.y);
+      const lx = toSX(s.lastX);
+      const ly = toSY(s.lastY);
+      const t1x = toSX(s.trail1X);
+      const t1y = toSY(s.trail1Y);
+      const t2x = toSX(s.trail2X);
+      const t2y = toSY(s.trail2Y);
+      const lift = 16 + s.z;
+      const color = s.kind === 'curveball' ? '#47d7ff' : '#ffbf36';
+      const size = s.kind === 'curveball' ? 42 : 50;
+      const screenAngle = Math.atan2(s.vy * TILT, s.vx);
+
+      ctx.fillStyle = 'rgba(4,10,6,0.24)';
+      ctx.beginPath();
+      ctx.ellipse(x, y + 2, s.kind === 'curveball' ? 8 : 11, s.kind === 'curveball' ? 3.5 : 4.5, 0, 0, TAU);
+      ctx.fill();
+
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.strokeStyle = color;
+      ctx.globalAlpha = s.kind === 'curveball' ? 0.72 : 0.8;
+      ctx.lineWidth = s.kind === 'curveball' ? 4 : 6;
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.moveTo(t2x, t2y - lift);
+      ctx.bezierCurveTo(t1x, t1y - lift, lx, ly - lift, x, y - lift);
+      ctx.stroke();
+      ctx.restore();
+
+      ctx.save();
+      ctx.translate(x, y - lift);
+      // Generated assets point down-left in their source plate; align the toe/
+      // comet nose with the current velocity instead of flying backwards.
+      ctx.rotate(screenAngle - (Math.PI * 3) / 4);
+      const sprite = s.kind === 'curveball' ? this.curveballSpr : this.goldenBootSpr;
+      ctx.drawImage(sprite, -size / 2, -size / 2, size, size);
       ctx.restore();
     }
     // bottles

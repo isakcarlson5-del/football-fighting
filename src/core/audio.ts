@@ -154,6 +154,29 @@ export class AudioEngine {
     this.tone({ freq: 105, freqEnd: 38, dur: 0.3, type: 'sine', gain: 0.42, when: t });
     this.tone({ freq: 720, freqEnd: 1380, dur: 0.1, type: 'triangle', gain: 0.16, when: t + 0.045 });
   }
+  /** Fast corkscrew launch with a crisp tracking shimmer. */
+  curveball(): void {
+    const t = this.now();
+    this.noise({ dur: 0.24, gain: 0.2, freq: 620, sweepTo: 2800, q: 1.3, when: t });
+    this.tone({ freq: 410, freqEnd: 980, dur: 0.18, type: 'triangle', gain: 0.18, when: t });
+    this.tone({ freq: 1240, freqEnd: 1740, dur: 0.1, type: 'sine', gain: 0.09, when: t + 0.06 });
+  }
+  /** Heavy golden-cleat launch; lower than the curveball to keep both readable. */
+  goldenBoot(): void {
+    const t = this.now();
+    this.tone({ freq: 150, freqEnd: 62, dur: 0.18, type: 'triangle', gain: 0.42, when: t });
+    this.noise({ dur: 0.3, gain: 0.24, freq: 420, sweepTo: 1700, q: 0.9, when: t });
+    this.tone({ freq: 690, freqEnd: 1080, dur: 0.14, type: 'sine', gain: 0.1, when: t + 0.04 });
+  }
+  seekerImpact(kind: 'curveball' | 'goldenboot'): void {
+    if (kind === 'curveball') {
+      this.tone({ freq: 680, freqEnd: 230, dur: 0.09, type: 'triangle', gain: 0.2 });
+      this.noise({ dur: 0.055, gain: 0.11, freq: 1900 });
+    } else {
+      this.tone({ freq: 125, freqEnd: 38, dur: 0.16, type: 'triangle', gain: 0.4 });
+      this.noise({ dur: 0.15, gain: 0.22, freq: 520, sweepTo: 120, q: 0.7 });
+    }
+  }
   /** Vuvuzela blast: nasal low blat. */
   horn(): void {
     const t = this.now();

@@ -7,6 +7,8 @@ import {
   BOSSES,
   ENEMIES,
   META_TRACKS,
+  ENEMY_PACE_MULT,
+  PLAYER_PACE_MULT,
   PLAYERS,
   SKINS,
   hpScale,
@@ -50,8 +52,10 @@ describe('data integrity', () => {
     expect(sigs.size).toBe(4);
     for (const p of PLAYERS) expect(ABILITY_IDS).toContain(p.startAbility);
   });
-  it('has every required ability plus First Touch Blast, each with 5 levels', () => {
-    expect(ABILITY_IDS.sort()).toEqual(['blast', 'dash', 'guard', 'orbit', 'pressure', 'strike', 'whistle']);
+  it('has every required ability plus the expanded aerial kit, each with 5 levels', () => {
+    expect(ABILITY_IDS.sort()).toEqual([
+      'blast', 'bootseekers', 'curveball', 'dash', 'guard', 'orbit', 'pressure', 'strike', 'whistle',
+    ]);
     for (const id of ABILITY_IDS) expect(ABILITIES[id].levels).toHaveLength(5);
   });
   it('every offensive ability is lane-typed (ground/aerial + band + delivery + force)', () => {
@@ -83,6 +87,11 @@ describe('data integrity', () => {
 });
 
 describe('pacing curves', () => {
+  it('accelerates the match while preserving a small player reaction advantage', () => {
+    expect(PLAYER_PACE_MULT).toBe(1.3);
+    expect(ENEMY_PACE_MULT).toBe(1.25);
+    expect(PLAYER_PACE_MULT).toBeGreaterThan(ENEMY_PACE_MULT);
+  });
   it('xp requirement grows monotonically', () => {
     for (let l = 1; l < 40; l++) expect(xpForLevel(l + 1)).toBeGreaterThan(xpForLevel(l));
   });

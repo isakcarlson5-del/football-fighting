@@ -72,6 +72,53 @@ describe('attack lanes', () => {
     expect(new Set(targets).size).toBe(2); // each ball reserved a different enemy
   });
 
+  it('Curveball Swarm tracks beyond the old range, spreads reservations and reacquires a dead target', () => {
+    const sim = makeSim(3);
+    clearField(sim);
+    sim.player.abilities = { curveball: 1 };
+    const a = far(sim, 780, -0.18);
+    const b = far(sim, 820, 0.18);
+    sim.debugSpawn('lobber', a.x, a.y);
+    sim.debugSpawn('lobber', b.x, b.y);
+    const pair = sim.enemies.filter((e) => e.active);
+    for (const e of pair) {
+      e.speed = 0;
+      e.hp = 8; // one reserved curveball projects the kill, forcing target spread
+      e.maxHp = 8;
+    }
+    sim.player.curveballCd = 0;
+    step(sim, 1);
+    const active = sim.seekers.filter((s) => s.active);
+    expect(active).toHaveLength(3);
+    expect(new Set(active.map((s) => s.targetIdx)).size).toBe(2);
+
+    const seeker = active[0];
+    const oldTarget = seeker.targetIdx;
+    sim.enemies[oldTarget].active = false;
+    step(sim, 1);
+    expect(seeker.active).toBe(true);
+    expect(seeker.targetIdx).not.toBe(oldTarget);
+  });
+
+  it('Golden Boot Seekers home into the back line and splash nearby threats', () => {
+    const sim = makeSim(3);
+    clearField(sim);
+    sim.player.abilities = { bootseekers: 1 };
+    const pos = far(sim, 620);
+    sim.debugSpawn('lobber', pos.x, pos.y);
+    sim.debugSpawn('invader', pos.x + 42, pos.y + 24);
+    const pair = sim.enemies.filter((e) => e.active);
+    for (const e of pair) {
+      e.speed = 0;
+      e.hp = 500;
+      e.maxHp = 500;
+    }
+    sim.player.bootseekersCd = 0;
+    step(sim, 150);
+    expect(pair.every((e) => e.hp < 500)).toBe(true);
+    expect(sim.events.some((event) => event.type === 'seekerHit' && event.kind === 'goldenboot')).toBe(true);
+  });
+
   it('GROUND ring does not touch airborne enemies, but damages + pushes grounded ones', () => {
     const sim = makeSim(3); // Yamal: orbit-only start, so Pitch Pressure is the lone attacker here
     clearField(sim);

@@ -84,6 +84,7 @@ test('all ability draft cards load their generated lane artwork', async ({ page 
     ['strike', 'orbit', 'whistle'],
     ['dash', 'guard', 'pressure'],
     ['blast', 'strike', 'pressure'],
+    ['curveball', 'bootseekers', 'strike'],
   ] as const) {
     await page.evaluate((abilityIds) => window.__FF.showAbilityCards([...abilityIds]), ids);
     const art = page.locator('.upgrade-card .ability-art');
@@ -202,7 +203,10 @@ test('performance: stable fps with a heavy late-game horde', async ({ page }) =>
     const ff = window.__FF;
     ff.setTime(520);
     const sim = ff.getSim()!;
-    sim.player.abilities = { strike: 5, orbit: 5, whistle: 5, dash: 5, guard: 5 };
+    sim.player.abilities = {
+      strike: 5, curveball: 5, bootseekers: 5,
+      orbit: 5, whistle: 5, dash: 5, guard: 5,
+    };
     sim.player.maxHp = 5000;
     sim.player.hp = 5000;
   });

@@ -1,6 +1,6 @@
 # Ability card art sources
 
-The seven source plates in this directory were generated with the built-in
+The nine source ability compositions in this directory were generated with the built-in
 ImageGen workflow. Runtime WebP derivatives live in `public/art/abilities/`.
 
 Shared direction: premium stylized 2.5D football game art, oblique top-down
@@ -18,6 +18,11 @@ watermarks, UI frames or split panels.
   outward.
 - `blast`: a controlled first touch creates a large green-gold ground boom and
   a distinct smaller cyan airburst above a leaping enemy.
+- `curveball`: three visibly bending footballs track separate distant threats.
+- `bootseekers`: golden cleats arc over the press and detonate on the back line.
+
+`aerial-seekers-plate.png` is the retained two-panel source for the two new
+cards. Exact center-safe crops ship as the separate runtime WebP files.
 
 The first Precision Strike draft was rejected because its pose read as a throw;
 `strike-src.png` is the corrected kick-contact version.

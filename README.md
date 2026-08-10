@@ -7,6 +7,10 @@ automatically; you steer the movement. Earn XP from fallen opponents, draft
 upgrades each level, beat the half-time and final bosses, and spend your
 winnings on permanent upgrades and cosmetic kits between runs.
 
+The current pace pass runs players at 130% and enemies at 125% of the original
+movement baseline. Enemy attack cadence is unchanged, preserving reaction time
+while making positioning, pursuit and wave transitions more immediate.
+
 Built with TypeScript + Vite + Canvas 2D. The four player characters use
 generated 2.5D idle/run/kick sprite strips (`public/art/players/`, with a
 procedural in-code fallback). The kick wind-up releases its aerial ball on the
@@ -14,7 +18,9 @@ drawn contact frame. All 13 regular enemies and all 3 bosses use generated
 semantic idle/move/attack/hurt strips. Three XP tiers, coins, healing drinks
 and boss trophies use dedicated generated pickup art. Directional contact
 sparks and distinct aerial landing bursts use pooled, mobile-safe rendering
-with layered light/heavy/critical hit audio. Menu and arena art are generated
+with layered light/heavy/critical hit audio. Curveball Swarm and Golden Boot
+Seekers add damage-reserving, live-retargeting long-range projectiles with
+dedicated generated card and projectile art. Menu and arena art are generated
 and shipped as local files. Security Detail uses its
 own generated idle/move/punch/intercept bodyguard strip. Every ability draft
 card uses dedicated generated art whose composition communicates its AERIAL or
@@ -59,9 +65,10 @@ Playwright browsers install into the project-local `.pw-browsers/` folder:
   summoner and wall behaviours, plus 3 bosses and glowing elite variants.
   The pitch opens quiet, then named formation waves mix every unlocked role;
   pressure and wave size intensify continuously.
-- **Abilities (5 levels each):** Precision Strike, Orbiting Press, Captain's
-  Whistle, Nutmeg Dash, Security Detail, Pitch Pressure and the hybrid First
-  Touch Blast. Level-up offers 3 cards; abilities combine with stat trainings
+- **Abilities (5 levels each):** Precision Strike, Curveball Swarm, Golden Boot
+  Seekers, Orbiting Press, Captain's Whistle, Nutmeg Dash, Security Detail,
+  Pitch Pressure and the hybrid First Touch Blast. Level-up offers 3 cards;
+  abilities combine with stat trainings
   (power, speed, max HP, regen, magnet, armor).
 - **Players:** distinct speed/health/power plus a signature trait and starting ability.
 - **Meta (The Club):** permanent Power / Pace / Ball-Control (XP pickup) / Security-Budget
@@ -82,11 +89,12 @@ scripts/     playtest + art generation harnesses
 
 ## Verification evidence
 
-- `npm test` — 45 unit tests green (rng, data, pacing, meta/save, combat lanes,
+- `npm test` — 48 unit tests green (rng, data, pacing, meta/save, combat lanes,
   stateful poses and simulation behaviours).
 - `npm run test:e2e` — 13 browser tests green: menu, select, combat kills, level-up
   pause/pick, all generated ability-card images, mobile card scrolling, death,
-  victory, boss nameplate, shop/skin persistence, pause and horde performance (>45fps).
+  victory, boss nameplate, shop/skin persistence, pause and horde performance
+  with both new max-level seeker pools active (>45fps).
 - Live playtest screenshots: `evidence/shots/` (menu/select/gameplay/level-up,
   all ability galleries, enemy lineups, semantic poses, bosses, mobile and victory).
 - Sound: autoplay-safe synthesized WebAudio SFX, crowd bed and adaptive music;

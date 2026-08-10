@@ -1088,7 +1088,9 @@ export function bottleSprite(): HTMLCanvasElement {  const c = makeCanvas(12, 20
 }
 
 /** Circular ability badge icon used in the DOM UI. */
-export function abilityIcon(glyph: 'ball' | 'orbit' | 'whistle' | 'dash' | 'shield' | 'pressure' | 'blast', color: string, size = 64): HTMLCanvasElement {
+export type AbilityGlyph = 'ball' | 'curveball' | 'boot' | 'orbit' | 'whistle' | 'dash' | 'shield' | 'pressure' | 'blast';
+
+export function abilityIcon(glyph: AbilityGlyph, color: string, size = 64): HTMLCanvasElement {
   const c = makeCanvas(size, size);
   const ctx = c.getContext('2d')!;
   const r = size / 2;
@@ -1126,6 +1128,30 @@ export function abilityIcon(glyph: 'ball' | 'orbit' | 'whistle' | 'dash' | 'shie
       ctx.moveTo(-24 * s, 2 * s);
       ctx.lineTo(-13 * s, 2 * s);
       ctx.stroke();
+      break;
+    }
+    case 'curveball': {
+      ctx.beginPath();
+      ctx.arc(8 * s, -5 * s, 9 * s, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.lineWidth = 4 * s;
+      ctx.beginPath();
+      ctx.moveTo(-22 * s, 14 * s);
+      ctx.bezierCurveTo(-8 * s, -21 * s, 7 * s, 18 * s, 19 * s, -16 * s);
+      ctx.stroke();
+      break;
+    }
+    case 'boot': {
+      ctx.beginPath();
+      ctx.moveTo(-19 * s, 5 * s);
+      ctx.quadraticCurveTo(-8 * s, 0, -5 * s, -17 * s);
+      ctx.lineTo(5 * s, -12 * s);
+      ctx.quadraticCurveTo(11 * s, -2 * s, 21 * s, 6 * s);
+      ctx.quadraticCurveTo(14 * s, 15 * s, -9 * s, 14 * s);
+      ctx.closePath();
+      ctx.fill();
+      ctx.fillRect(-11 * s, 14 * s, 5 * s, 5 * s);
+      ctx.fillRect(9 * s, 13 * s, 5 * s, 5 * s);
       break;
     }
     case 'orbit': {
@@ -1218,8 +1244,10 @@ export function abilityIcon(glyph: 'ball' | 'orbit' | 'whistle' | 'dash' | 'shie
   return c;
 }
 
-export const ABILITY_GLYPHS: Record<string, 'ball' | 'orbit' | 'whistle' | 'dash' | 'shield' | 'pressure' | 'blast'> = {
+export const ABILITY_GLYPHS: Record<string, AbilityGlyph> = {
   strike: 'ball',
+  curveball: 'curveball',
+  bootseekers: 'boot',
   orbit: 'orbit',
   whistle: 'whistle',
   dash: 'dash',

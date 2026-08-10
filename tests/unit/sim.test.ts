@@ -109,7 +109,10 @@ describe('sim core loop', () => {
 
   it('rolled upgrades are always legal (owned<max, stats<cap)', () => {
     const sim = makeSim();
-    sim.player.abilities = { strike: 5, orbit: 5, whistle: 5, dash: 5, guard: 5, pressure: 5, blast: 5 };
+    sim.player.abilities = {
+      strike: 5, curveball: 5, bootseekers: 5, orbit: 5, whistle: 5,
+      dash: 5, guard: 5, pressure: 5, blast: 5,
+    };
     sim.player.stats = { power: 10, speed: 6, maxhp: 8, regen: 6, magnet: 6, armor: 5 };
     const opts = sim.rollUpgrades();
     expect(opts).toHaveLength(3);

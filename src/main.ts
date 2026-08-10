@@ -212,6 +212,17 @@ function drainEvents(): void {
         if (throttled('lobLand', 90)) audio.punch();
         renderer.addShake(1.2);
         break;
+      case 'seekerLaunch':
+        if (throttled(`seekerLaunch-${ev.kind}`, 120)) {
+          if (ev.kind === 'curveball') audio.curveball();
+          else audio.goldenBoot();
+        }
+        renderer.addShake(ev.kind === 'curveball' ? 0.8 : 1.8);
+        break;
+      case 'seekerHit':
+        if (throttled(`seekerHit-${ev.kind}`, ev.kind === 'curveball' ? 70 : 110)) audio.seekerImpact(ev.kind);
+        renderer.addShake(ev.kind === 'curveball' ? 0.9 : 2.6);
+        break;
       case 'vuvuzela':
         if (throttled('vuvuzela', 250)) audio.horn();
         renderer.addShake(2);

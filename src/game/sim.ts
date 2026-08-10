@@ -11,7 +11,9 @@ import {
   BOSS1_AT,
   BOSS2_AT,
   BOSSES,
+  ENEMY_PACE_MULT,
   ENEMIES,
+  PLAYER_PACE_MULT,
   RUN_LENGTH,
   STATS,
   hpScale,
@@ -106,6 +108,35 @@ export interface Ball {
   targetIdx: number; // reserved enemy index (-1 = ground target)
   flightT: number;
   maxFlightT: number;
+}
+
+/** Pooled AERIAL homing projectile. A fixed pool keeps large volleys mobile-safe. */
+export interface Seeker {
+  active: boolean;
+  kind: 'curveball' | 'goldenboot';
+  x: number;
+  y: number;
+  lastX: number;
+  lastY: number;
+  trail1X: number;
+  trail1Y: number;
+  trail2X: number;
+  trail2Y: number;
+  trailClock: number;
+  z: number;
+  vx: number;
+  vy: number;
+  speed: number;
+  turnRate: number;
+  targetIdx: number;
+  dmg: number;
+  splash: number;
+  knock: number;
+  life: number;
+  maxLife: number;
+  chain: number;
+  angle: number;
+  phase: number;
 }
 
 export interface Bottle {
@@ -251,6 +282,8 @@ export type SimEvent =
   | { type: 'blast'; x: number; y: number }
   | { type: 'wave'; number: number; name: string }
   | { type: 'lobLand'; x: number; y: number }
+  | { type: 'seekerLaunch'; kind: 'curveball' | 'goldenboot' }
+  | { type: 'seekerHit'; kind: 'curveball' | 'goldenboot'; x: number; y: number }
   | { type: 'dash' }
   | { type: 'hurt' }
   | { type: 'punch' }
@@ -287,6 +320,8 @@ export interface PlayerState {
   stats: Record<StatId, number>;
   // ability timers
   strikeCd: number;
+  curveballCd: number;
+  bootseekersCd: number;
   whistleCd: number;
   whistlePulse: number;
   pressureCd: number;
@@ -321,6 +356,7 @@ export class Sim {
   player!: PlayerState;
   enemies: Enemy[] = [];
   balls: Ball[] = [];
+  seekers: Seeker[] = [];
   bottles: Bottle[] = [];
   pickups: Pickup[] = [];
   guards: Guard[] = [];
@@ -386,6 +422,8 @@ export class Sim {
       abilities: { [def.startAbility]: 1 },
       stats: { power: 0, speed: 0, maxhp: 0, regen: 0, magnet: 0, armor: 0 },
       strikeCd: 0.4,
+      curveballCd: 1.1,
+      bootseekersCd: 1.8,
       whistleCd: 2,
       whistlePulse: -1,
       pressureCd: 1.2,
@@ -407,7 +445,7 @@ export class Sim {
   /* ---------------- derived stats ---------------- */
 
   get moveSpeed(): number {
-    return this.def.speed * this.speedMult * (1 + this.player.stats.speed * 0.05);
+    return this.def.speed * PLAYER_PACE_MULT * this.speedMult * (1 + this.player.stats.speed * 0.05);
   }
   get damageMult(): number {
     return this.powerMult * (1 + this.player.stats.power * 0.08);
@@ -443,6 +481,12 @@ export class Sim {
       });
     }
     for (let i = 0; i < 400; i++) this.balls.push({ active: false, x: 0, y: 0, vx: 0, vy: 0, z: 0, vz: 0, dmg: 0, splash: 60, ricochet: 0, spin: 0, tx: 0, ty: 0, targetIdx: -1, flightT: 0, maxFlightT: 1 });
+    for (let i = 0; i < 192; i++) this.seekers.push({
+      active: false, kind: 'curveball', x: 0, y: 0, lastX: 0, lastY: 0,
+      trail1X: 0, trail1Y: 0, trail2X: 0, trail2Y: 0, trailClock: 0, z: 70,
+      vx: 0, vy: 0, speed: 420, turnRate: 4, targetIdx: -1, dmg: 0, splash: 0,
+      knock: 0, life: 0, maxLife: 3, chain: 0, angle: 0, phase: 0,
+    });
     for (let i = 0; i < 200; i++) this.bottles.push({ active: false, x: 0, y: 0, vx: 0, vy: 0, dmg: 0, life: 0 });
     for (let i = 0; i < 500; i++) this.pickups.push({ active: false, kind: 'xp', tier: 1, x: 0, y: 0, vx: 0, vy: 0, value: 1, t: 0 });
     for (let i = 0; i < 600; i++) this.particles.push({ active: false, x: 0, y: 0, vx: 0, vy: 0, life: 0, maxLife: 1, size: 2, color: '#fff', grav: 0 });
@@ -541,7 +585,7 @@ export class Sim {
     e.y = y;
     e.maxHp = def.hp * mult * (elite ? 6 : 1);
     e.hp = e.maxHp;
-    e.speed = def.speed * this.rng.range(0.9, 1.1) * (1 + Math.min(0.25, this.time / 2400));
+    e.speed = def.speed * ENEMY_PACE_MULT * this.rng.range(0.9, 1.1) * (1 + Math.min(0.25, this.time / 2400));
     e.damage = def.damage * (elite ? 1.5 : 1);
     e.radius = def.radius * (elite ? 1.25 : 1);
     e.xp = elite ? def.xp * 4 : def.xp;
@@ -612,7 +656,7 @@ export class Sim {
     e.y = pos.y;
     e.maxHp = def.hp * (which === 'captain' ? Math.max(1, mult * 0.55) : 1);
     e.hp = e.maxHp;
-    e.speed = def.speed;
+    e.speed = def.speed * ENEMY_PACE_MULT;
     e.damage = def.damage;
     e.radius = def.radius;
     e.xp = def.xp;
@@ -1020,16 +1064,17 @@ export class Sim {
 
   /* AERIAL lane: far-band targeting with damage reservation */
 
-  /** Damage already inbound on enemy `idx` from lobs still in flight. */
+  /** Damage already inbound on enemy `idx` from every aerial projectile. */
   private reservedDmg(idx: number): number {
     let sum = 0;
     for (const b of this.balls) if (b.active && b.targetIdx === idx) sum += b.dmg;
+    for (const s of this.seekers) if (s.active && s.targetIdx === idx) sum += s.dmg;
     return sum;
   }
 
   /** Aerial lobs prefer threats outside this near band (they fly over closer mobs). */
   static AERIAL_NEAR_BAND = 260;
-  static AERIAL_MAX_RANGE = 700;
+  static AERIAL_MAX_RANGE = 900;
 
   /**
    * Picks the best far-band target for an aerial lob: ranged/support threats
@@ -1048,11 +1093,13 @@ export class Sim {
       if (!e.active) continue;
       const d2 = dist2(fromX, fromY, e.x, e.y);
       if (d2 < band2 || d2 > max2) continue; // far band only
-      if (this.reservedDmg(i) >= e.hp) continue; // projected dead: leave it
+      const reserved = this.reservedDmg(i);
+      if (reserved >= e.hp) continue; // projected dead: leave it
       let score = 0;
       if (e.def.behavior === 'ranged') score += 400; // support/ranged first
       if (e.boss) score += 260;
       else if (e.elite) score += 160;
+      score -= reserved * 7; // spread salvos before projected death
       score -= Math.sqrt(d2) * 0.5;
       if (score > bestScore) {
         bestScore = score;
@@ -1141,6 +1188,137 @@ export class Sim {
         this.lob(b, b.x, b.y, e.x, e.y, b.dmg, b.splash, b.ricochet - 1, ti);
       }
     }
+  }
+
+  /** Smoothly steered long-range projectiles that can reacquire living threats. */
+  private launchSeeker(
+    kind: Seeker['kind'], targetIdx: number, dmg: number, splash: number,
+    knock: number, speed: number, turnRate: number, chain: number, spread: number,
+  ): boolean {
+    const s = this.alloc(this.seekers);
+    const target = this.enemies[targetIdx];
+    if (!s || !target?.active) return false;
+    const p = this.player;
+    const aim = Math.atan2(target.y - p.y, target.x - p.x) + spread;
+    s.active = true;
+    s.kind = kind;
+    s.x = p.x + Math.cos(aim) * 22;
+    s.y = p.y + Math.sin(aim) * 22;
+    s.lastX = s.x;
+    s.lastY = s.y;
+    s.trail1X = s.x;
+    s.trail1Y = s.y;
+    s.trail2X = s.x;
+    s.trail2Y = s.y;
+    s.trailClock = 0.06;
+    s.z = kind === 'curveball' ? 72 : 88;
+    s.vx = Math.cos(aim) * speed;
+    s.vy = Math.sin(aim) * speed;
+    s.speed = speed;
+    s.turnRate = turnRate;
+    s.targetIdx = targetIdx;
+    s.dmg = dmg;
+    s.splash = splash;
+    s.knock = knock;
+    s.life = kind === 'curveball' ? 3.1 : 3.6;
+    s.maxLife = s.life;
+    s.chain = chain;
+    s.angle = aim;
+    s.phase = this.rng.range(0, TAU);
+    return true;
+  }
+
+  private fireCurveball(): void {
+    const lvl = this.abilityLevel('curveball');
+    if (lvl === 0) return;
+    const count = [0, 3, 4, 4, 5, 7][lvl];
+    const dmg = [0, 11, 13, 16, 18, 22][lvl] * this.damageMult;
+    const speed = [0, 430, 450, 470, 500, 535][lvl];
+    const turn = [0, 4.2, 4.8, 5.2, 5.8, 6.4][lvl];
+    const chain = lvl >= 3 ? 1 : 0;
+    let launched = 0;
+    for (let i = 0; i < count; i++) {
+      const ti = this.pickAerialTarget(this.player.x, this.player.y);
+      if (ti < 0) break;
+      const spread = count === 1 ? 0 : ((i / (count - 1)) - 0.5) * 0.7;
+      if (this.launchSeeker('curveball', ti, dmg, 0, 80, speed, turn, chain, spread)) launched++;
+    }
+    if (launched > 0) {
+      this.burst(this.player.x, this.player.y, 7, '#47d7ff');
+      this.events.push({ type: 'seekerLaunch', kind: 'curveball' });
+    }
+  }
+
+  private fireBootSeekers(): void {
+    const lvl = this.abilityLevel('bootseekers');
+    if (lvl === 0) return;
+    const count = [0, 1, 2, 2, 3, 4][lvl];
+    const dmg = [0, 28, 28, 38, 42, 55][lvl] * this.damageMult;
+    const splash = [0, 72, 82, 96, 108, 126][lvl];
+    const knock = [0, 260, 290, 330, 380, 450][lvl];
+    const speed = [0, 360, 375, 400, 425, 455][lvl];
+    const turn = [0, 2.8, 3.1, 3.5, 3.9, 4.4][lvl];
+    let launched = 0;
+    for (let i = 0; i < count; i++) {
+      const ti = this.pickAerialTarget(this.player.x, this.player.y);
+      if (ti < 0) break;
+      const spread = count === 1 ? 0 : ((i / (count - 1)) - 0.5) * 0.5;
+      if (this.launchSeeker('goldenboot', ti, dmg, splash, knock, speed, turn, 0, spread)) launched++;
+    }
+    if (launched > 0) {
+      this.burst(this.player.x, this.player.y, 9, '#ffbf36');
+      this.events.push({ type: 'seekerLaunch', kind: 'goldenboot' });
+    }
+  }
+
+  private seekerImpact(s: Seeker, targetIdx: number): void {
+    const target = this.enemies[targetIdx];
+    if (!target?.active) return;
+    const hitX = target.x;
+    const hitY = target.y;
+    if (s.kind === 'goldenboot') {
+      const n = this.query(hitX, hitY, s.splash + 48, this.scratch);
+      for (let i = 0; i < n; i++) {
+        const idx = this.scratch[i];
+        const e = this.enemies[idx];
+        if (!e.active || dist2(hitX, hitY, e.x, e.y) > (s.splash + e.radius) ** 2) continue;
+        const d = Math.hypot(e.x - hitX, e.y - hitY) || 1;
+        const dmg = idx === targetIdx ? s.dmg : s.dmg * 0.55;
+        this.damageEnemy(idx, dmg, ((e.x - hitX) / d) * s.knock, ((e.y - hitY) / d) * s.knock);
+      }
+      this.ring(hitX, hitY, s.splash, '#ffbf36');
+      this.spawnImpact(hitX, hitY, 0, 0, true, 'airburst', true);
+      this.burst(hitX, hitY, 12, '#ffbf36');
+    } else {
+      const dx = target.x - s.x;
+      const dy = target.y - s.y;
+      const d = Math.hypot(dx, dy) || 1;
+      this.damageEnemy(targetIdx, s.dmg, (dx / d) * s.knock, (dy / d) * s.knock);
+      this.spawnImpact(hitX, hitY, s.vx, s.vy, false, 'airburst', true);
+      this.burst(hitX, hitY, 6, '#47d7ff');
+    }
+    this.events.push({ type: 'seekerHit', kind: s.kind, x: hitX, y: hitY });
+
+    if (s.kind === 'curveball' && s.chain > 0) {
+      const previous = s.targetIdx;
+      s.targetIdx = -1; // do not count this seeker's old reservation while reacquiring
+      const next = this.pickAerialTarget(hitX, hitY);
+      if (next >= 0 && next !== previous) {
+        s.chain--;
+        s.x = hitX;
+        s.y = hitY;
+        s.lastX = hitX;
+        s.lastY = hitY;
+        s.trail1X = hitX;
+        s.trail1Y = hitY;
+        s.trail2X = hitX;
+        s.trail2Y = hitY;
+        s.targetIdx = next;
+        s.life = Math.max(s.life, 1.4);
+        return;
+      }
+    }
+    s.active = false;
   }
 
   /* GROUND lane: expanding pressure ring */
@@ -1301,6 +1479,8 @@ export class Sim {
     /* timers */
     p.iframes = Math.max(0, p.iframes - dt);
     p.strikeCd -= dt;
+    p.curveballCd -= dt;
+    p.bootseekersCd -= dt;
     p.whistleCd -= dt;
     p.pressureCd -= dt;
     p.blastCd -= dt;
@@ -1389,6 +1569,20 @@ export class Sim {
       const lvl = this.abilityLevel('strike');
       p.strikeCd = [0, 0.9, 0.9, 0.8, 0.8, 0.65][lvl];
       if (this.nearestEnemy(p.x, p.y, Sim.AERIAL_MAX_RANGE) >= 0) this.fireStrike();
+    }
+    if (p.curveballCd <= 0 && this.abilityLevel('curveball') > 0) {
+      const lvl = this.abilityLevel('curveball');
+      if (this.nearestEnemy(p.x, p.y, Sim.AERIAL_MAX_RANGE) >= 0) {
+        p.curveballCd = [0, 3.4, 3.2, 3.0, 2.7, 2.35][lvl];
+        this.fireCurveball();
+      } else p.curveballCd = 0.18;
+    }
+    if (p.bootseekersCd <= 0 && this.abilityLevel('bootseekers') > 0) {
+      const lvl = this.abilityLevel('bootseekers');
+      if (this.nearestEnemy(p.x, p.y, Sim.AERIAL_MAX_RANGE) >= 0) {
+        p.bootseekersCd = [0, 4.5, 4.3, 4.0, 3.6, 3.1][lvl];
+        this.fireBootSeekers();
+      } else p.bootseekersCd = 0.18;
     }
     if (p.whistleCd <= 0 && this.abilityLevel('whistle') > 0) {
       const lvl = this.abilityLevel('whistle');
@@ -1678,6 +1872,51 @@ export class Sim {
       if (b.z > 0) continue; // still airborne: passes over ground-level mobs
       b.active = false;
       this.lobImpact(b);
+    }
+
+    /* AERIAL seekers: smooth steering, live retargeting and pooled trails. */
+    for (const s of this.seekers) {
+      if (!s.active) continue;
+      s.life -= dt;
+      if (s.life <= 0) {
+        s.active = false;
+        continue;
+      }
+      let target = this.enemies[s.targetIdx];
+      if (!target?.active) {
+        s.targetIdx = -1;
+        const next = this.pickAerialTarget(s.x, s.y);
+        if (next < 0) {
+          s.active = false;
+          continue;
+        }
+        s.targetIdx = next;
+        target = this.enemies[next];
+      }
+      const desired = Math.atan2(target.y - s.y, target.x - s.x);
+      const current = Math.atan2(s.vy, s.vx);
+      const delta = Math.atan2(Math.sin(desired - current), Math.cos(desired - current));
+      const angle = current + clamp(delta, -s.turnRate * dt, s.turnRate * dt);
+      s.vx = Math.cos(angle) * s.speed;
+      s.vy = Math.sin(angle) * s.speed;
+      s.angle = angle;
+      s.lastX = s.x;
+      s.lastY = s.y;
+      s.x += s.vx * dt;
+      s.y += s.vy * dt;
+      s.trailClock -= dt;
+      if (s.trailClock <= 0) {
+        s.trailClock += 0.065;
+        s.trail2X = s.trail1X;
+        s.trail2Y = s.trail1Y;
+        s.trail1X = s.lastX;
+        s.trail1Y = s.lastY;
+      }
+      const age = s.maxLife - s.life;
+      s.z = (s.kind === 'curveball' ? 72 : 88) + Math.sin(age * 8 + s.phase) * (s.kind === 'curveball' ? 8 : 5);
+      if (dist2(s.x, s.y, target.x, target.y) <= (target.radius + (s.kind === 'curveball' ? 22 : 28)) ** 2) {
+        this.seekerImpact(s, s.targetIdx);
+      }
     }
 
     /* pressure rings (GROUND lane: expanding damaging front) */
