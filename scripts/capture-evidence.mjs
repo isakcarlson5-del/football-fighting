@@ -172,6 +172,20 @@ for (const playerId of ['messi', 'ronaldo', 'neymar', 'yamal']) {
 }
 await page.evaluate(() => window.__FF.startRun('messi'));
 
+// Generated level-up card art: deterministic galleries prove every ability,
+// including the visual distinction between the AERIAL and GROUND lanes.
+for (const [file, ids] of [
+  ['50-ability-cards-aerial-ground-a.png', ['strike', 'orbit', 'whistle']],
+  ['51-ability-cards-ground-b.png', ['dash', 'guard', 'pressure']],
+]) {
+  await page.evaluate((abilityIds) => window.__FF.showAbilityCards(abilityIds), ids);
+  await page.waitForFunction(() => [...document.querySelectorAll('.upgrade-card .ability-art')]
+    .every((img) => img.complete && img.naturalWidth > 0));
+  await page.waitForTimeout(450); // let the staggered card-in animation settle
+  await page.screenshot({ path: `${OUT}/${file}` });
+}
+await page.evaluate(() => window.__FF.startRun('messi'));
+
 // level-up
 await page.evaluate(() => window.__FF.giveXp(40));
 await page.waitForSelector('#levelup-screen');
@@ -325,6 +339,11 @@ for (let i = 0; i < 8; i++) {
 }
 await m.screenshot({ path: `${OUT}/13-mobile-joystick.png` });
 await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+await m.evaluate(() => window.__FF.showAbilityCards(['strike', 'orbit', 'whistle']));
+await m.waitForFunction(() => [...document.querySelectorAll('.upgrade-card .ability-art')]
+  .every((img) => img.complete && img.naturalWidth > 0));
+await m.waitForTimeout(450);
+await m.screenshot({ path: `${OUT}/52-mobile-ability-cards.png` });
 
 console.log(errors.length ? `PAGE ERRORS:\n${errors.join('\n')}` : 'NO PAGE ERRORS');
 console.log('evidence captured to evidence/shots/');

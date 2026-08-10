@@ -77,6 +77,35 @@ test('level-up pauses the game, offers 3 upgrades, pick resumes', async ({ page 
   expect(await page.evaluate(() => window.__FF.getSim()!.player.level)).toBeGreaterThan(lvlBefore);
 });
 
+test('all ability draft cards load their generated AERIAL/GROUND artwork', async ({ page }) => {
+  await page.click('[data-act="play"]');
+  await page.click('[data-act="start"]');
+  for (const ids of [
+    ['strike', 'orbit', 'whistle'],
+    ['dash', 'guard', 'pressure'],
+  ] as const) {
+    await page.evaluate((abilityIds) => window.__FF.showAbilityCards([...abilityIds]), ids);
+    const art = page.locator('.upgrade-card .ability-art');
+    await expect(art).toHaveCount(3);
+    await expect(page.locator('.upgrade-card .lane-tag')).toHaveCount(3);
+    await expect.poll(async () => art.evaluateAll((images) => images.every((img) => (img as HTMLImageElement).complete && (img as HTMLImageElement).naturalWidth > 0))).toBe(true);
+    const sources = await art.evaluateAll((images) => images.map((img) => (img as HTMLImageElement).getAttribute('src')));
+    expect(sources).toEqual(ids.map((id) => `art/abilities/${id}.webp`));
+  }
+});
+
+test('ability draft starts at the title and remains scrollable on mobile', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.click('[data-act="play"]');
+  await page.click('[data-act="start"]');
+  await page.evaluate(() => window.__FF.showAbilityCards(['strike', 'orbit', 'whistle']));
+  const screen = page.locator('#levelup-screen');
+  await expect(screen.locator('.screen-title')).toBeVisible();
+  await expect(screen.locator('.upgrade-card').first()).toBeVisible();
+  expect(await screen.evaluate((el) => el.scrollTop)).toBe(0);
+  expect(await screen.evaluate((el) => el.scrollHeight > el.clientHeight)).toBe(true);
+});
+
 test('death shows the result screen and pays out coins', async ({ page }) => {
   await page.click('[data-act="play"]');
   await page.click('[data-act="start"]');

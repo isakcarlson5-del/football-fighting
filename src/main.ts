@@ -7,7 +7,7 @@ import './styles.css';
 import { AudioEngine } from './core/audio';
 import { Input } from './core/input';
 import { loadStripAtlas, primePlayerStrips } from './core/sprites';
-import { PLAYERS, META_TRACKS, metaCost, type MetaTrackId } from './game/data';
+import { ABILITIES, PLAYERS, META_TRACKS, metaCost, type AbilityId, type MetaTrackId } from './game/data';
 import { Save } from './game/meta';
 import { Renderer } from './game/render';
 import { Sim, type UpgradeOption } from './game/sim';
@@ -421,6 +421,7 @@ interface FfDebug {
   pickUpgrade(i: number): void;
   skipToBoss(n: 1 | 2): void;
   debugSpawn(id: string, dx: number, dy: number, elite?: boolean): void;
+  showAbilityCards(ids: AbilityId[]): void;
 }
 const ff: FfDebug = {
   getState: () => ({ app: appState, run: runState }),
@@ -458,6 +459,17 @@ const ff: FfDebug = {
   debugSpawn: (id: string, dx: number, dy: number, elite = false) => {
     if (!sim) return;
     sim.debugSpawn(id as 'invader', sim.player.x + dx, sim.player.y + dy, elite);
+  },
+  showAbilityCards: (ids: AbilityId[]) => {
+    if (!sim) return;
+    const options: UpgradeOption[] = ids.slice(0, 3).map((id) => {
+      const def = ABILITIES[id];
+      const level = Math.min((sim!.player.abilities[id] ?? 0) + 1, def.levels.length);
+      return { kind: 'ability', id, name: def.name, desc: def.levels[level - 1].desc, color: def.color, level };
+    });
+    sim.pendingLevelups = 1;
+    runState = 'levelup';
+    ui.showLevelUp(options, () => options);
   },
 };
 (window as unknown as { __FF: FfDebug }).__FF = ff;

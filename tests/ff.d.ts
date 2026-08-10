@@ -1,5 +1,6 @@
 import type { Sim } from '../../src/game/sim';
 import type { Save } from '../../src/game/meta';
+import type { AbilityId } from '../../src/game/data';
 
 declare global {
   interface Window {
@@ -16,6 +17,7 @@ declare global {
       pickUpgrade(i: number): void;
       skipToBoss(n: 1 | 2): void;
       debugSpawn(id: string, dx: number, dy: number, elite?: boolean): void;
+      showAbilityCards(ids: AbilityId[]): void;
     };
     __ART_READY?: boolean;
   }

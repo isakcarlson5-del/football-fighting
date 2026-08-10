@@ -666,9 +666,17 @@ button {
   transform: translateY(-5px) rotate(-0.6deg);
   box-shadow: 8px 8px 0 rgba(0, 0, 0, 0.55);
 }
-.upgrade-card img {
+.upgrade-card img.uc-art {
   width: 58px;
   height: 58px;
+}
+.upgrade-card img.ability-art {
+  width: 132px;
+  height: 132px;
+  object-fit: cover;
+  border-radius: 14px;
+  border: 2px solid color-mix(in srgb, var(--uc) 70%, white 30%);
+  box-shadow: 0 7px 18px rgba(0, 0, 0, 0.42);
 }
 .upgrade-card .uc-name {
   font-family: 'Archivo Black', sans-serif;
@@ -896,6 +904,14 @@ kbd {
 
 @media (max-width: 720px) {
   .btn { font-size: 16px; padding: 12px 24px; }
+  #levelup-screen {
+    justify-content: flex-start;
+    padding-top: 24px;
+    padding-bottom: 32px;
+  }
+  #levelup-screen .levelup-cards { gap: 12px; flex: 0 0 auto; }
+  #levelup-screen .upgrade-card { padding: 14px; gap: 8px; }
+  #levelup-screen .upgrade-card img.ability-art { width: 104px; height: 104px; }
   .upgrade-card .uc-desc { min-height: 44px; }
   #hp-wrap { bottom: 12px; left: 10px; width: min(230px, 52vw); }
   #ability-dock { right: 10px; bottom: 12px; }

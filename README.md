@@ -13,7 +13,9 @@ procedural in-code fallback). The kick wind-up releases its aerial ball on the
 drawn contact frame. All 13 regular enemies and all 3 bosses use generated semantic
 idle/move/attack/hurt strips; pickups and effects are drawn in code. Menu and
 arena art are generated and shipped as local files. Security Detail uses its
-own generated idle/move/punch/intercept bodyguard strip.
+own generated idle/move/punch/intercept bodyguard strip. Every ability draft
+card uses dedicated generated art whose composition communicates its AERIAL or
+GROUND delivery at a glance; compact procedural icons remain in the combat HUD.
 No paid APIs, no paid assets, no network calls at runtime.
 
 ## Run it locally
@@ -76,10 +78,10 @@ scripts/     playtest + art generation harnesses
 
 - `npm test` — 41 unit tests green (rng, data, pacing, meta/save, combat lanes,
   stateful poses and simulation behaviours).
-- `npm run test:e2e` — 11 browser tests green: menu, select, combat kills, level-up
-  pause/pick, death result, victory result, boss nameplate, shop persistence across
-  reload, skin purchase/equip persistence, pause, horde performance (>45fps).
+- `npm run test:e2e` — 13 browser tests green: menu, select, combat kills, level-up
+  pause/pick, all generated ability-card images, mobile card scrolling, death,
+  victory, boss nameplate, shop/skin persistence, pause and horde performance (>45fps).
 - Live playtest screenshots: `evidence/shots/` (menu/select/gameplay/level-up,
-  all enemy lineups, semantic poses, bosses, mobile and victory).
+  all ability galleries, enemy lineups, semantic poses, bosses, mobile and victory).
 - Sound: autoplay-safe synthesized WebAudio SFX, crowd bed and adaptive music;
   mute and separate master/SFX/music levels persist locally.

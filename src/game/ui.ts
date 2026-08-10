@@ -45,6 +45,11 @@ function iconUrl(id: AbilityId): string {
   return u;
 }
 
+/** Full illustrated art is reserved for draft cards; HUD icons stay compact. */
+function abilityCardArtUrl(id: AbilityId): string {
+  return `art/abilities/${id}.webp`;
+}
+
 function statIconUrl(id: string, color: string): string {
   const key = `stat:${id}`;
   let u = ICON_CACHE.get(key);
@@ -341,7 +346,9 @@ export class UI {
     const renderCards = (opts: UpgradeOption[]) => {
       const cards = opts
         .map((o, i) => {
-          const icon = o.kind === 'ability' ? iconUrl(o.id as AbilityId) : o.kind === 'stat' ? statIconUrl(o.id, o.color) : statIconUrl('heal', o.color);
+          const isAbility = o.kind === 'ability';
+          const icon = isAbility ? abilityCardArtUrl(o.id as AbilityId) : o.kind === 'stat' ? statIconUrl(o.id, o.color) : statIconUrl('heal', o.color);
+          const artClass = isAbility ? 'ability-art' : 'stat-art';
           const tag = o.kind === 'ability' ? (o.level === 1 ? 'New ability' : `Ability · Lv${o.level}`) : o.kind === 'stat' ? 'Training' : 'Recovery';
           // every offensive ability is lane-typed: GROUND hugs the pitch,
           // AERIAL flies over near mobs onto far high-priority threats
@@ -349,7 +356,7 @@ export class UI {
           const laneChip = lane ? `<span class="lane-tag lane-${lane}">${lane.toUpperCase()}</span>` : '';
           return `
           <div class="upgrade-card" data-idx="${i}" style="--uc:${o.color}">
-            <img src="${icon}" alt="">
+            <img class="uc-art ${artClass}" src="${icon}" alt="">
             <div class="uc-tag">${tag} ${laneChip}</div>
             <div class="uc-name">${o.name}</div>
             <div class="uc-desc">${o.desc}</div>
