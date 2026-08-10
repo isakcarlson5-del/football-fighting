@@ -46,6 +46,13 @@ const debug = new URLSearchParams(location.search).has('debug');
   img.src = 'art/menu-key-art.jpg';
 }
 
+// Arena plate: swap the gameplay world's base when the generated art is ready.
+{
+  const img = new Image();
+  img.onload = () => renderer.setArenaImage(img);
+  img.src = 'art/arena/gameplay-pitch-v1.webp';
+}
+
 const sfxThrottle = new Map<string, number>();
 function throttled(key: string, minMs: number): boolean {
   const now = performance.now();

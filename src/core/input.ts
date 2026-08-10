@@ -45,6 +45,12 @@ export class Input {
       x /= l;
       y /= l;
     }
+    // radial deadzone: joystick micro-jitter must not read as intent to move
+    // (keyboard input is 0/1 and passes straight through)
+    if (Math.hypot(x, y) < 0.18) {
+      x = 0;
+      y = 0;
+    }
     this.ax = x;
     this.ay = y;
   }

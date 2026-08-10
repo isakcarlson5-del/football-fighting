@@ -130,7 +130,10 @@ export function getStripAtlas(id: string, tint?: string): Atlas | null {
 
 /** Kick off loading all four player strips (fallbacks stay procedural). */
 export function primePlayerStrips(playerIds: string[]): void {
-  for (const id of playerIds) void loadStripAtlas(id, `art/players/${id}.png`);
+  for (const id of playerIds) {
+    void loadStripAtlas(id, `art/players/${id}.png`);
+    void loadStripAtlas(`${id}-idle`, `art/players/${id}-idle.png`);
+  }
 }
 
 /* ------------------------------------------------------------------ */

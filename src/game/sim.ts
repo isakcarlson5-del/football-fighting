@@ -25,7 +25,7 @@ import {
 import type { Save } from './meta';
 
 export const ARENA_W = 2600;
-export const ARENA_H = 1700;
+export const ARENA_H = 1416; // tuned playfield height; the renderer maps the arena plate's grass rect onto this exactly
 const MAX_ENEMIES = 240;
 const CELL = 72;
 
@@ -939,6 +939,9 @@ export class Sim {
     p.animT += dt * (p.moving || p.dashT > 0 ? 1 : 0.4);
 
     /* abilities */
+    // refresh the spatial grid so same-frame spawns are targetable (abilities
+    // run before the per-frame enemy rebuild below)
+    this.rebuildGrid();
     if (p.strikeCd <= 0 && this.abilityLevel('strike') > 0) {
       const lvl = this.abilityLevel('strike');
       p.strikeCd = [0, 0.9, 0.9, 0.8, 0.8, 0.65][lvl];

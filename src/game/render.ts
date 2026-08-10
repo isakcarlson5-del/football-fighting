@@ -11,13 +11,22 @@ import { ARENA_H, ARENA_W, type Sim } from './sim';
 import type { Save } from './meta';
 
 const TILT = 0.62;
-const MARGIN = 340; // stands width around pitch (world units)
+const MARGIN = 340; // stands width around pitch (world units) — procedural fallback only
 const ENTITY_SCALE = 1.85;
+/** Grass rect inside the arena plate image (source px, 1536x1024).
+ *  Measured from the delivered art (soft painterly edges) and inset a few px
+ *  so the mapped arena edges always land on real grass, never on the track. */
+const PLATE_GRASS = { x: 124, y: 157, w: 1287, h: 769 };
+/** Camera never gets closer than this to the painted world's outer edge. */
+const EDGE_PAD = 6;
 
 export class Renderer {
   private canvas: HTMLCanvasElement;
   private ctx: CanvasRenderingContext2D;
   private pitch: HTMLCanvasElement;
+  private plate: HTMLImageElement | null = null;
+  /** World rect covered by the prerendered pitch canvas (camera hard limits). */
+  private bounds = { x0: -MARGIN, y0: -MARGIN, x1: ARENA_W + MARGIN, y1: ARENA_H + MARGIN };
   private scale = 1;
   private shake = 0;
   private ball: HTMLCanvasElement;
@@ -42,6 +51,12 @@ export class Renderer {
     for (let i = 0; i < 400; i++) this.crowdSeed.push(Math.random());
   }
 
+  /** Swap in the AI arena plate and rebuild the prerendered world canvas. */
+  setArenaImage(img: HTMLImageElement): void {
+    this.plate = img;
+    this.pitch = this.buildPitch();
+  }
+
   addShake(amount: number): void {
     this.shake = Math.min(14, this.shake + amount);
   }
@@ -53,15 +68,39 @@ export class Renderer {
   /* ------------------------------------------------------------------ */
 
   private buildPitch(): HTMLCanvasElement {
-    const w = ARENA_W + MARGIN * 2;
-    const h = ARENA_H + MARGIN * 2;
+    // Margins around the playable arena that the base layer covers. The arena
+    // plate supplies its own asymmetric surround (stands/track/tunnel), so the
+    // world canvas and the camera bounds derive from the measured grass rect.
+    let ml = MARGIN;
+    let mr = MARGIN;
+    let mt = MARGIN;
+    let mb = MARGIN;
+    let psx = 1;
+    let psy = 1;
+    if (this.plate) {
+      psx = ARENA_W / PLATE_GRASS.w;
+      psy = ARENA_H / PLATE_GRASS.h;
+      ml = PLATE_GRASS.x * psx;
+      mr = (this.plate.width - PLATE_GRASS.x - PLATE_GRASS.w) * psx;
+      mt = PLATE_GRASS.y * psy;
+      mb = (this.plate.height - PLATE_GRASS.y - PLATE_GRASS.h) * psy;
+    }
+    this.bounds = { x0: -ml, y0: -mt, x1: ARENA_W + mr, y1: ARENA_H + mb };
+    const w = ARENA_W + ml + mr;
+    const h = ARENA_H + mt + mb;
     const c = document.createElement('canvas');
-    c.width = w;
+    c.width = Math.ceil(w);
     c.height = Math.ceil(h * TILT);
     const ctx = c.getContext('2d')!;
     ctx.setTransform(1, 0, 0, TILT, 0, 0);
-    ctx.translate(MARGIN, MARGIN);
+    ctx.translate(ml, mt);
 
+    if (this.plate) {
+      // AI arena plate: the measured grass rect maps exactly onto the playable
+      // arena (slight non-uniform scale absorbs the plate's aspect difference);
+      // the plate's own stands/track fill the surrounding margin completely.
+      ctx.drawImage(this.plate, -PLATE_GRASS.x * psx, -PLATE_GRASS.y * psy, this.plate.width * psx, this.plate.height * psy);
+    } else {
     // surround apron
     ctx.fillStyle = '#0d2818';
     ctx.fillRect(-MARGIN, -MARGIN, w, h);
@@ -170,6 +209,7 @@ export class Renderer {
       ctx.ellipse(z[0] + Math.cos(a) * r, z[1] + Math.sin(a) * r, 4 + rng() * 14, 3 + rng() * 8, rng() * 3, 0, TAU);
       ctx.fill();
     }
+    } // end procedural fallback base
 
     // pitch markings
     ctx.strokeStyle = 'rgba(245,247,250,0.9)';
@@ -221,29 +261,32 @@ export class Renderer {
       ctx.strokeRect(gx + (dir === -1 ? -46 : 0), ARENA_H / 2 - 130, 46, 260);
     }
 
-    // stadium lighting: dark corners, floodlight pools (painted in world space)
-    for (const [cx, cy] of [
-      [0, 0],
-      [ARENA_W, 0],
-      [0, ARENA_H],
-      [ARENA_W, ARENA_H],
-    ]) {
-      const dg = ctx.createRadialGradient(cx, cy, 80, cx, cy, 900);
-      dg.addColorStop(0, 'rgba(4,10,8,0.26)');
-      dg.addColorStop(1, 'rgba(4,10,8,0)');
-      ctx.fillStyle = dg;
-      ctx.fillRect(-MARGIN, -MARGIN, w, h);
-    }
-    for (const [cx, cy, cr] of [
-      [ARENA_W / 2, ARENA_H / 2, 700],
-      [ARENA_W * 0.18, ARENA_H / 2, 480],
-      [ARENA_W * 0.82, ARENA_H / 2, 480],
-    ]) {
-      const lg = ctx.createRadialGradient(cx, cy, 40, cx, cy, cr);
-      lg.addColorStop(0, 'rgba(255,250,220,0.09)');
-      lg.addColorStop(1, 'rgba(255,250,220,0)');
-      ctx.fillStyle = lg;
-      ctx.fillRect(cx - cr, cy - cr, cr * 2, cr * 2);
+    // stadium lighting: dark corners, floodlight pools (procedural base only;
+    // the arena plate ships its own baked floodlighting)
+    if (!this.plate) {
+      for (const [cx, cy] of [
+        [0, 0],
+        [ARENA_W, 0],
+        [0, ARENA_H],
+        [ARENA_W, ARENA_H],
+      ]) {
+        const dg = ctx.createRadialGradient(cx, cy, 80, cx, cy, 900);
+        dg.addColorStop(0, 'rgba(4,10,8,0.26)');
+        dg.addColorStop(1, 'rgba(4,10,8,0)');
+        ctx.fillStyle = dg;
+        ctx.fillRect(-MARGIN, -MARGIN, w, h);
+      }
+      for (const [cx, cy, cr] of [
+        [ARENA_W / 2, ARENA_H / 2, 700],
+        [ARENA_W * 0.18, ARENA_H / 2, 480],
+        [ARENA_W * 0.82, ARENA_H / 2, 480],
+      ]) {
+        const lg = ctx.createRadialGradient(cx, cy, 40, cx, cy, cr);
+        lg.addColorStop(0, 'rgba(255,250,220,0.09)');
+        lg.addColorStop(1, 'rgba(255,250,220,0)');
+        ctx.fillStyle = lg;
+        ctx.fillRect(cx - cr, cy - cr, cr * 2, cr * 2);
+      }
     }
 
     // corner flags
@@ -282,13 +325,26 @@ export class Renderer {
     this.canvas.height = Math.round(h * dpr);
   }
 
-  private atlasFor(def: PlayerDef, save: Save): Atlas {
+  /**
+   * Picks the hero's atlas for the current locomotion state.
+   * kind 'idle'     — dedicated idle strip (generated art), loop its frames
+   * kind 'run'      — run strip cycling while moving/dashing
+   * kind 'run-held'— no idle art yet: hold the run strip's first frame
+   *                  (a subtle breathing bob is added at draw time)
+   */
+  private heroVisual(def: PlayerDef, save: Save, running: boolean): { atlas: Atlas; kind: 'idle' | 'run' | 'run-held' } {
     const skinId = save.equippedSkin(def.id);
     const skin = skinId ? SKINS.find((s) => s.id === skinId) : undefined;
     const tint = skin?.kit.shirt;
+    if (!running) {
+      const idleStrip = getStripAtlas(`${def.id}-idle`, tint);
+      if (idleStrip) return { atlas: idleStrip, kind: 'idle' };
+      // trigger a lazy load; until idle art exists, hold a neutral frame
+      void loadStripAtlas(`${def.id}-idle`, `art/players/${def.id}-idle.png`, tint);
+    }
     // prefer the generated 2.5D strip; fall back to the procedural atlas
     const strip = getStripAtlas(def.id, tint);
-    if (strip) return strip;
+    if (strip) return { atlas: strip, kind: running ? 'run' : 'run-held' };
     // trigger a lazy load (primed at boot; skin variants load on demand)
     void loadStripAtlas(def.id, `art/players/${def.id}.png`, tint);
     const key = `p:${def.id}:${skinId ?? 'base'}`;
@@ -297,7 +353,7 @@ export class Renderer {
       a = playerAtlas(def, skin?.kit);
       this.atlasCache.set(key, a);
     }
-    return a;
+    return { atlas: a, kind: running ? 'run' : 'run-held' };
   }
 
   /** Main per-frame draw. */
@@ -314,17 +370,23 @@ export class Renderer {
     const vw = W / scale;
     const vh = H / scale; // in tilted pixels
 
-    // camera follows player, clamped
+    // camera follows player, hard-clamped so the view never leaves the
+    // painted world (bounds derive from the arena plate's real surround)
     const p = sim.player;
     const px = p ? p.x : this.camX;
     const py = p ? p.y : this.camY;
     this.camX += (px - this.camX) * 0.12;
     this.camY += (py - this.camY) * 0.12;
-    this.camX = clamp(this.camX, vw / 2 - MARGIN + 200, ARENA_W + MARGIN - vw / 2 - 200);
-    this.camY = clamp(this.camY, vh / 2 / TILT - MARGIN + 160, ARENA_H + MARGIN - vh / 2 / TILT - 160);
+    const b = this.bounds;
+    const minCx = b.x0 + vw / 2 + EDGE_PAD;
+    const maxCx = b.x1 - vw / 2 - EDGE_PAD;
+    this.camX = minCx <= maxCx ? clamp(this.camX, minCx, maxCx) : (b.x0 + b.x1) / 2;
+    const minCy = b.y0 + vh / 2 / TILT + EDGE_PAD;
+    const maxCy = b.y1 - vh / 2 / TILT - EDGE_PAD;
+    this.camY = minCy <= maxCy ? clamp(this.camY, minCy, maxCy) : (b.y0 + b.y1) / 2;
 
-    const camTX = this.camX + MARGIN; // pitch-canvas coords (x)
-    const camTY = (this.camY + MARGIN) * TILT;
+    const camTX = this.camX - b.x0; // pitch-canvas coords (x)
+    const camTY = (this.camY - b.y0) * TILT;
 
     this.shake *= 0.86;
     const shX = (Math.random() - 0.5) * this.shake * scale;
@@ -338,11 +400,12 @@ export class Renderer {
     const sy = camTY - vh / 2;
     ctx.drawImage(this.pitch, sx, sy, vw, vh, 0, 0, vw, vh);
 
-    const toSX = (wx: number) => wx + MARGIN - sx;
-    const toSY = (wy: number) => (wy + MARGIN) * TILT - sy;
+    const toSX = (wx: number) => wx - b.x0 - sx;
+    const toSY = (wy: number) => (wy - b.y0) * TILT - sy;
 
     // animated crowd: jumping dots near the visible stands edge
-    this.drawCrowd(ctx, toSX, toSY, sx - MARGIN, sy / TILT - MARGIN, vw, vh / TILT, time);
+    // (skipped when the arena plate supplies its own crowd)
+    if (!this.plate) this.drawCrowd(ctx, toSX, toSY, sx + b.x0, sy / TILT + b.y0, vw, vh / TILT, time);
 
     // ground decals: telegraphs, flare zones, slow zones
     for (const t of sim.telegraphs) {
@@ -451,7 +514,9 @@ export class Renderer {
           ctx.fillRect(x - bw / 2 + 1.5, y - dh - 16.5, (bw - 3) * Math.max(0, e.hp / e.maxHp), 7);
         }
       } else if (it.kind === 1) {
-        const atlas = this.atlasFor(def, save);
+        const running = p.moving || p.dashT > 0;
+        const vis = this.heroVisual(def, save, running);
+        const atlas = vis.atlas;
         const x = toSX(p.x);
         const y = toSY(p.y);
         this.shadow(ctx, x, y, 26);
@@ -479,7 +544,13 @@ export class Renderer {
           ctx.lineTo(x - p.dashDx * 60, y - p.dashDy * 60 * TILT - 20);
           ctx.stroke();
         }
-        const frame = Math.floor(p.animT * (p.moving ? 11 : 4)) % atlas.frames;
+        // idle plays the dedicated neutral clip; without idle art the first
+        // run frame is held with a faint breathing bob (never a frozen stride)
+        const frame =
+          vis.kind === 'idle' ? Math.floor(time * 4.5) % atlas.frames
+          : vis.kind === 'run' ? Math.floor(p.animT * 11) % atlas.frames
+          : 0;
+        const bobY = vis.kind === 'idle' ? Math.sin(time * 2.2) * 1.2 : vis.kind === 'run-held' ? Math.sin(time * 2.6) * 1.6 : 0;
         const sc = ENTITY_SCALE * (80 / atlas.fh);
         const dw = atlas.fw * sc;
         const dh = atlas.fh * sc;
@@ -488,7 +559,7 @@ export class Renderer {
         ctx.translate(x, y);
         if (p.face < 0 && atlas.flippable) ctx.scale(-1, 1);
         if (blink) ctx.globalAlpha = 0.45;
-        ctx.drawImage(atlas.canvas, frame * atlas.fw, 0, atlas.fw, atlas.fh, -dw / 2, -atlas.feetY * sc, dw, dh);
+        ctx.drawImage(atlas.canvas, frame * atlas.fw, 0, atlas.fw, atlas.fh, -dw / 2, -atlas.feetY * sc + bobY, dw, dh);
         ctx.restore();
         // orbit balls (with ground shadows to sell height)
         const orbitLvl = sim.abilityLevel('orbit');
