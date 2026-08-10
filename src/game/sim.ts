@@ -178,7 +178,7 @@ export interface Impact {
   angle: number;
   strength: number;
   color: string;
-  kind: 'contact' | 'landing';
+  kind: 'contact' | 'landing' | 'airburst';
 }
 
 export interface Telegraph {
@@ -248,6 +248,8 @@ export type SimEvent =
   | { type: 'levelup' }
   | { type: 'whistle'; x: number; y: number }
   | { type: 'pressure'; x: number; y: number }
+  | { type: 'blast'; x: number; y: number }
+  | { type: 'wave'; number: number; name: string }
   | { type: 'lobLand'; x: number; y: number }
   | { type: 'dash' }
   | { type: 'hurt' }
@@ -290,6 +292,7 @@ export interface PlayerState {
   pressureCd: number;
   pressureQueue: number; // staggered pulses still to release
   pressureQueueT: number;
+  blastCd: number;
   kickT: number; // >0 during the lob's kick animation (contact at half duration)
   dashCds: number[];
   dashT: number; // >0 while dashing
@@ -342,6 +345,8 @@ export class Sim {
   private flagBearers: Enemy[] = [];
   private spawnAcc = 0;
   private eliteAcc = 0;
+  private nextWaveAt = 4;
+  private waveIndex = 0;
   private def: PlayerDef;
   private deferred: { t: number; fn: () => void }[] = [];
   private powerMult = 1;
@@ -386,6 +391,7 @@ export class Sim {
       pressureCd: 1.2,
       pressureQueue: 0,
       pressureQueueT: 0,
+      blastCd: 1.6,
       kickT: 0,
       dashCds: [0],
       dashT: 0,
@@ -396,12 +402,6 @@ export class Sim {
     };
     if (def.id === 'neymar') this.player.dashCds = [0];
     this.spawnInitial();
-    // opening wave: a few invaders just past the view edge so first contact
-    // happens within ~3 seconds instead of an empty pitch
-    for (let i = 0; i < 6; i++) {
-      const a = (i / 6) * TAU + 0.6;
-      this.spawnEnemy(ENEMIES.invader, this.player.x + Math.cos(a) * 520, this.player.y + Math.sin(a) * 520, false);
-    }
   }
 
   /* ---------------- derived stats ---------------- */
@@ -567,6 +567,37 @@ export class Sim {
     e.casting = '';
     e.telegraph = 0;
     return e;
+  }
+
+  /** Named formation waves make the roster legible: a quiet kickoff is
+   *  followed by a coherent push from one stand. Every unlocked role appears
+   *  before weighted filler, so special enemies cannot disappear in the mix. */
+  private spawnWave(): void {
+    this.waveIndex++;
+    const phase = Math.min(5, 1 + Math.floor(this.time / 110));
+    const count = Math.min(24, 6 + phase * 2 + Math.floor(this.time / 90));
+    const unlocked = Object.values(ENEMIES).filter((def) => def.unlockAt <= this.time);
+    const edge = this.rng.int(0, 3);
+    const dir = (edge / 4) * TAU;
+    const dx = Math.cos(dir);
+    const dy = Math.sin(dir);
+    const spread = Math.min(560, count * 54);
+    for (let i = 0; i < count; i++) {
+      const def = i < unlocked.length
+        ? unlocked[(i + this.waveIndex - 1) % unlocked.length]
+        : weightedPick(this.rng, unlocked);
+      if (!def) break;
+      const u = (i + 0.5) / count;
+      const jitter = this.rng.range(-18, 18);
+      const offset = (u - 0.5) * spread + jitter;
+      const x = clamp(this.player.x + dx * 360 - dy * offset, 40, ARENA_W - 40);
+      const y = clamp(this.player.y + dy * 360 + dx * offset, 40, ARENA_H - 40);
+      this.spawnEnemy(def, x, y, false);
+    }
+    const names = ['Warm-Up Press', 'Terrace Surge', 'Counter Rush', 'Full Press', 'Last Stand'];
+    this.events.push({ type: 'wave', number: this.waveIndex, name: names[phase - 1] });
+    const spacing = this.time < 120 ? 30 : this.time < 360 ? 25 : 20;
+    this.nextWaveAt = this.time + spacing;
   }
 
   private spawnBoss(which: BossId): void {
@@ -843,10 +874,10 @@ export class Sim {
     impact.x = x;
     impact.y = y;
     impact.angle = force > 1 ? Math.atan2(ky, kx) : this.rng.range(0, TAU);
-    impact.strength = kind === 'landing' ? 1.55 : crit ? 1.4 : heavy ? 1.18 : 0.9;
-    impact.color = kind === 'landing' ? '#ffd166' : crit ? '#ffd23f' : heavy ? '#f5f7fa' : '#d9f3ff';
+    impact.strength = kind === 'landing' ? 1.55 : kind === 'airburst' ? 1.4 : crit ? 1.4 : heavy ? 1.18 : 0.9;
+    impact.color = kind === 'landing' ? '#ffd166' : kind === 'airburst' ? '#70e7ff' : crit ? '#ffd23f' : heavy ? '#f5f7fa' : '#d9f3ff';
     impact.kind = kind;
-    impact.life = impact.maxLife = kind === 'landing' ? 0.28 : crit || heavy ? 0.22 : 0.16;
+    impact.life = impact.maxLife = kind === 'landing' ? 0.28 : kind === 'airburst' ? 0.26 : crit || heavy ? 0.22 : 0.16;
   }
 
   private ring(x: number, y: number, maxR: number, color: string): void {
@@ -1149,6 +1180,39 @@ export class Sim {
     }
   }
 
+  /** HYBRID lane: a broad pitch-hugging blast for grounded mobs plus a
+   *  smaller overhead pop that catches leapers instead of granting immunity. */
+  private fireBlast(): void {
+    const lvl = this.abilityLevel('blast');
+    if (lvl === 0) return;
+    const p = this.player;
+    const groundR = [0, 165, 190, 205, 225, 250][lvl];
+    const airR = [0, 105, 120, 150, 165, 190][lvl];
+    const groundDmg = [0, 18, 24, 27, 35, 46][lvl] * this.damageMult;
+    const airDmg = [0, 14, 18, 25, 30, 42][lvl] * this.damageMult;
+    const n = this.query(p.x, p.y, groundR + 40, this.scratch);
+    for (let i = 0; i < n; i++) {
+      const idx = this.scratch[i];
+      const e = this.enemies[idx];
+      if (!e.active) continue;
+      const d2 = dist2(p.x, p.y, e.x, e.y);
+      const radius = e.airT > 0 ? airR : groundR;
+      if (d2 > (radius + e.radius) * (radius + e.radius)) continue;
+      const d = Math.sqrt(d2) || 1;
+      const knock = e.airT > 0 ? 220 : lvl >= 4 ? 430 : 360;
+      this.damageEnemy(
+        idx,
+        e.airT > 0 ? airDmg : groundDmg,
+        ((e.x - p.x) / d) * knock,
+        ((e.y - p.y) / d) * knock,
+        { stun: lvl >= 4 ? 0.3 : 0 },
+      );
+    }
+    this.ring(p.x, p.y, groundR, '#a8ff4d');
+    this.spawnImpact(p.x, p.y, 0, -1, false, 'airburst', true);
+    this.events.push({ type: 'blast', x: p.x, y: p.y });
+  }
+
   private reticle(x: number, y: number, t: number): void {
     const r = this.alloc(this.reticles);
     if (!r) return;
@@ -1239,6 +1303,7 @@ export class Sim {
     p.strikeCd -= dt;
     p.whistleCd -= dt;
     p.pressureCd -= dt;
+    p.blastCd -= dt;
     p.kickT = Math.max(0, p.kickT - dt);
     for (let i = 0; i < p.dashCds.length; i++) p.dashCds[i] -= dt;
     if (p.pressureQueue > 0) {
@@ -1335,6 +1400,14 @@ export class Sim {
       p.pressureCd = [0, 2.6, 2.6, 2.3, 2.3, 2.0][lvl];
       this.firePressure();
     }
+    if (p.blastCd <= 0 && this.abilityLevel('blast') > 0) {
+      const lvl = this.abilityLevel('blast');
+      const triggerR = [0, 165, 190, 205, 225, 250][lvl];
+      if (this.nearestEnemy(p.x, p.y, triggerR + 30) >= 0) {
+        p.blastCd = [0, 4.8, 4.8, 4.4, 3.8, 3.2][lvl];
+        this.fireBlast();
+      }
+    }
     this.tryDash();
 
     // orbit damage + press
@@ -1365,9 +1438,10 @@ export class Sim {
     }
 
     /* spawning */
+    if (this.time >= this.nextWaveAt) this.spawnWave();
     this.spawnAcc += dt;
     const interval = spawnInterval(this.time);
-    if (this.spawnAcc >= interval) {
+    if (this.time > 7 && this.spawnAcc >= interval) {
       this.spawnAcc = 0;
       const batch = spawnBatch(this.time);
       const unlocked = Object.values(ENEMIES).filter((d) => d.unlockAt <= this.time);

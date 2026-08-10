@@ -291,9 +291,16 @@ export class Renderer {
     }
     } // end procedural fallback base
 
-    // pitch markings
-    ctx.strokeStyle = 'rgba(245,247,250,0.9)';
-    ctx.lineWidth = 5;
+    // Chalk markings: thinner, slightly translucent and softly grounded into
+    // the turf so they read as painted grass rather than bright UI strokes.
+    ctx.strokeStyle = 'rgba(245,247,250,0.74)';
+    ctx.fillStyle = 'rgba(245,247,250,0.76)';
+    ctx.lineWidth = 3.2;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.shadowColor = 'rgba(5,32,14,0.6)';
+    ctx.shadowBlur = 2;
+    ctx.shadowOffsetY = 1;
     ctx.strokeRect(40, 40, ARENA_W - 80, ARENA_H - 80);
     // halfway line + center circle
     ctx.beginPath();
@@ -303,9 +310,8 @@ export class Renderer {
     ctx.beginPath();
     ctx.arc(ARENA_W / 2, ARENA_H / 2, 190, 0, TAU);
     ctx.stroke();
-    ctx.fillStyle = 'rgba(245,247,250,0.9)';
     ctx.beginPath();
-    ctx.arc(ARENA_W / 2, ARENA_H / 2, 9, 0, TAU);
+    ctx.arc(ARENA_W / 2, ARENA_H / 2, 6.5, 0, TAU);
     ctx.fill();
     // penalty boxes
     const boxW = 330;
@@ -320,7 +326,7 @@ export class Renderer {
     // penalty spots + arcs
     for (const px of [40 + 230, ARENA_W - 40 - 230]) {
       ctx.beginPath();
-      ctx.arc(px, ARENA_H / 2, 8, 0, TAU);
+      ctx.arc(px, ARENA_H / 2, 6, 0, TAU);
       ctx.fill();
     }
     ctx.beginPath();
@@ -329,6 +335,9 @@ export class Renderer {
     ctx.beginPath();
     ctx.arc(ARENA_W - 40 - 230, ARENA_H / 2, 150, Math.PI - Math.PI / 3.2, Math.PI + Math.PI / 3.2);
     ctx.stroke();
+    ctx.shadowColor = 'transparent';
+    ctx.shadowBlur = 0;
+    ctx.shadowOffsetY = 0;
 
     // goals
     for (const side of [0, 1]) {
@@ -646,8 +655,9 @@ export class Renderer {
         ctx.translate(x, y - lift);
         if (e.moving && e.windup <= 0 && e.lungeT <= 0 && e.telegraph <= 0) {
           const gait = Math.sin(e.animT * 12);
-          ctx.translate(0, -Math.abs(gait) * 1.6);
+          ctx.translate(e.face * gait * 1.5, -Math.abs(gait) * 1.8);
           ctx.rotate(e.face * gait * 0.018);
+          ctx.scale(1 + Math.abs(gait) * 0.008, 1 - Math.abs(gait) * 0.012);
         }
         if (e.windup > 0) {
           const w = 1 - e.windup / 0.34; // pull back harder as the strike nears
@@ -731,11 +741,16 @@ export class Renderer {
             const a = p.orbitAngle + (b / count) * TAU;
             const ox = toSX(p.x + Math.cos(a) * radius);
             const oy = toSY(p.y + Math.sin(a) * radius);
+            const lift = 12 + Math.sin(time * 7 + b * 1.7) * 3;
             ctx.fillStyle = 'rgba(4,10,6,0.28)';
             ctx.beginPath();
             ctx.ellipse(ox, oy + 2, 8, 3.4, 0, 0, TAU);
             ctx.fill();
-            ctx.drawImage(this.ball, ox - 13, oy - 18, 26, 26);
+            ctx.save();
+            ctx.translate(ox, oy - lift);
+            ctx.rotate(time * 7.5 + b * 0.9);
+            ctx.drawImage(this.ball, -13, -13, 26, 26);
+            ctx.restore();
           }
         }
       } else {
@@ -798,12 +813,14 @@ export class Renderer {
     for (const r of sim.rings) {
       if (!r.active) continue;
       const a = clamp(r.life / 0.45, 0, 1);
-      ctx.strokeStyle = r.color === '#e8283f' ? `rgba(232,40,63,${a})` : `rgba(245,247,250,${a * 0.9})`;
+      ctx.globalAlpha = r.color === '#f5f7fa' ? a * 0.9 : a;
+      ctx.strokeStyle = r.color;
       ctx.lineWidth = 5 * a + 1;
       ctx.beginPath();
       ctx.ellipse(toSX(r.x), toSY(r.y), r.r, r.r * TILT, 0, 0, TAU);
       ctx.stroke();
     }
+    ctx.globalAlpha = 1;
 
     // pitch pressure rings (GROUND lane: pitch-hugging expanding front)
     for (const pr of sim.pressures) {
@@ -877,8 +894,23 @@ export class Renderer {
         ctx.ellipse(x, groundY, size * 1.5, size * 0.62, 0, 0, TAU);
         ctx.fill();
         ctx.stroke();
+      } else if (impact.kind === 'airburst') {
+        const airY = groundY - 78;
+        const glow = ctx.createRadialGradient(x, airY, 2, x, airY, size * 1.35);
+        glow.addColorStop(0, `rgba(255,255,255,${0.55 * remaining})`);
+        glow.addColorStop(0.35, `rgba(112,231,255,${0.28 * remaining})`);
+        glow.addColorStop(1, 'rgba(112,231,255,0)');
+        ctx.fillStyle = glow;
+        ctx.beginPath();
+        ctx.arc(x, airY, size * 1.35, 0, TAU);
+        ctx.fill();
+        ctx.strokeStyle = `rgba(174,244,255,${0.85 * remaining})`;
+        ctx.lineWidth = 2.5;
+        ctx.beginPath();
+        ctx.arc(x, airY, size * (0.7 + age * 0.45), 0, TAU);
+        ctx.stroke();
       }
-      ctx.translate(x, groundY - (impact.kind === 'landing' ? 8 : 22));
+      ctx.translate(x, groundY - (impact.kind === 'landing' ? 8 : impact.kind === 'airburst' ? 78 : 22));
       ctx.rotate(angle);
       ctx.strokeStyle = impact.color;
       ctx.lineCap = 'round';

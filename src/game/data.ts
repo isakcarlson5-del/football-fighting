@@ -24,10 +24,10 @@ export interface PlayerDef {
   kit: { shirt: string; shorts: string; socks: string; trim: string };
 }
 
-export type AbilityId = 'strike' | 'orbit' | 'whistle' | 'dash' | 'guard' | 'pressure';
+export type AbilityId = 'strike' | 'orbit' | 'whistle' | 'dash' | 'guard' | 'pressure' | 'blast';
 
 /** Attack-lane semantics: every offensive ability plays differently by lane. */
-export type Lane = 'ground' | 'aerial';
+export type Lane = 'ground' | 'aerial' | 'hybrid';
 export type RangeBand = 'near' | 'far';
 export type Delivery = 'ring' | 'sweep' | 'trap' | 'lob' | 'direct' | 'barrage';
 export type Force = 'none' | 'push' | 'pull';
@@ -159,9 +159,27 @@ export const ABILITIES: Record<AbilityId, AbilityDef> = {
       { desc: 'Vortex: drags the crowd in, then detonates a 26-damage triple pulse.' },
     ],
   },
+  blast: {
+    id: 'blast',
+    name: 'First Touch Blast',
+    icon: 'FT',
+    color: '#a8ff4d',
+    tagline: 'A controlled touch detonates the pitch below and the air above.',
+    lane: 'hybrid',
+    rangeBand: 'near',
+    delivery: 'ring',
+    force: 'push',
+    levels: [
+      { desc: 'HYBRID · Every 4.8s: 18-damage GROUND boom plus a 14-damage AERIAL airburst.' },
+      { desc: 'Wider layers. Ground 24 damage, airburst 18.' },
+      { desc: 'Airburst expands and hits for 25; ground boom hits for 27.' },
+      { desc: 'Every 3.8s: 35 ground damage, 30 air damage, heavy shove.' },
+      { desc: 'Perfect touch: huge 46-damage ground blast and 42-damage overhead detonation every 3.2s.' },
+    ],
+  },
 };
 
-export const ABILITY_IDS: AbilityId[] = ['strike', 'orbit', 'whistle', 'dash', 'guard', 'pressure'];
+export const ABILITY_IDS: AbilityId[] = ['strike', 'orbit', 'whistle', 'dash', 'guard', 'pressure', 'blast'];
 
 export const PLAYERS: PlayerDef[] = [
   {
@@ -280,47 +298,47 @@ export const ENEMIES: Record<Exclude<EnemyId, 'official' | 'captain' | 'drumboss
   },
   sprinter: {
     id: 'sprinter', name: 'Scarf Sprinter', hp: 14, speed: 98, damage: 6, xp: 2,
-    radius: 14, unlockAt: 60, weight: 55, coinChance: 0.2, behavior: 'chase', scale: 0.92,
+    radius: 14, unlockAt: 25, weight: 55, coinChance: 0.2, behavior: 'chase', scale: 0.92,
   },
   lobber: {
     id: 'lobber', name: 'Bottle Lobber', hp: 17, speed: 52, damage: 7, xp: 2,
-    radius: 15, unlockAt: 115, weight: 32, coinChance: 0.3, behavior: 'ranged', scale: 0.95,
+    radius: 15, unlockAt: 55, weight: 32, coinChance: 0.3, behavior: 'ranged', scale: 0.95,
   },
   flare: {
     id: 'flare', name: 'Flare Runner', hp: 22, speed: 88, damage: 8, xp: 3,
-    radius: 15, unlockAt: 150, weight: 30, coinChance: 0.24, behavior: 'leaper', scale: 0.95,
+    radius: 15, unlockAt: 85, weight: 30, coinChance: 0.24, behavior: 'leaper', scale: 0.95,
   },
   flag: {
     id: 'flag', name: 'Flag Bearer', hp: 30, speed: 58, damage: 5, xp: 4,
-    radius: 16, unlockAt: 185, weight: 24, coinChance: 0.26, behavior: 'support', scale: 1.15,
+    radius: 16, unlockAt: 120, weight: 24, coinChance: 0.26, behavior: 'support', scale: 1.15,
   },
   foam: {
     id: 'foam', name: 'Foam Finger Fan', hp: 55, speed: 44, damage: 13, xp: 3,
-    radius: 18, unlockAt: 210, weight: 30, coinChance: 0.3, behavior: 'chase', scale: 1.18, push: 260,
+    radius: 18, unlockAt: 155, weight: 30, coinChance: 0.3, behavior: 'chase', scale: 1.18, push: 260,
   },
   steward: {
     id: 'steward', name: 'Rogue Steward', hp: 62, speed: 40, damage: 14, xp: 3,
-    radius: 19, unlockAt: 230, weight: 30, coinChance: 0.38, behavior: 'chase', scale: 1.15, push: 200,
+    radius: 19, unlockAt: 190, weight: 30, coinChance: 0.38, behavior: 'chase', scale: 1.15, push: 200,
   },
   drummer: {
     id: 'drummer', name: 'Drumline Bruiser', hp: 85, speed: 36, damage: 16, xp: 5,
-    radius: 20, unlockAt: 260, weight: 22, coinChance: 0.34, behavior: 'thumper', scale: 1.25,
+    radius: 20, unlockAt: 225, weight: 22, coinChance: 0.34, behavior: 'thumper', scale: 1.25,
   },
   vuvuzela: {
     id: 'vuvuzela', name: 'Vuvuzela Blaster', hp: 40, speed: 50, damage: 9, xp: 4,
-    radius: 15, unlockAt: 300, weight: 24, coinChance: 0.3, behavior: 'cone', scale: 1.15,
+    radius: 15, unlockAt: 270, weight: 24, coinChance: 0.3, behavior: 'cone', scale: 1.15,
   },
   mascot: {
     id: 'mascot', name: 'Rival Mascot', hp: 130, speed: 46, damage: 18, xp: 8,
-    radius: 24, unlockAt: 340, weight: 14, coinChance: 0.6, behavior: 'chase', scale: 1.45, push: 300,
+    radius: 24, unlockAt: 315, weight: 14, coinChance: 0.6, behavior: 'chase', scale: 1.45, push: 300,
   },
   banner: {
     id: 'banner', name: 'Banner Wall', hp: 220, speed: 26, damage: 10, xp: 9,
-    radius: 30, unlockAt: 380, weight: 12, coinChance: 0.5, behavior: 'wall', scale: 1.6,
+    radius: 30, unlockAt: 360, weight: 12, coinChance: 0.5, behavior: 'wall', scale: 1.6,
   },
   paparazzo: {
     id: 'paparazzo', name: 'Flash Paparazzo', hp: 34, speed: 92, damage: 8, xp: 5,
-    radius: 14, unlockAt: 420, weight: 20, coinChance: 0.3, behavior: 'flanker', scale: 0.9,
+    radius: 14, unlockAt: 405, weight: 20, coinChance: 0.3, behavior: 'flanker', scale: 0.9,
   },
   chant: {
     id: 'chant', name: 'Chant Leader', hp: 70, speed: 48, damage: 10, xp: 7,

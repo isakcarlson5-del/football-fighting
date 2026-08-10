@@ -329,6 +329,7 @@ export class UI {
     const b = this.hudRefs.banner;
     if (!b) return;
     b.textContent = text;
+    b.classList.toggle('compact', text.length > 18);
     b.classList.remove('show');
     void (b as HTMLElement).offsetWidth; // restart animation
     b.classList.add('show');

@@ -147,6 +147,13 @@ export class AudioEngine {
     this.noise({ dur: 0.4, gain: 0.3, freq: 300, sweepTo: 90, q: 0.7 });
     this.tone({ freq: 90, freqEnd: 40, dur: 0.35, type: 'sine', gain: 0.4 });
   }
+  /** First Touch Blast: low pitch impact followed by a crisp overhead pop. */
+  blast(): void {
+    const t = this.now();
+    this.noise({ dur: 0.32, gain: 0.28, freq: 360, sweepTo: 75, q: 0.8 });
+    this.tone({ freq: 105, freqEnd: 38, dur: 0.3, type: 'sine', gain: 0.42, when: t });
+    this.tone({ freq: 720, freqEnd: 1380, dur: 0.1, type: 'triangle', gain: 0.16, when: t + 0.045 });
+  }
   /** Vuvuzela blast: nasal low blat. */
   horn(): void {
     const t = this.now();

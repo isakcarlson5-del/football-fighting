@@ -1,6 +1,6 @@
 /**
  * Attack-lane tests: range-band targeting, damage reservation across volleys,
- * ground-vs-airborne rules, and the Pitch Pressure ground ring.
+ * ground-vs-airborne rules, the Pitch Pressure ring and the hybrid blast.
  */
 import { describe, expect, it } from 'vitest';
 import { Sim } from '../../src/game/sim';
@@ -95,6 +95,29 @@ describe('attack lanes', () => {
     expect(e.hp).toBeLessThan(500);
     const d1 = Math.hypot(e.x - sim.player.x, e.y - sim.player.y);
     expect(d1).toBeGreaterThan(d0);
+  });
+
+  it('First Touch Blast damages grounded and airborne threats in separate layers', () => {
+    const sim = makeSim(3);
+    clearField(sim);
+    sim.player.abilities = { blast: 1 };
+    const groundedPos = far(sim, 120);
+    const airbornePos = far(sim, 90, 0.7);
+    sim.debugSpawn('steward', groundedPos.x, groundedPos.y);
+    sim.debugSpawn('flare', airbornePos.x, airbornePos.y);
+    const [grounded, airborne] = sim.enemies.filter((e) => e.active);
+    for (const e of [grounded, airborne]) {
+      e.speed = 0;
+      e.hp = 500;
+      e.maxHp = 500;
+    }
+    airborne.airT = 3;
+    sim.player.blastCd = 0;
+    step(sim, 1);
+    expect(grounded.hp).toBeLessThan(500);
+    expect(airborne.hp).toBeLessThan(500);
+    expect(sim.rings.some((ring) => ring.active && ring.color === '#a8ff4d')).toBe(true);
+    expect(sim.impacts.some((impact) => impact.active && impact.kind === 'airburst')).toBe(true);
   });
 
   it('AERIAL lobs connect with airborne enemies (no permanent immunities)', () => {

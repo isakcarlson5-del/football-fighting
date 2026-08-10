@@ -1,6 +1,6 @@
 # Ability card art sources
 
-The six source plates in this directory were generated with the built-in
+The seven source plates in this directory were generated with the built-in
 ImageGen workflow. Runtime WebP derivatives live in `public/art/abilities/`.
 
 Shared direction: premium stylized 2.5D football game art, oblique top-down
@@ -16,6 +16,8 @@ watermarks, UI frames or split panels.
 - `guard`: a suited bodyguard blocking a bottle and punching a nearby attacker.
 - `pressure`: a boot stamp creating an emerald ground ring that pushes a crowd
   outward.
+- `blast`: a controlled first touch creates a large green-gold ground boom and
+  a distinct smaller cyan airburst above a leaping enemy.
 
 The first Precision Strike draft was rejected because its pose read as a throw;
 `strike-src.png` is the corrected kick-contact version.

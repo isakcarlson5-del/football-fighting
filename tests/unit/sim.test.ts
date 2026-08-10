@@ -18,11 +18,21 @@ function step(sim: Sim, frames: number, ax = 0, ay = 0): void {
 }
 
 describe('sim core loop', () => {
+  it('opens on a quiet pitch, then launches a named formation wave', () => {
+    const sim = makeSim();
+    expect(sim.enemies.some((e) => e.active)).toBe(false);
+    step(sim, 180); // 3 seconds: deliberate kickoff calm
+    expect(sim.enemies.some((e) => e.active)).toBe(false);
+    step(sim, 90); // the 4-second formation wave has entered
+    expect(sim.enemies.filter((e) => e.active).length).toBeGreaterThanOrEqual(8);
+    expect(sim.events.some((event) => event.type === 'wave' && event.name === 'Warm-Up Press')).toBe(true);
+  });
+
   it('enemies spawn continuously and chase the player', () => {
     const sim = makeSim();
     step(sim, 600); // 10s
     const active = sim.enemies.filter((e) => e.active);
-    expect(active.length).toBeGreaterThan(3);
+    expect(active.length + sim.kills).toBeGreaterThan(3);
     const p = sim.player;
     const d0 = Math.hypot(active[0].x - p.x, active[0].y - p.y);
     step(sim, 120);
@@ -99,7 +109,7 @@ describe('sim core loop', () => {
 
   it('rolled upgrades are always legal (owned<max, stats<cap)', () => {
     const sim = makeSim();
-    sim.player.abilities = { strike: 5, orbit: 5, whistle: 5, dash: 5, guard: 5, pressure: 5 };
+    sim.player.abilities = { strike: 5, orbit: 5, whistle: 5, dash: 5, guard: 5, pressure: 5, blast: 5 };
     sim.player.stats = { power: 10, speed: 6, maxhp: 8, regen: 6, magnet: 6, armor: 5 };
     const opts = sim.rollUpgrades();
     expect(opts).toHaveLength(3);

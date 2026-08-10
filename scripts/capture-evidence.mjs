@@ -184,6 +184,11 @@ for (const [file, ids] of [
   await page.waitForTimeout(450); // let the staggered card-in animation settle
   await page.screenshot({ path: `${OUT}/${file}` });
 }
+await page.evaluate(() => window.__FF.showAbilityCards(['blast', 'pressure', 'strike']));
+await page.waitForFunction(() => [...document.querySelectorAll('.upgrade-card .ability-art')]
+  .every((img) => img.complete && img.naturalWidth > 0));
+await page.waitForTimeout(450);
+await page.screenshot({ path: `${OUT}/55-first-touch-blast-card.png` });
 await page.evaluate(() => window.__FF.startRun('messi'));
 
 // Generated pickup lineup: three XP tiers, coin, heal and the boss trophy.
@@ -254,6 +259,52 @@ await page.evaluate(() => {
 });
 await page.waitForTimeout(60);
 await page.screenshot({ path: `${OUT}/54-combat-impact-vfx.png` });
+await page.evaluate(() => window.__FF.startRun('messi'));
+
+// First Touch Blast in play: a broad lime GROUND circle stays on the pitch,
+// while the smaller cyan AERIAL pop is visibly elevated over the player.
+await page.evaluate(() => {
+  const ff = window.__FF;
+  const sim = ff.getSim();
+  sim.enemies.forEach((e) => { e.active = false; });
+  sim.player.abilities = { blast: 5 };
+  ff.debugSpawn('steward', -180, -80);
+  ff.debugSpawn('foam', 180, -70);
+  ff.debugSpawn('flare', -90, -145);
+  ff.debugSpawn('paparazzo', 95, -150);
+  const staged = sim.enemies.filter((e) => e.active);
+  staged.forEach((e, i) => {
+    e.hp = 9999;
+    e.maxHp = 9999;
+    e.speed = 0;
+    if (i >= 2) e.airT = 3;
+  });
+  sim.player.blastCd = 0;
+});
+await page.waitForTimeout(55);
+await page.keyboard.press('p');
+await page.evaluate(() => {
+  document.getElementById('pause-screen')?.remove();
+  const banner = document.getElementById('banner');
+  if (banner) banner.style.display = 'none';
+  window.__FF.getSim().enemies.forEach((e) => { e.flash = 0; });
+});
+await page.waitForTimeout(40);
+await page.screenshot({ path: `${OUT}/56-first-touch-blast-gameplay.png` });
+await page.evaluate(() => window.__FF.startRun('messi'));
+
+// Named opening formation after the deliberately empty kickoff window.
+await page.evaluate(() => {
+  const sim = window.__FF.getSim();
+  sim.time = 3.98;
+  sim.player.hp = 9999;
+  sim.player.maxHp = 9999;
+});
+await page.waitForTimeout(140);
+await page.keyboard.press('p');
+await page.evaluate(() => document.getElementById('pause-screen')?.remove());
+await page.waitForTimeout(30);
+await page.screenshot({ path: `${OUT}/57-opening-formation-wave.png` });
 await page.evaluate(() => window.__FF.startRun('messi'));
 
 // level-up

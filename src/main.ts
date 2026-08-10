@@ -200,6 +200,14 @@ function drainEvents(): void {
         if (throttled('pressure', 200)) audio.shockwave();
         renderer.addShake(1.5);
         break;
+      case 'blast':
+        if (throttled('blast', 180)) audio.blast();
+        renderer.addShake(4.5);
+        break;
+      case 'wave':
+        if (throttled('wave', 500)) audio.roar(0.42);
+        ui.banner(`Wave ${ev.number} · ${ev.name}`);
+        break;
       case 'lobLand':
         if (throttled('lobLand', 90)) audio.punch();
         renderer.addShake(1.2);

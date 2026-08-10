@@ -57,10 +57,12 @@ Playwright browsers install into the project-local `.pw-browsers/` folder:
   (The Referee) at 45', final boss (The Ultra Captain) near full time. Survive to 90' to win.
 - **Enemies:** 13 regular archetypes with chase, leap, ranged, support, control,
   summoner and wall behaviours, plus 3 bosses and glowing elite variants.
-  Waves intensify continuously.
-- **Abilities (5 levels each):** Precision Strike, Orbiting Press, Captain's Whistle,
-  Nutmeg Dash, Security Detail. Level-up offers 3 cards; abilities combine with
-  stat trainings (power, speed, max HP, regen, magnet, armor).
+  The pitch opens quiet, then named formation waves mix every unlocked role;
+  pressure and wave size intensify continuously.
+- **Abilities (5 levels each):** Precision Strike, Orbiting Press, Captain's
+  Whistle, Nutmeg Dash, Security Detail, Pitch Pressure and the hybrid First
+  Touch Blast. Level-up offers 3 cards; abilities combine with stat trainings
+  (power, speed, max HP, regen, magnet, armor).
 - **Players:** distinct speed/health/power plus a signature trait and starting ability.
 - **Meta (The Club):** permanent Power / Pace / Ball-Control (XP pickup) / Security-Budget
   tracks and purchasable alternate kits per player. Coins, purchases, equipped skins
@@ -80,7 +82,7 @@ scripts/     playtest + art generation harnesses
 
 ## Verification evidence
 
-- `npm test` — 43 unit tests green (rng, data, pacing, meta/save, combat lanes,
+- `npm test` — 45 unit tests green (rng, data, pacing, meta/save, combat lanes,
   stateful poses and simulation behaviours).
 - `npm run test:e2e` — 13 browser tests green: menu, select, combat kills, level-up
   pause/pick, all generated ability-card images, mobile card scrolling, death,

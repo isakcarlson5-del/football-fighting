@@ -77,12 +77,13 @@ test('level-up pauses the game, offers 3 upgrades, pick resumes', async ({ page 
   expect(await page.evaluate(() => window.__FF.getSim()!.player.level)).toBeGreaterThan(lvlBefore);
 });
 
-test('all ability draft cards load their generated AERIAL/GROUND artwork', async ({ page }) => {
+test('all ability draft cards load their generated lane artwork', async ({ page }) => {
   await page.click('[data-act="play"]');
   await page.click('[data-act="start"]');
   for (const ids of [
     ['strike', 'orbit', 'whistle'],
     ['dash', 'guard', 'pressure'],
+    ['blast', 'strike', 'pressure'],
   ] as const) {
     await page.evaluate((abilityIds) => window.__FF.showAbilityCards([...abilityIds]), ids);
     const art = page.locator('.upgrade-card .ability-art');
