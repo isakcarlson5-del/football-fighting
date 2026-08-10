@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { Sim } from '../../src/game/sim';
 import { BOSS1_AT, ENEMIES, PLAYERS, RUN_LENGTH } from '../../src/game/data';
 import { Save } from '../../src/game/meta';
-import { enemyPoseFrame } from '../../src/game/render';
+import { enemyPoseFrame, guardPoseFrame } from '../../src/game/render';
 
 function freshSave(): Save {
   return new Save(null);
@@ -134,6 +134,19 @@ describe('sim core loop', () => {
     step(sim, 240);
     // guard punched the pinned enemy to death (slot reuse makes hp checks unreliable)
     expect(sim.kills).toBeGreaterThan(0);
+  });
+
+  it('bodyguard art selects idle, movement, punch and interception poses', () => {
+    const sim = makeSim();
+    sim.applyUpgrade({ kind: 'ability', id: 'guard', name: '', desc: '', color: '', level: 1 });
+    const g = sim.guards[0];
+    expect(guardPoseFrame(g, 4)).toBe(0);
+    g.moving = true;
+    expect(guardPoseFrame(g, 4)).toBe(1);
+    g.strikeT = 0.2;
+    expect(guardPoseFrame(g, 4)).toBe(2);
+    g.blockT = 0.2;
+    expect(guardPoseFrame(g, 4)).toBe(3);
   });
 
   it('Nutmeg Dash grants invulnerability frames while dashing', () => {

@@ -134,6 +134,9 @@ export interface Guard {
   tx: number; // formation target
   ty: number;
   swingCd: number;
+  strikeT: number;
+  blockT: number;
+  moving: boolean;
   face: number;
   animT: number;
   target: number; // enemy index or -1
@@ -915,7 +918,8 @@ export class Sim {
       this.guards.push({
         x: this.player.x + Math.cos(a) * 60,
         y: this.player.y + Math.sin(a) * 60,
-        tx: 0, ty: 0, swingCd: 0, face: 1, animT: 0, target: -1,
+        tx: 0, ty: 0, swingCd: 0, strikeT: 0, blockT: 0,
+        moving: false, face: 1, animT: 0, target: -1,
       });
     }
   }
@@ -1566,6 +1570,8 @@ export class Sim {
         for (const g of this.guards) {
           if (dist2(b.x, b.y, g.x, g.y) < 26 * 26) {
             blocked = true;
+            g.blockT = 0.3;
+            g.face = b.x > g.x ? 1 : -1;
             break;
           }
         }
@@ -1588,7 +1594,11 @@ export class Sim {
       const swingCd = guardLvl >= 5 ? 0.55 : 0.8;
       const knock = guardLvl >= 4 ? 260 : 90;
       this.guards.forEach((g, gi) => {
+        const stepX = g.x;
+        const stepY = g.y;
         g.swingCd = Math.max(0, g.swingCd - dt);
+        g.strikeT = Math.max(0, g.strikeT - dt);
+        g.blockT = Math.max(0, g.blockT - dt);
         g.animT += dt;
         // acquire target near player
         let ti = g.target;
@@ -1596,8 +1606,9 @@ export class Sim {
           ti = this.nearestEnemy(p.x, p.y, 340);
           g.target = ti;
         }
-        let tx = p.x + Math.cos((gi / this.guards.length) * TAU + p.animT * 0.3) * 55;
-        let ty = p.y + Math.sin((gi / this.guards.length) * TAU + p.animT * 0.3) * 55;
+        const formationTurn = p.moving ? p.animT * 0.3 : 0;
+        let tx = p.x + Math.cos((gi / this.guards.length) * TAU + formationTurn) * 55;
+        let ty = p.y + Math.sin((gi / this.guards.length) * TAU + formationTurn) * 55;
         if (ti >= 0) {
           const e = this.enemies[ti];
           tx = e.x;
@@ -1605,6 +1616,7 @@ export class Sim {
           const dd = Math.hypot(e.x - g.x, e.y - g.y);
           if (e.airT <= 0 && dd < e.radius + 24 && g.swingCd <= 0) {
             g.swingCd = swingCd;
+            g.strikeT = 0.24;
             const d2 = dd || 1;
             this.damageEnemy(ti, dmg, ((e.x - g.x) / d2) * knock, ((e.y - g.y) / d2) * knock);
             this.events.push({ type: 'punch' });
@@ -1620,6 +1632,7 @@ export class Sim {
           g.y += (dy / d) * sp * dt;
           if (ti < 0) g.face = dx > 0 ? 1 : -1;
         }
+        g.moving = dist2(g.x, g.y, stepX, stepY) > 0.01;
       });
     }
 

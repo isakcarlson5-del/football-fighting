@@ -11,7 +11,8 @@ Built with TypeScript + Vite + Canvas 2D. The four player characters are
 generated 2.5D sprite strips (`public/art/players/`, with a procedural in-code
 fallback). All 13 regular enemies and all 3 bosses use generated semantic
 idle/move/attack/hurt strips; pickups and effects are drawn in code. Menu and
-arena art are generated and shipped as local files.
+arena art are generated and shipped as local files. Security Detail uses its
+own generated idle/move/punch/intercept bodyguard strip.
 No paid APIs, no paid assets, no network calls at runtime.
 
 ## Run it locally

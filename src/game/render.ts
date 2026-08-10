@@ -7,7 +7,7 @@
 import { clamp, TAU } from '../core/math';
 import { ballSprite, bossAtlas, bottleSprite, coinSprite, enemyAtlas, getStripAtlas, guardAtlas, loadStripAtlas, playerAtlas, xpSprite, type Atlas } from '../core/sprites';
 import { BOSSES, ENEMIES, SKINS, type BossId, type EnemyDef, type PlayerDef } from './data';
-import { ARENA_H, ARENA_W, type Enemy, type Sim } from './sim';
+import { ARENA_H, ARENA_W, type Enemy, type Guard, type Sim } from './sim';
 import type { Save } from './meta';
 
 const TILT = 0.62;
@@ -29,6 +29,18 @@ export function enemyPoseFrame(
   if (e.hurtT > 0 || e.stun > 0) return 3;
   if (e.windup > 0 || e.lungeT > 0 || e.telegraph > 0 || e.casting !== '') return 2;
   if (e.moving || e.airT > 0) return 1;
+  return 0;
+}
+
+/** Allied bodyguard strip poses: idle, move, punch, bottle interception. */
+export function guardPoseFrame(
+  g: Pick<Guard, 'moving' | 'strikeT' | 'blockT'>,
+  frames: number,
+): number {
+  if (frames < 4) return Math.max(0, frames - 1);
+  if (g.blockT > 0) return 3;
+  if (g.strikeT > 0) return 2;
+  if (g.moving) return 1;
   return 0;
 }
 
@@ -61,6 +73,7 @@ export class Renderer {
     this.xpSpr = [xpSprite(1), xpSprite(2), xpSprite(3)];
     this.coinSpr = coinSprite();
     this.bottleSpr = bottleSprite();
+    void loadStripAtlas('ally-bodyguard', 'art/allies/bodyguard.png');
     for (let i = 0; i < 400; i++) this.crowdSeed.push(Math.random());
   }
 
@@ -684,16 +697,28 @@ export class Renderer {
         }
       } else {
         const g = sim.guards[it.idx];
-        const atlas = guardAtlas();
-        const sc = ENTITY_SCALE * 1.05;
+        const atlas = getStripAtlas('ally-bodyguard') ?? guardAtlas();
+        const sc = ENTITY_SCALE * (80 / atlas.fh) * 1.05;
         const x = toSX(g.x);
         const y = toSY(g.y);
         this.shadow(ctx, x, y, 22);
-        const frame = Math.floor(g.animT * 9) % atlas.frames;
+        const frame = guardPoseFrame(g, atlas.frames);
         ctx.save();
         ctx.translate(x, y);
+        if (g.moving && g.strikeT <= 0 && g.blockT <= 0) {
+          const gait = Math.sin(g.animT * 12);
+          ctx.translate(0, -Math.abs(gait) * 1.5);
+          ctx.rotate(g.face * gait * 0.018);
+        } else if (g.strikeT > 0) {
+          const punch = Math.sin(Math.PI * (1 - g.strikeT / 0.24));
+          ctx.translate(g.face * punch * 7, -punch);
+          ctx.rotate(g.face * punch * 0.045);
+        } else if (g.blockT > 0) {
+          const brace = 0.5 + 0.5 * Math.sin(g.animT * 20);
+          ctx.scale(1 + brace * 0.016, 1 - brace * 0.008);
+        }
         if (g.face < 0) ctx.scale(-1, 1);
-        ctx.drawImage(atlas.canvas, frame * atlas.fw, 0, atlas.fw, atlas.fh, -(atlas.fw * sc) / 2, -atlas.fh * sc + 10, atlas.fw * sc, atlas.fh * sc);
+        ctx.drawImage(atlas.canvas, frame * atlas.fw, 0, atlas.fw, atlas.fh, -(atlas.fw * sc) / 2, -atlas.feetY * sc, atlas.fw * sc, atlas.fh * sc);
         ctx.restore();
       }
     }

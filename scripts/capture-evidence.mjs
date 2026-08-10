@@ -131,6 +131,31 @@ await page.screenshot({ path: `${OUT}/47-enemy-semantic-poses.png` });
 await page.keyboard.press('p');
 await page.evaluate(() => window.__FF.getSim().enemies.forEach((e) => { e.active = false; }));
 
+// Security Detail: three semantic states from the generated ally strip.
+await page.evaluate(() => {
+  const sim = window.__FF.getSim();
+  sim.applyUpgrade({
+    kind: 'ability', id: 'guard', name: 'Security Detail', desc: '',
+    color: '#8ed0ff', level: 5,
+  });
+});
+await page.waitForTimeout(180);
+await page.keyboard.press('p');
+await page.evaluate(() => {
+  document.getElementById('pause-screen')?.remove();
+  const guards = window.__FF.getSim().guards;
+  for (const g of guards) {
+    g.moving = false;
+    g.strikeT = 0;
+    g.blockT = 0;
+  }
+  guards[1].strikeT = 1;
+  guards[2].blockT = 1;
+});
+await page.waitForTimeout(40);
+await page.screenshot({ path: `${OUT}/48-bodyguard-states.png` });
+await page.keyboard.press('p');
+
 // level-up
 await page.evaluate(() => window.__FF.giveXp(40));
 await page.waitForSelector('#levelup-screen');
