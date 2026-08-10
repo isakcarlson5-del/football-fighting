@@ -180,6 +180,11 @@ function drainEvents(): void {
       case 'coin':
         if (throttled('coin', 100)) audio.coin();
         break;
+      case 'trophy':
+        audio.levelup();
+        renderer.addShake(3 + ev.tier);
+        ui.banner(`Trophy secured! +${ev.coins} coins`);
+        break;
       case 'levelup':
         audio.levelup();
         audio.roar(0.5);

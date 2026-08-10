@@ -5,7 +5,21 @@
  */
 
 import { clamp, TAU } from '../core/math';
-import { ballSprite, bossAtlas, bottleSprite, coinSprite, enemyAtlas, getStripAtlas, guardAtlas, loadStripAtlas, playerAtlas, xpSprite, type Atlas } from '../core/sprites';
+import {
+  ballSprite,
+  bossAtlas,
+  bottleSprite,
+  coinSprite,
+  drinkSprite,
+  enemyAtlas,
+  getStripAtlas,
+  guardAtlas,
+  loadStripAtlas,
+  playerAtlas,
+  trophySprite,
+  xpSprite,
+  type Atlas,
+} from '../core/sprites';
 import { BOSSES, ENEMIES, SKINS, type BossId, type EnemyDef, type PlayerDef } from './data';
 import { ARENA_H, ARENA_W, KICK_DURATION, type Enemy, type Guard, type Sim } from './sim';
 import type { Save } from './meta';
@@ -19,6 +33,7 @@ const ENTITY_SCALE = 1.85;
 const PLATE_GRASS = { x: 124, y: 157, w: 1287, h: 769 };
 /** Camera never gets closer than this to the painted world's outer edge. */
 const EDGE_PAD = 6;
+type SpriteBitmap = HTMLCanvasElement | HTMLImageElement;
 
 /** Generated enemy strips use semantic poses: idle, move, attack/cast, hurt. */
 export function enemyPoseFrame(
@@ -54,8 +69,10 @@ export class Renderer {
   private scale = 1;
   private shake = 0;
   private ball: HTMLCanvasElement;
-  private xpSpr: HTMLCanvasElement[];
-  private coinSpr: HTMLCanvasElement;
+  private xpSpr: SpriteBitmap[];
+  private coinSpr: SpriteBitmap;
+  private healSpr: SpriteBitmap;
+  private trophySpr: SpriteBitmap;
   private bottleSpr: HTMLCanvasElement;
   private atlasCache = new Map<string, Atlas>();
   private crowdSeed: number[] = [];
@@ -72,9 +89,32 @@ export class Renderer {
     this.ball = ballSprite(22);
     this.xpSpr = [xpSprite(1), xpSprite(2), xpSprite(3)];
     this.coinSpr = coinSprite();
+    this.healSpr = drinkSprite();
+    this.trophySpr = trophySprite();
     this.bottleSpr = bottleSprite();
+    ['xp-1', 'xp-2', 'xp-3'].forEach((id, i) => {
+      this.loadPickupSprite(`art/pickups/${id}.png`, (img) => {
+        this.xpSpr[i] = img;
+      });
+    });
+    this.loadPickupSprite('art/pickups/coin.png', (img) => {
+      this.coinSpr = img;
+    });
+    this.loadPickupSprite('art/pickups/heal.png', (img) => {
+      this.healSpr = img;
+    });
+    this.loadPickupSprite('art/pickups/trophy.png', (img) => {
+      this.trophySpr = img;
+    });
     void loadStripAtlas('ally-bodyguard', 'art/allies/bodyguard.png');
     for (let i = 0; i < 400; i++) this.crowdSeed.push(Math.random());
+  }
+
+  /** Loads generated pickup art while preserving the procedural fallback. */
+  private loadPickupSprite(url: string, apply: (img: HTMLImageElement) => void): void {
+    const img = new Image();
+    img.onload = () => apply(img);
+    img.src = url;
   }
 
   /** Swap in the AI arena plate and rebuild the prerendered world canvas. */
@@ -515,14 +555,15 @@ export class Renderer {
     for (const pk of sim.pickups) {
       if (!pk.active) continue;
       const bobY = Math.sin(pk.t * 5 + pk.x) * 3;
-      const img = pk.kind === 'coin' ? this.coinSpr : this.xpSpr[pk.tier - 1];
-      const s = pk.kind === 'coin' ? 1.6 : pk.tier === 3 ? 1.6 : 1.4;
+      const img = pk.kind === 'coin' ? this.coinSpr : pk.kind === 'heal' ? this.healSpr : pk.kind === 'trophy' ? this.trophySpr : this.xpSpr[pk.tier - 1];
+      const baseSize = pk.kind === 'trophy' ? 52 : pk.kind === 'heal' ? 42 : pk.kind === 'coin' ? 30 : pk.tier === 3 ? 38 : pk.tier === 2 ? 32 : 27;
+      const drawSize = baseSize * (1 + Math.sin(pk.t * 4.5) * 0.035);
       // glow
-      ctx.fillStyle = pk.kind === 'coin' ? 'rgba(255,210,63,0.25)' : 'rgba(142,208,255,0.22)';
+      ctx.fillStyle = pk.kind === 'coin' ? 'rgba(255,210,63,0.28)' : pk.kind === 'heal' ? 'rgba(55,214,122,0.28)' : pk.kind === 'trophy' ? 'rgba(255,243,196,0.34)' : pk.tier === 3 ? 'rgba(255,142,240,0.26)' : 'rgba(142,208,255,0.24)';
       ctx.beginPath();
-      ctx.ellipse(toSX(pk.x), toSY(pk.y), 12 * s, 6 * s, 0, 0, TAU);
+      ctx.ellipse(toSX(pk.x), toSY(pk.y) + 3, drawSize * 0.55, drawSize * 0.24, 0, 0, TAU);
       ctx.fill();
-      ctx.drawImage(img, toSX(pk.x) - (img.width * s) / 2, toSY(pk.y) - (img.height * s) / 2 + bobY, img.width * s, img.height * s);
+      ctx.drawImage(img, toSX(pk.x) - drawSize / 2, toSY(pk.y) - drawSize / 2 + bobY, drawSize, drawSize);
     }
 
     /* corpses: fallen enemies topple sideways, sink and fade (under live entities) */

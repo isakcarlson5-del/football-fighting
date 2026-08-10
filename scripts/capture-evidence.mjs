@@ -186,6 +186,34 @@ for (const [file, ids] of [
 }
 await page.evaluate(() => window.__FF.startRun('messi'));
 
+// Generated pickup lineup: three XP tiers, coin, heal and the boss trophy.
+await page.keyboard.press('p');
+await page.evaluate(() => {
+  document.getElementById('pause-screen')?.remove();
+  const banner = document.getElementById('banner');
+  if (banner) banner.style.display = 'none';
+  const sim = window.__FF.getSim();
+  sim.enemies.forEach((e) => { e.active = false; });
+  const specs = [
+    ['xp', 1], ['xp', 2], ['xp', 3], ['coin', 1], ['heal', 1], ['trophy', 3],
+  ];
+  specs.forEach(([kind, tier], i) => {
+    const pickup = sim.pickups[i];
+    pickup.active = true;
+    pickup.kind = kind;
+    pickup.tier = tier;
+    pickup.x = sim.player.x - 300 + i * 120;
+    pickup.y = sim.player.y - 170;
+    pickup.vx = 0;
+    pickup.vy = 0;
+    pickup.value = 1;
+    pickup.t = 0.4;
+  });
+});
+await page.waitForTimeout(120);
+await page.screenshot({ path: `${OUT}/53-generated-pickups.png` });
+await page.evaluate(() => window.__FF.startRun('messi'));
+
 // level-up
 await page.evaluate(() => window.__FF.giveXp(40));
 await page.waitForSelector('#levelup-screen');

@@ -120,7 +120,7 @@ export interface Bottle {
 
 export interface Pickup {
   active: boolean;
-  kind: 'xp' | 'coin' | 'heal';
+  kind: 'xp' | 'coin' | 'heal' | 'trophy';
   tier: 1 | 2 | 3;
   x: number;
   y: number;
@@ -229,6 +229,7 @@ export type SimEvent =
   | { type: 'kick' }
   | { type: 'xp' }
   | { type: 'coin' }
+  | { type: 'trophy'; coins: number; tier: 1 | 2 | 3 }
   | { type: 'levelup' }
   | { type: 'whistle'; x: number; y: number }
   | { type: 'pressure'; x: number; y: number }
@@ -689,6 +690,21 @@ export class Sim {
       this.coins += def.coins;
       this.bossAlive = null;
       this.events.push({ type: 'bossDie', x: e.x, y: e.y, coins: def.coins });
+      // Every boss leaves one tangible trophy. Collecting it grants an extra
+      // tiered payout and creates a deliberate post-boss pickup beat.
+      const trophy = this.alloc(this.pickups);
+      if (trophy) {
+        const tier: 1 | 2 | 3 = e.boss === 'captain' ? 3 : e.boss === 'official' ? 2 : 1;
+        trophy.active = true;
+        trophy.kind = 'trophy';
+        trophy.tier = tier;
+        trophy.x = e.x;
+        trophy.y = e.y;
+        trophy.vx = this.rng.range(-35, 35);
+        trophy.vy = this.rng.range(-35, 35);
+        trophy.value = tier === 3 ? 50 : tier === 2 ? 25 : 15;
+        trophy.t = 0;
+      }
       // coin fountain
       for (let k = 0; k < 12; k++) {
         const p = this.alloc(this.pickups);
@@ -1740,7 +1756,7 @@ export class Sim {
       const d2 = dist2(pk.x, pk.y, p.x, p.y);
       if (d2 < pr * pr) {
         const d = Math.sqrt(d2) || 1;
-        const pull = pk.kind === 'coin' ? 500 : 420;
+        const pull = pk.kind === 'coin' || pk.kind === 'trophy' ? 500 : 420;
         pk.vx += ((p.x - pk.x) / d) * pull * dt * 4;
         pk.vy += ((p.y - pk.y) / d) * pull * dt * 4;
       } else if (pk.kind === 'xp' && pk.t > 0.6) {
@@ -1759,6 +1775,10 @@ export class Sim {
           p.hp = Math.min(p.maxHp, p.hp + pk.value);
           this.events.push({ type: 'xp' });
           this.burst(p.x, p.y, 10, '#37d67a');
+        } else if (pk.kind === 'trophy') {
+          this.coins += pk.value;
+          this.events.push({ type: 'trophy', coins: pk.value, tier: pk.tier });
+          this.confetti(p.x, p.y, 28 + pk.tier * 8);
         } else {
           this.coins += pk.value;
           this.events.push({ type: 'coin' });

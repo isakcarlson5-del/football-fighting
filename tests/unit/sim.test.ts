@@ -194,4 +194,22 @@ describe('sim core loop', () => {
     expect(sim.kills + sim.enemies.filter((e) => e.active).length).toBeGreaterThan(0);
     expect(sim.pickups.some((p) => !p.active) || sim.coins >= 0).toBe(true);
   });
+
+  it('boss defeat drops a tiered trophy that grants its pickup bonus', () => {
+    const sim = makeSim();
+    sim.enemies.forEach((e) => (e.active = false));
+    sim.time = 150.1;
+    step(sim, 1);
+    const bossIndex = sim.enemies.findIndex((e) => e.active && e.boss === 'drumboss');
+    expect(bossIndex).toBeGreaterThanOrEqual(0);
+    sim.damageEnemy(bossIndex, 99999);
+    const trophy = sim.pickups.find((p) => p.active && p.kind === 'trophy');
+    expect(trophy?.tier).toBe(1);
+    const before = sim.coins;
+    trophy!.x = sim.player.x;
+    trophy!.y = sim.player.y;
+    step(sim, 1);
+    expect(sim.coins).toBe(before + 15);
+    expect(sim.events.some((event) => event.type === 'trophy')).toBe(true);
+  });
 });

@@ -11,11 +11,14 @@ Built with TypeScript + Vite + Canvas 2D. The four player characters use
 generated 2.5D idle/run/kick sprite strips (`public/art/players/`, with a
 procedural in-code fallback). The kick wind-up releases its aerial ball on the
 drawn contact frame. All 13 regular enemies and all 3 bosses use generated semantic
-idle/move/attack/hurt strips; pickups and effects are drawn in code. Menu and
+idle/move/attack/hurt strips. Three XP tiers, coins, healing drinks and boss
+trophies use dedicated generated pickup art; effects retain lightweight code
+rendering. Menu and
 arena art are generated and shipped as local files. Security Detail uses its
 own generated idle/move/punch/intercept bodyguard strip. Every ability draft
 card uses dedicated generated art whose composition communicates its AERIAL or
 GROUND delivery at a glance; compact procedural icons remain in the combat HUD.
+Bosses now leave a tiered trophy pickup with a bonus coin payout and celebration.
 No paid APIs, no paid assets, no network calls at runtime.
 
 ## Run it locally
@@ -76,7 +79,7 @@ scripts/     playtest + art generation harnesses
 
 ## Verification evidence
 
-- `npm test` — 41 unit tests green (rng, data, pacing, meta/save, combat lanes,
+- `npm test` — 42 unit tests green (rng, data, pacing, meta/save, combat lanes,
   stateful poses and simulation behaviours).
 - `npm run test:e2e` — 13 browser tests green: menu, select, combat kills, level-up
   pause/pick, all generated ability-card images, mobile card scrolling, death,

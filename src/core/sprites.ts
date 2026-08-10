@@ -999,6 +999,37 @@ export function coinSprite(): HTMLCanvasElement {
   return c;
 }
 
+/** Compact fallback cup used until the generated trophy raster is ready. */
+export function trophySprite(): HTMLCanvasElement {
+  const c = makeCanvas(24, 28);
+  const ctx = c.getContext('2d')!;
+  ctx.translate(12, 14);
+  ctx.strokeStyle = OUTLINE;
+  ctx.lineWidth = 1.7;
+  const g = ctx.createLinearGradient(-8, 0, 8, 0);
+  g.addColorStop(0, '#a9b4c6');
+  g.addColorStop(0.45, '#f5f7fa');
+  g.addColorStop(1, '#778398');
+  ctx.fillStyle = g;
+  ctx.beginPath();
+  ctx.moveTo(-7, -10);
+  ctx.lineTo(7, -10);
+  ctx.lineTo(5, 1);
+  ctx.quadraticCurveTo(0, 7, -5, 1);
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.arc(-7, -5, 5, Math.PI / 2, Math.PI * 1.5);
+  ctx.arc(7, -5, 5, -Math.PI / 2, Math.PI / 2);
+  ctx.stroke();
+  ctx.fillStyle = '#ffd23f';
+  ctx.fillRect(-2, 5, 4, 5);
+  ctx.fillRect(-7, 9, 14, 4);
+  ctx.strokeRect(-7, 9, 14, 4);
+  return c;
+}
+
 /** Sports drink pickup (heal). */
 export function drinkSprite(): HTMLCanvasElement {
   const c = makeCanvas(16, 22);
