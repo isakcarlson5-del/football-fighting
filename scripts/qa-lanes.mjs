@@ -4,15 +4,15 @@
  * far thrower targets with landing reticles. Saves evidence shots.
  * Usage: node scripts/qa-lanes.mjs   (dev server must be running)
  */
-import { chromium } from '@playwright/test';
 import { mkdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { launchChromium } from './browser-runtime.mjs';
 
 const OUT = fileURLToPath(new URL('../evidence/shots', import.meta.url));
 mkdirSync(OUT, { recursive: true });
 const BASE = process.env.FF_BASE ?? 'http://localhost:5180';
 
-const browser = await chromium.launch();
+const browser = await launchChromium();
 const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
 const errors = [];
 page.on('pageerror', (e) => errors.push(`PAGEERROR: ${e.message}`));

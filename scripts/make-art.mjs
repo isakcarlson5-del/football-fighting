@@ -4,7 +4,7 @@
  * All artifacts stay inside the project. Run with the dev server up:
  *   node scripts/make-art.mjs
  */
-import { chromium } from '@playwright/test';
+import { launchChromium } from './browser-runtime.mjs';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
@@ -14,7 +14,7 @@ mkdirSync(ART_DIR, { recursive: true });
 mkdirSync(`${ROOT}src/assets`, { recursive: true });
 
 const BASE = process.env.FF_BASE ?? 'http://localhost:5199';
-const browser = await chromium.launch();
+const browser = await launchChromium();
 const page = await browser.newPage({ viewport: { width: 1920, height: 1080 } });
 
 // key art

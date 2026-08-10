@@ -9,9 +9,9 @@
  * (kept outside test-results/ because the playwright runner wipes that).
  * Usage: node scripts/playtest.mjs [scenario]
  */
-import { chromium } from '@playwright/test';
 import { mkdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { launchChromium } from './browser-runtime.mjs';
 
 const OUT = fileURLToPath(new URL('../evidence/shots', import.meta.url));
 mkdirSync(OUT, { recursive: true });
@@ -19,7 +19,7 @@ mkdirSync(OUT, { recursive: true });
 const scenario = process.argv[2] ?? 'basic';
 const BASE = 'http://localhost:5199';
 
-const browser = await chromium.launch();
+const browser = await launchChromium();
 const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
 const errors = [];
 page.on('pageerror', (e) => errors.push(`PAGEERROR: ${e.message}`));
