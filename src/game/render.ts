@@ -7,7 +7,7 @@
 import { clamp, TAU } from '../core/math';
 import { ballSprite, bossAtlas, bottleSprite, coinSprite, enemyAtlas, getStripAtlas, guardAtlas, loadStripAtlas, playerAtlas, xpSprite, type Atlas } from '../core/sprites';
 import { BOSSES, ENEMIES, SKINS, type BossId, type EnemyDef, type PlayerDef } from './data';
-import { ARENA_H, ARENA_W, type Sim } from './sim';
+import { ARENA_H, ARENA_W, type Enemy, type Sim } from './sim';
 import type { Save } from './meta';
 
 const TILT = 0.62;
@@ -19,6 +19,18 @@ const ENTITY_SCALE = 1.85;
 const PLATE_GRASS = { x: 124, y: 157, w: 1287, h: 769 };
 /** Camera never gets closer than this to the painted world's outer edge. */
 const EDGE_PAD = 6;
+
+/** Generated enemy strips use semantic poses: idle, move, attack/cast, hurt. */
+export function enemyPoseFrame(
+  e: Pick<Enemy, 'hurtT' | 'stun' | 'windup' | 'lungeT' | 'telegraph' | 'casting' | 'moving' | 'airT'>,
+  frames: number,
+): number {
+  if (frames < 4) return Math.max(0, frames - 1);
+  if (e.hurtT > 0 || e.stun > 0) return 3;
+  if (e.windup > 0 || e.lungeT > 0 || e.telegraph > 0 || e.casting !== '') return 2;
+  if (e.moving || e.airT > 0) return 1;
+  return 0;
+}
 
 export class Renderer {
   private canvas: HTMLCanvasElement;
@@ -512,7 +524,8 @@ export class Renderer {
       ctx.rotate(c.face * fall * 1.35); // topple toward the facing side
       const dw = atlas.fw * sc;
       const dh = atlas.fh * sc;
-      ctx.drawImage(atlas.canvas, 0, 0, atlas.fw, atlas.fh, -dw / 2, -atlas.feetY * sc, dw, dh);
+      const frame = atlas.frames >= 4 ? 3 : 0;
+      ctx.drawImage(atlas.canvas, frame * atlas.fw, 0, atlas.fw, atlas.fh, -dw / 2, -atlas.feetY * sc, dw, dh);
       ctx.restore();
     }
     ctx.globalAlpha = 1;
@@ -562,14 +575,20 @@ export class Renderer {
           ctx.ellipse(x, y, 230, 230 * TILT, 0, 0, TAU);
           ctx.stroke();
         }
-        // combat states: wind-up pull-back, strike lunge, then recover
-        const frame = e.windup > 0 ? 1 : e.lungeT > 0 ? 2 : Math.floor(e.animT * 10) % atlas.frames;
+        // Semantic strip poses prevent idle enemies from cycling through attack
+        // and hurt art. Locomotion stays alive through a restrained body sway.
+        const frame = enemyPoseFrame(e, atlas.frames);
         const useFlash = e.flash > 0;
         const img = useFlash ? atlas.flash : atlas.canvas;
         const dw = atlas.fw * sc;
         const dh = atlas.fh * sc;
         ctx.save();
         ctx.translate(x, y - lift);
+        if (e.moving && e.windup <= 0 && e.lungeT <= 0 && e.telegraph <= 0) {
+          const gait = Math.sin(e.animT * 12);
+          ctx.translate(0, -Math.abs(gait) * 1.6);
+          ctx.rotate(e.face * gait * 0.018);
+        }
         if (e.windup > 0) {
           const w = 1 - e.windup / 0.34; // pull back harder as the strike nears
           ctx.translate(-e.face * (3 + w * 5), w * 2);
@@ -578,6 +597,9 @@ export class Renderer {
           const l = e.lungeT / 0.14;
           ctx.translate(e.face * l * 9, 0);
           ctx.rotate(e.face * 0.05 * l);
+        } else if (e.telegraph > 0) {
+          const cast = 0.5 + 0.5 * Math.sin(e.animT * 18);
+          ctx.scale(1 + cast * 0.018, 1 - cast * 0.01);
         }
         if (e.face < 0) ctx.scale(-1, 1);
         ctx.drawImage(img, frame * atlas.fw, 0, atlas.fw, atlas.fh, -dw / 2, -atlas.feetY * sc, dw, dh);

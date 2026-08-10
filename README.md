@@ -9,8 +9,9 @@ winnings on permanent upgrades and cosmetic kits between runs.
 
 Built with TypeScript + Vite + Canvas 2D. The four player characters are
 generated 2.5D sprite strips (`public/art/players/`, with a procedural in-code
-fallback); enemies, pickups and effects are procedural (drawn in code at boot);
-menu/background art is generated and shipped as local files.
+fallback). All 13 regular enemies and all 3 bosses use generated semantic
+idle/move/attack/hurt strips; pickups and effects are drawn in code. Menu and
+arena art are generated and shipped as local files.
 No paid APIs, no paid assets, no network calls at runtime.
 
 ## Run it locally
@@ -46,8 +47,9 @@ Playwright browsers install into the project-local `.pw-browsers/` folder:
 
 - **Run length:** 600s, shown as a football match clock (0' → 90'). Half-time boss
   (The Referee) at 45', final boss (The Ultra Captain) near full time. Survive to 90' to win.
-- **Enemies:** Hooligan, Ultra (fast), Bottle Thrower (ranged), Rogue Steward (tank),
-  Rival Mascot (bruiser), plus glowing elite variants. Waves intensify continuously.
+- **Enemies:** 13 regular archetypes with chase, leap, ranged, support, control,
+  summoner and wall behaviours, plus 3 bosses and glowing elite variants.
+  Waves intensify continuously.
 - **Abilities (5 levels each):** Precision Strike, Orbiting Press, Captain's Whistle,
   Nutmeg Dash, Security Detail. Level-up offers 3 cards; abilities combine with
   stat trainings (power, speed, max HP, regen, magnet, armor).
@@ -59,7 +61,7 @@ Playwright browsers install into the project-local `.pw-browsers/` folder:
 ## Project layout
 
 ```
-src/core/    engine: rng, math, input, audio (muted), procedural sprite painter
+src/core/    engine: rng, math, input, synthesized audio, procedural sprite fallback
 src/game/    data (players/abilities/enemies/shop), sim (pure logic), render (2.5D), ui (DOM), meta (save)
 public/art/  generated background art (menu / select / victory)
 tools/       dev-only art composer + sprite sheet viewer (not in the bundle)
@@ -69,11 +71,12 @@ scripts/     playtest + art generation harnesses
 
 ## Verification evidence
 
-- `npm test` — 29 unit tests green (rng, data, pacing, meta/save, sim behaviours).
+- `npm test` — 40 unit tests green (rng, data, pacing, meta/save, combat lanes,
+  stateful poses and simulation behaviours).
 - `npm run test:e2e` — 11 browser tests green: menu, select, combat kills, level-up
   pause/pick, death result, victory result, boss nameplate, shop persistence across
   reload, skin purchase/equip persistence, pause, horde performance (>45fps).
-- Live playtest screenshots: `test-results/shots/` (menu/select/gameplay/level-up/
-  bosses/mobile/victory, dev and production build).
-- Sound: intentionally disabled build-wide (`AUDIO_ENABLED = false` in
-  `src/core/audio.ts`) until the user asks for it.
+- Live playtest screenshots: `evidence/shots/` (menu/select/gameplay/level-up,
+  all enemy lineups, semantic poses, bosses, mobile and victory).
+- Sound: autoplay-safe synthesized WebAudio SFX, crowd bed and adaptive music;
+  mute and separate master/SFX/music levels persist locally.

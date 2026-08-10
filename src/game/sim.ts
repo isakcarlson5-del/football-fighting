@@ -52,6 +52,8 @@ export interface Enemy {
   kx: number; // knockback velocity
   ky: number;
   flash: number;
+  /** Recoil pose timer; intentionally outlasts the brief white impact flash. */
+  hurtT: number;
   attackCd: number;
   orbitCd: number;
   dashMark: number; // dash id that already hit this enemy
@@ -59,6 +61,8 @@ export interface Enemy {
   slow: number;
   face: number; // -1 | 1
   animT: number;
+  /** True only when the enemy changed world position during the latest step. */
+  moving: boolean;
   /** generic behavior cooldown (bottle throws, leaps, thumps, flashes, chants) */
   rangedCd: number;
   /** melee wind-up: >0 while visibly pulling back before the strike */
@@ -77,7 +81,8 @@ export interface Enemy {
   // boss ability timers
   bossCd: number;
   bossCd2: number;
-  telegraph: number; // 0 = none, else seconds remaining of visible telegraph
+  /** >0 while a special attack is being telegraphed; drives the cast pose. */
+  telegraph: number;
 }
 
 /** AERIAL lane: a lobbed ball with real height (z) flying to a reserved far
@@ -411,8 +416,8 @@ export class Sim {
     for (let i = 0; i < MAX_ENEMIES; i++) {
       this.enemies.push({
         active: false, def: ENEMIES.invader, x: 0, y: 0, hp: 1, maxHp: 1, speed: 0, damage: 0,
-        radius: 10, xp: 1, elite: false, boss: '', kx: 0, ky: 0, flash: 0, attackCd: 0, orbitCd: 0,
-        dashMark: -1, stun: 0, slow: 0, face: 1, animT: 0, rangedCd: 2, windup: 0, lungeT: 0, airT: 0, haste: 1, boostT: 0, casting: '', bossCd: 4, bossCd2: 8, telegraph: 0,
+        radius: 10, xp: 1, elite: false, boss: '', kx: 0, ky: 0, flash: 0, hurtT: 0, attackCd: 0, orbitCd: 0,
+        dashMark: -1, stun: 0, slow: 0, face: 1, animT: 0, moving: false, rangedCd: 2, windup: 0, lungeT: 0, airT: 0, haste: 1, boostT: 0, casting: '', bossCd: 4, bossCd2: 8, telegraph: 0,
       });
     }
     for (let i = 0; i < 400; i++) this.balls.push({ active: false, x: 0, y: 0, vx: 0, vy: 0, z: 0, vz: 0, dmg: 0, splash: 60, ricochet: 0, spin: 0, tx: 0, ty: 0, targetIdx: -1, flightT: 0, maxFlightT: 1 });
@@ -522,12 +527,14 @@ export class Sim {
     e.kx = 0;
     e.ky = 0;
     e.flash = 0;
+    e.hurtT = 0;
     e.attackCd = 0;
     e.orbitCd = 0;
     e.dashMark = -1;
     e.stun = 0;
     e.slow = 0;
     e.animT = this.rng.range(0, 1);
+    e.moving = false;
     e.rangedCd = this.rng.range(1, 2.6);
     e.windup = 0;
     e.lungeT = 0;
@@ -560,12 +567,14 @@ export class Sim {
     e.kx = 0;
     e.ky = 0;
     e.flash = 0;
+    e.hurtT = 0;
     e.attackCd = 0;
     e.orbitCd = 0;
     e.dashMark = -1;
     e.stun = 0;
     e.slow = 0;
     e.animT = 0;
+    e.moving = false;
     e.rangedCd = 2;
     e.windup = 0;
     e.lungeT = 0;
@@ -649,6 +658,7 @@ export class Sim {
     const final = Math.round(dmg * (crit ? 1.6 : 1));
     e.hp -= final;
     e.flash = 0.12;
+    e.hurtT = 0.24;
     e.kx += kx;
     e.ky += ky;
     // a heavy shove launches the enemy briefly airborne: ground effects sweep
@@ -1330,7 +1340,10 @@ export class Sim {
     for (let i = 0; i < this.enemies.length; i++) {
       const e = this.enemies[i];
       if (!e.active) continue;
+      const stepX = e.x;
+      const stepY = e.y;
       e.flash = Math.max(0, e.flash - dt);
+      e.hurtT = Math.max(0, e.hurtT - dt);
       e.attackCd = Math.max(0, e.attackCd - dt);
       e.orbitCd = Math.max(0, e.orbitCd - dt);
       e.stun = Math.max(0, e.stun - dt);
@@ -1338,6 +1351,7 @@ export class Sim {
       e.airT = Math.max(0, e.airT - dt);
       e.lungeT = Math.max(0, e.lungeT - dt);
       e.boostT = Math.max(0, e.boostT - dt);
+      e.telegraph = Math.max(0, e.telegraph - dt);
       e.animT += dt;
       // knockback decay
       e.x += e.kx * dt;
@@ -1353,6 +1367,7 @@ export class Sim {
       }
       if (e.stun > 0) {
         e.windup = 0; // stun interrupts the swing
+        e.moving = dist2(e.x, e.y, stepX, stepY) > 0.01;
         continue;
       }
 
@@ -1456,6 +1471,7 @@ export class Sim {
             e.rangedCd -= dt;
             if (e.rangedCd <= 0 && d < 280) {
               e.rangedCd = 3.2;
+              e.telegraph = Math.max(e.telegraph, 0.85);
               this.telegraph(e.x, e.y, 210, 0.85, 'shock', e.damage, 0);
             }
           }
@@ -1475,9 +1491,11 @@ export class Sim {
             e.windup = 0.42; // visible arm raise before the throw
           } else if (beh === 'cone' && e.rangedCd <= 0 && d < 430) {
             e.rangedCd = 3.4;
+            e.telegraph = Math.max(e.telegraph, 0.6);
             this.telegraph(e.x, e.y, 400, 0.6, 'cone', e.damage, Math.atan2(dy, dx));
           } else if (beh === 'summoner' && e.rangedCd <= 0 && d < 520) {
             e.rangedCd = 6.5;
+            e.telegraph = Math.max(e.telegraph, 0.9);
             this.telegraph(e.x, e.y, 120, 0.9, 'chant', 0, 0);
           }
         } else if (beh === 'flanker') {
@@ -1490,6 +1508,7 @@ export class Sim {
           e.rangedCd -= dt;
           if (e.rangedCd <= 0 && d < 300) {
             e.rangedCd = 4.2;
+            e.telegraph = Math.max(e.telegraph, 0.7);
             this.telegraph(e.x, e.y, 230, 0.7, 'flash', e.damage, 0);
           }
         }
@@ -1498,6 +1517,7 @@ export class Sim {
           e.windup = 0.34; // readable pull-back before the hit lands
         }
       }
+      e.moving = dist2(e.x, e.y, stepX, stepY) > 0.01;
     }
 
     /* balls (AERIAL lane: lobbed ballistics, damage only on landing) */
@@ -1768,6 +1788,7 @@ export class Sim {
     if (e.bossCd <= 0) {
       e.bossCd = 6;
       // whistle shockwave, telegraphed around the official
+      e.telegraph = Math.max(e.telegraph, 0.9);
       this.telegraph(e.x, e.y, 230, 0.9, 'shock', 18, 0);
     }
     if (e.bossCd2 <= 0) {
@@ -1781,6 +1802,7 @@ export class Sim {
     if (e.rangedCd <= 0) {
       e.rangedCd = 12;
       // red card: telegraphed marker on the player, brief slow on verdict
+      e.telegraph = Math.max(e.telegraph, 1.0);
       this.telegraph(this.player.x, this.player.y, 150, 1.0, 'flash', 10, 0);
     }
   }
@@ -1796,6 +1818,7 @@ export class Sim {
     if (e.bossCd <= 0) {
       e.bossCd = 5.5;
       // flare barrage: 3 flares aimed around player
+      e.telegraph = Math.max(e.telegraph, 1.1);
       const p = this.player;
       for (let i = 0; i < 3; i++) {
         const tx = clamp(p.x + this.rng.range(-140, 140), 60, ARENA_W - 60);
@@ -1824,6 +1847,7 @@ export class Sim {
     if (e.bossCd <= 0) {
       e.bossCd = 3.4;
       // drum shockwave, telegraphed around the drummer
+      e.telegraph = Math.max(e.telegraph, 1.0);
       this.telegraph(e.x, e.y, 225, 1.0, 'shock', 16, 0);
     }
     if (e.bossCd2 <= 0) {
@@ -1899,4 +1923,3 @@ export class Sim {
     this.gainXp(n);
   }
 }
-

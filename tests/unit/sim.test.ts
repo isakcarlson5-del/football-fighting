@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { Sim } from '../../src/game/sim';
 import { BOSS1_AT, ENEMIES, PLAYERS, RUN_LENGTH } from '../../src/game/data';
 import { Save } from '../../src/game/meta';
+import { enemyPoseFrame } from '../../src/game/render';
 
 function freshSave(): Save {
   return new Save(null);
@@ -27,6 +28,37 @@ describe('sim core loop', () => {
     step(sim, 120);
     const d1 = Math.hypot(active[0].x - p.x, active[0].y - p.y);
     expect(d1).toBeLessThan(d0);
+  });
+
+  it('enemy art selects semantic idle, movement, cast and hurt poses', () => {
+    const sim = makeSim();
+    sim.enemies.forEach((e) => (e.active = false));
+    sim.debugSpawn('chant', sim.player.x + 360, sim.player.y);
+    const e = sim.enemies.find((x) => x.active)!;
+
+    e.moving = false;
+    expect(enemyPoseFrame(e, 4)).toBe(0);
+    e.moving = true;
+    expect(enemyPoseFrame(e, 4)).toBe(1);
+    e.telegraph = 0.5;
+    expect(enemyPoseFrame(e, 4)).toBe(2);
+    e.hurtT = 0.2;
+    expect(enemyPoseFrame(e, 4)).toBe(3);
+  });
+
+  it('movement state follows actual locomotion and stops while planted', () => {
+    const sim = makeSim();
+    sim.enemies.forEach((e) => (e.active = false));
+    sim.debugSpawn('invader', sim.player.x + 400, sim.player.y);
+    const e = sim.enemies.find((x) => x.active)!;
+    step(sim, 1);
+    expect(e.moving).toBe(true);
+    e.speed = 0;
+    e.kx = 0;
+    e.ky = 0;
+    e.stun = 1;
+    step(sim, 1);
+    expect(e.moving).toBe(false);
   });
 
   it('Precision Strike fires automatically and kills enemies, dropping XP', () => {

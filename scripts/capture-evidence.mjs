@@ -99,6 +99,38 @@ await page.waitForTimeout(80);
 await page.screenshot({ path: `${OUT}/46-ai-enemy-lineup-d.png` });
 await page.evaluate(() => window.__FF.getSim().enemies.forEach((e) => { e.active = false; }));
 
+// Freeze four identical enemies to prove the semantic strip states render as
+// idle, locomotion, cast and hurt instead of cycling randomly while standing.
+await page.evaluate(() => {
+  const ff = window.__FF;
+  ff.debugSpawn('chant', -270, -105);
+  ff.debugSpawn('chant', -90, -105);
+  ff.debugSpawn('chant', 90, -105);
+  ff.debugSpawn('chant', 270, -105);
+});
+await page.keyboard.press('p');
+await page.evaluate(() => {
+  document.getElementById('pause-screen')?.remove();
+  const staged = window.__FF.getSim().enemies.filter((e) => e.active);
+  for (const e of staged) {
+    e.moving = false;
+    e.windup = 0;
+    e.lungeT = 0;
+    e.telegraph = 0;
+    e.casting = '';
+    e.flash = 0;
+    e.hurtT = 0;
+    e.stun = 0;
+  }
+  staged[1].moving = true;
+  staged[2].telegraph = 1;
+  staged[3].hurtT = 1;
+});
+await page.waitForTimeout(40);
+await page.screenshot({ path: `${OUT}/47-enemy-semantic-poses.png` });
+await page.keyboard.press('p');
+await page.evaluate(() => window.__FF.getSim().enemies.forEach((e) => { e.active = false; }));
+
 // level-up
 await page.evaluate(() => window.__FF.giveXp(40));
 await page.waitForSelector('#levelup-screen');
