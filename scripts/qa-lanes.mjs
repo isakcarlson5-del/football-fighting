@@ -40,12 +40,12 @@ await page.evaluate(() => {
   // close mobs (inside the pressure ring)
   for (let i = 0; i < 7; i++) {
     const a = (i / 7) * Math.PI * 2;
-    ff.debugSpawn('hooligan', Math.cos(a) * 130, Math.sin(a) * 130);
+    ff.debugSpawn('invader', Math.cos(a) * 130, Math.sin(a) * 130);
   }
   // far ranged threats (lob targets) + a far elite
-  ff.debugSpawn('thrower', 420, -120);
-  ff.debugSpawn('thrower', -450, 80);
-  ff.debugSpawn('thrower', 240, 350);
+  ff.debugSpawn('lobber', 420, -120);
+  ff.debugSpawn('lobber', -450, 80);
+  ff.debugSpawn('lobber', 240, 350);
   ff.debugSpawn('steward', -300, -330, true);
   // hold fire until staged
   sim.player.strikeCd = 999;

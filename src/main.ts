@@ -171,6 +171,8 @@ function drainEvents(): void {
       case 'kill':
         renderer.addShake(ev.elite ? 5 : 1.6);
         if (ev.elite && throttled('elite', 300)) audio.roar(0.7);
+        // hit-stop: brief freeze sells the knockout (longer for bosses/elites)
+        hitStop = Math.max(hitStop, ev.elite ? 0.12 : 0.028);
         break;
       case 'xp':
         if (throttled('xp', 70)) audio.xp();
@@ -194,6 +196,17 @@ function drainEvents(): void {
       case 'lobLand':
         if (throttled('lobLand', 90)) audio.punch();
         renderer.addShake(1.2);
+        break;
+      case 'vuvuzela':
+        if (throttled('vuvuzela', 250)) audio.horn();
+        renderer.addShake(2);
+        break;
+      case 'flash':
+        audio.cameraFlash();
+        renderer.flashWhite();
+        break;
+      case 'chant':
+        if (throttled('chant', 400)) audio.chant();
         break;
       case 'dash':
         audio.dash();
@@ -316,6 +329,7 @@ let last = performance.now();
 let fps = 60;
 let fpsAcc = 0;
 let fpsN = 0;
+let hitStop = 0; // brief sim freeze on knockouts (combat feel)
 
 function frame(now: number): void {
   requestAnimationFrame(frame);
@@ -333,14 +347,18 @@ function frame(now: number): void {
 
   if (appState === 'run' && sim) {
     if (runState === 'playing') {
-      acc += dt;
-      let steps = 0;
-      while (acc >= STEP && steps < 5) {
-        sim.update(STEP, input.ax, input.ay);
-        steps++;
-        acc -= STEP;
+      if (hitStop > 0) {
+        hitStop -= dt; // frozen sim, live renderer (shake/flash still animate)
+      } else {
+        acc += dt;
+        let steps = 0;
+        while (acc >= STEP && steps < 5) {
+          sim.update(STEP, input.ax, input.ay);
+          steps++;
+          acc -= STEP;
+        }
+        if (steps === 5) acc = 0; // drop time under heavy load
       }
-      if (steps === 5) acc = 0; // drop time under heavy load
       drainEvents();
       if (sim.pendingLevelups > 0 && runState === 'playing') {
         runState = 'levelup';
@@ -439,7 +457,7 @@ const ff: FfDebug = {
   },
   debugSpawn: (id: string, dx: number, dy: number, elite = false) => {
     if (!sim) return;
-    sim.debugSpawn(id as 'hooligan', sim.player.x + dx, sim.player.y + dy, elite);
+    sim.debugSpawn(id as 'invader', sim.player.x + dx, sim.player.y + dy, elite);
   },
 };
 (window as unknown as { __FF: FfDebug }).__FF = ff;

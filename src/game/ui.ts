@@ -7,11 +7,13 @@ import { matchClock } from '../core/math';
 import { abilityIcon, getStripAtlas, playerAtlas, ABILITY_GLYPHS } from '../core/sprites';
 import {
   ABILITIES,
+  BOSSES,
   META_TRACKS,
   PLAYERS,
   SKINS,
   metaCost,
   type AbilityId,
+  type BossId,
   type MetaTrackId,
   type PlayerDef,
 } from './data';
@@ -308,11 +310,11 @@ export class UI {
         .join('');
     }
     // boss plate
-    if (sim.bossAlive) {
-      const b = sim.bossAlive;
+    if (sim.bossAlive && sim.bossAlive.boss) {
+      const bossId: BossId = sim.bossAlive.boss;
       r.bossPlate!.style.display = 'block';
-      r.bossName!.textContent = b.boss === 'referee' ? 'The Referee' : 'The Ultra Captain';
-      r.bossTitle!.textContent = b.boss === 'referee' ? 'HALF-TIME BOSS' : 'FINAL BOSS';
+      r.bossName!.textContent = BOSSES[bossId].name;
+      r.bossTitle!.textContent = BOSSES[bossId].title;
     } else {
       r.bossPlate!.style.display = 'none';
     }

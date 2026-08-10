@@ -13,7 +13,7 @@ const COLS_W = FW * SCALE * 4; // 4 frames per row-set
 const entries: { label: string; atlas: ReturnType<typeof playerAtlas> }[] = [
   ...PLAYERS.map((p) => ({ label: p.name, atlas: playerAtlas(p) })),
   ...Object.keys(ENEMIES).map((id) => ({ label: id, atlas: enemyAtlas(id as keyof typeof ENEMIES) })),
-  { label: 'BOSS referee', atlas: bossAtlas('referee') },
+  { label: 'BOSS referee', atlas: bossAtlas('official') },
   { label: 'BOSS captain', atlas: bossAtlas('captain') },
   { label: 'bodyguard', atlas: guardAtlas() },
 ];

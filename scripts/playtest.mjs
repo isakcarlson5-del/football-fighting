@@ -115,9 +115,9 @@ if (scenario === 'closeup') {
   // arrange a spaced lineup around the player and crop tight for art inspection
   await page.evaluate(() => {
     const ff = window.__FF;
-    const types = ['hooligan', 'ultra', 'thrower', 'steward', 'mascot'];
+    const types = ['invader', 'sprinter', 'lobber', 'steward', 'mascot'];
     types.forEach((t, i) => ff.debugSpawn(t, -340 + i * 170, -190));
-    ff.debugSpawn('hooligan', -170, 200, true); // elite
+    ff.debugSpawn('invader', -170, 200, true); // elite
     ff.debugSpawn('steward', 170, 200, false);
   });
   await page.waitForTimeout(350);

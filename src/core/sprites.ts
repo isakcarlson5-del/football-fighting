@@ -222,6 +222,13 @@ export interface FigureOpts {
   bottle?: boolean;
   redCard?: boolean;
   flare?: boolean;
+  flagPole?: string; // tall flag on the back (color)
+  foamFinger?: string; // giant foam finger on the near hand
+  drum?: boolean; // barrel drum at the belly
+  horn?: string; // vuvuzela horn (color)
+  camera?: boolean; // paparazzo camera at face height
+  megaphone?: string; // chant leader megaphone (color)
+  bannerCloth?: string; // wide banner carried in front (Banner Wall)
   bulk?: number; // width multiplier
   capColor?: string;
   belly?: string; // lighter belly patch (mascot suits)
@@ -304,6 +311,29 @@ export function drawFigure(ctx: CanvasRenderingContext2D, o: FigureOpts, frame: 
   const headR = o.hairStyle === 'mane' ? 15 : 12.5;
   const headY = shoulderY - 2 - headR;
   const torsoW = 27 * bulk;
+
+  // ---- flag pole on the back (behind everything; tall silhouette) ----
+  if (o.flagPole) {
+    ctx.strokeStyle = '#8a6d4a';
+    ctx.lineWidth = 3.2;
+    ctx.beginPath();
+    ctx.moveTo(-torsoW / 2 - 4, hipY + 6);
+    ctx.lineTo(-torsoW / 2 - 10, headY - 44);
+    ctx.stroke();
+    // waving pennant
+    const wave = Math.sin(frame * 1.7) * 3;
+    ctx.fillStyle = o.flagPole;
+    ctx.beginPath();
+    ctx.moveTo(-torsoW / 2 - 10, headY - 44);
+    ctx.quadraticCurveTo(-torsoW / 2 + 16 + wave, headY - 40, -torsoW / 2 + 22 + wave, headY - 32);
+    ctx.quadraticCurveTo(-torsoW / 2 + 12 + wave, headY - 28, -torsoW / 2 - 10, headY - 26);
+    ctx.closePath();
+    ctx.fill();
+    ctx.strokeStyle = OUTLINE;
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    ctx.lineWidth = 3;
+  }
 
   // ---- far arm (behind torso) ----
   drawArm(ctx, o, -1, -torsoW / 2 - 2, shoulderY + 2, -swing * 7, true);
@@ -411,6 +441,27 @@ export function drawFigure(ctx: CanvasRenderingContext2D, o: FigureOpts, frame: 
     }
   }
 
+  // ---- barrel drum strapped at the belly (big round silhouette) ----
+  if (o.drum) {
+    const dw = torsoW * 1.15;
+    const dy = hipY - 6;
+    rr(ctx, -dw / 2, dy - 6, dw, 22, 7);
+    fillGrad(ctx, '#b0342c', '#5f1a16', dy - 6, dy + 16);
+    // drum skin + rim
+    ctx.fillStyle = '#e8dcc8';
+    ctx.beginPath();
+    ctx.ellipse(0, dy - 6, dw / 2, 5.5, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+    ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+    ctx.lineWidth = 1.6;
+    ctx.beginPath();
+    ctx.ellipse(-dw * 0.12, dy - 7.5, dw * 0.3, 2.6, -0.2, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.strokeStyle = OUTLINE;
+    ctx.lineWidth = 3;
+  }
+
   // ---- near arm (in front of torso) ----
   const nearHand = drawArm(ctx, o, 1, torsoW / 2 + 2, shoulderY + 2, swing * 7, false);
   // ambient occlusion under the near arm
@@ -457,6 +508,100 @@ export function drawFigure(ctx: CanvasRenderingContext2D, o: FigureOpts, frame: 
     ctx.beginPath();
     ctx.arc(nearHand.hx, nearHand.hy - 13, 7, 0, Math.PI * 2);
     ctx.fill();
+  }
+  if (o.foamFinger) {
+    // giant foam finger: oversized raised hand with the index up
+    const fx = nearHand.hx + 2;
+    const fy = nearHand.hy - 16;
+    ctx.fillStyle = o.foamFinger;
+    rr(ctx, fx - 9, fy - 8, 18, 20, 5);
+    ctx.fill();
+    ctx.stroke();
+    rr(ctx, fx - 3.5, fy - 24, 8, 18, 4); // pointing finger
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = 'rgba(255,255,255,0.75)';
+    ctx.font = 'bold 9px system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('1', fx + 1, fy + 6);
+  }
+  if (o.horn) {
+    // vuvuzela: long tapering horn aimed forward
+    ctx.save();
+    ctx.translate(nearHand.hx, nearHand.hy - 3);
+    ctx.rotate(-0.25);
+    ctx.beginPath();
+    ctx.moveTo(0, -3);
+    ctx.lineTo(30, -8);
+    ctx.lineTo(30, 5);
+    ctx.lineTo(0, 3);
+    ctx.closePath();
+    fillGrad(ctx, shade(o.horn, 1.2), shade(o.horn, 0.7), -8, 5);
+    ctx.beginPath();
+    ctx.ellipse(30, -1.5, 3.4, 6.4, 0, 0, Math.PI * 2);
+    ctx.fillStyle = shade(o.horn, 1.45);
+    ctx.fill();
+    ctx.stroke();
+    ctx.restore();
+  }
+  if (o.camera) {
+    // camera held up at face height
+    const cxp = nearHand.hx + 4;
+    const cyp = nearHand.hy - 14;
+    ctx.fillStyle = '#23262e';
+    rr(ctx, cxp - 8, cyp - 6, 16, 12, 2.5);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = '#0d0f14';
+    ctx.beginPath();
+    ctx.arc(cxp + 2, cyp, 4.4, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = 'rgba(180,220,255,0.85)';
+    ctx.beginPath();
+    ctx.arc(cxp + 3.2, cyp - 1.2, 1.5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#ff5f4a';
+    ctx.fillRect(cxp - 6, cyp - 8.5, 4, 3); // tally light
+  }
+  if (o.megaphone) {
+    ctx.save();
+    ctx.translate(nearHand.hx, nearHand.hy - 4);
+    ctx.rotate(-0.15);
+    ctx.beginPath();
+    ctx.moveTo(0, -3.5);
+    ctx.lineTo(18, -9);
+    ctx.lineTo(18, 7);
+    ctx.lineTo(0, 3.5);
+    ctx.closePath();
+    fillGrad(ctx, shade(o.megaphone, 1.15), shade(o.megaphone, 0.65), -9, 7);
+    ctx.beginPath();
+    ctx.ellipse(18, -1, 3, 8, 0, 0, Math.PI * 2);
+    ctx.fillStyle = shade(o.megaphone, 1.4);
+    ctx.fill();
+    ctx.stroke();
+    ctx.restore();
+  }
+  if (o.bannerCloth) {
+    // huge supporter banner carried across the front (wide blocker silhouette)
+    const bw = torsoW + 34;
+    const by = shoulderY + 8;
+    ctx.fillStyle = o.bannerCloth;
+    rr(ctx, -bw / 2, by, bw, 24, 3);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = 'rgba(255,255,255,0.85)';
+    ctx.font = 'bold 10px system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('ULTRAS', 0, by + 12);
+    // grips
+    ctx.fillStyle = shade(o.skin, 1);
+    ctx.beginPath();
+    ctx.arc(-bw / 2 + 2, by + 10, 4.4, 0, Math.PI * 2);
+    ctx.arc(bw / 2 - 2, by + 10, 4.4, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
   }
 
   // ---- scarf (behind head, over shoulders) ----
@@ -679,34 +824,60 @@ export function playerAtlas(p: PlayerDef, kit?: { shirt: string; shorts: string;
   });
 }
 
-export function enemyAtlas(id: Exclude<EnemyId, 'referee' | 'captain'>): Atlas {
+export function enemyAtlas(id: Exclude<EnemyId, 'official' | 'captain' | 'drumboss'>): Atlas {
   return buildAtlas(`enemy:${id}`, (ctx, f) => {
     ctx.translate(FW / 2, FH - 7);
     switch (id) {
-      case 'hooligan':
-        drawFigure(ctx, { skin: '#e8b88a', hair: '#3c2c1e', hairStyle: 'cap', capColor: '#7a1f2b', shirt: '#33415c', shorts: '#2b3245', socks: '#22283a', trim: '#8d99ae', bulk: 1.05 }, f);
+      case 'invader':
+        drawFigure(ctx, { skin: '#e8b88a', hair: '#3c2c1e', hairStyle: 'bald', shirt: '#33415c', shorts: '#5b6472', socks: '#3a4152', trim: '#e8e0d0', scarf: '#c8102e', bulk: 1.05 }, f);
         break;
-      case 'ultra':
-        drawFigure(ctx, { skin: '#e8b88a', hair: '#3c2c1e', hairStyle: 'bald', shirt: '#23202a', shorts: '#23202a', socks: '#23202a', trim: '#e8283f', scarf: '#e8283f' }, f);
+      case 'sprinter':
+        drawFigure(ctx, { skin: '#d9a066', hair: '#26201c', hairStyle: 'bandana', capColor: '#c8102e', shirt: '#e8e0d0', shorts: '#7a1f2b', socks: '#e8e0d0', trim: '#c8102e', scarf: '#c8102e', bulk: 0.85 }, f);
         break;
-      case 'thrower':
+      case 'lobber':
         drawFigure(ctx, { skin: '#d9a066', hair: '#26201c', hairStyle: 'flatcap', capColor: '#2e5339', shirt: '#2e5339', shorts: '#3a3f4b', socks: '#2b2f38', trim: '#e9c46a', bottle: true }, f);
+        break;
+      case 'flare':
+        drawFigure(ctx, { skin: '#c68863', hair: '#1c1a1e', hairStyle: 'hood', shirt: '#3d2b3f', shorts: '#241f2b', socks: '#241f2b', trim: '#ff9a3d', flare: true }, f);
+        break;
+      case 'flag':
+        drawFigure(ctx, { skin: '#e8b88a', hair: '#4a3a2a', hairStyle: 'short', shirt: '#e9c46a', shorts: '#27405e', socks: '#27405e', trim: '#c8102e', flagPole: '#c8102e' }, f);
+        break;
+      case 'foam':
+        drawFigure(ctx, { skin: '#e8b88a', hair: '#6b4a2a', hairStyle: 'short', shirt: '#e07840', shorts: '#33415c', socks: '#33415c', trim: '#ffd23f', foamFinger: '#ff9a3d', bulk: 1.2 }, f);
         break;
       case 'steward':
         drawFigure(ctx, { skin: '#c68863', hair: '#4a3a2a', hairStyle: 'short', mustache: true, shirt: '#6c757d', shorts: '#343a40', socks: '#343a40', trim: '#343a40', vest: '#e8f33f', bulk: 1.15 }, f);
         break;
+      case 'drummer':
+        drawFigure(ctx, { skin: '#c68863', hair: '#1c1a1e', hairStyle: 'cap', capColor: '#5f1a16', shirt: '#7a1f2b', shorts: '#241f2b', socks: '#241f2b', trim: '#e8dcc8', drum: true, bulk: 1.25 }, f);
+        break;
+      case 'vuvuzela':
+        drawFigure(ctx, { skin: '#a06b42', hair: '#16120f', hairStyle: 'cap', capColor: '#1c4fa1', shirt: '#ffd23f', shorts: '#1c4fa1', socks: '#1c4fa1', trim: '#37d67a', horn: '#ffd23f' }, f);
+        break;
       case 'mascot':
         drawFigure(ctx, { skin: '#d69a4e', hair: '#b0783c', hairStyle: 'mane', shirt: '#d69a4e', shorts: '#c98f42', socks: '#c98f42', trim: '#8a5a28', belly: '#eed3a3', bulk: 1.35 }, f);
+        break;
+      case 'banner':
+        drawFigure(ctx, { skin: '#e8b88a', hair: '#3c2c1e', hairStyle: 'hood', shirt: '#233d8f', shorts: '#1b2a52', socks: '#1b2a52', trim: '#f5f7fa', bannerCloth: '#233d8f', bulk: 1.5 }, f);
+        break;
+      case 'paparazzo':
+        drawFigure(ctx, { skin: '#d9a066', hair: '#4a3a2a', hairStyle: 'flatcap', capColor: '#8a7a5a', shirt: '#c9b18a', shorts: '#5c5240', socks: '#5c5240', trim: '#23262e', camera: true, sunglasses: true, bulk: 0.9 }, f);
+        break;
+      case 'chant':
+        drawFigure(ctx, { skin: '#e8b88a', hair: '#3c2c1e', hairStyle: 'cap', capColor: '#c8102e', shirt: '#c8102e', shorts: '#23202a', socks: '#23202a', trim: '#f5f7fa', scarf: '#e8e0d0', megaphone: '#f5f7fa' }, f);
         break;
     }
   });
 }
 
-export function bossAtlas(id: 'referee' | 'captain'): Atlas {
+export function bossAtlas(id: 'drumboss' | 'official' | 'captain'): Atlas {
   return buildAtlas(`boss:${id}`, (ctx, f) => {
     ctx.translate(FW / 2, FH - 7);
-    if (id === 'referee') {
+    if (id === 'official') {
       drawFigure(ctx, { skin: '#e8b88a', hair: '#5a5a5a', hairStyle: 'short', shirt: '#17181c', shorts: '#17181c', socks: '#17181c', trim: '#f5f5f5', redCard: true, bulk: 1.2 }, f);
+    } else if (id === 'drumboss') {
+      drawFigure(ctx, { skin: '#c68863', hair: '#1c1a1e', hairStyle: 'bandana', capColor: '#e8283f', shirt: '#3d1520', shorts: '#241f2b', socks: '#241f2b', trim: '#ffd23f', drum: true, bulk: 1.35 }, f);
     } else {
       drawFigure(ctx, { skin: '#c68863', hair: '#1c1a1e', hairStyle: 'hood', shirt: '#3d2b3f', shorts: '#241f2b', socks: '#241f2b', trim: '#ff9a3d', flare: true, bulk: 1.3 }, f);
     }

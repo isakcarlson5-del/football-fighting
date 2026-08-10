@@ -238,7 +238,21 @@ export const PLAYERS: PlayerDef[] = [
 /* Enemies                                                             */
 /* ------------------------------------------------------------------ */
 
-export type EnemyId = 'hooligan' | 'ultra' | 'thrower' | 'steward' | 'mascot' | 'referee' | 'captain';
+export type EnemyId =
+  | 'invader' | 'sprinter' | 'lobber' | 'flare' | 'flag' | 'foam' | 'drummer'
+  | 'vuvuzela' | 'steward' | 'mascot' | 'banner' | 'paparazzo' | 'chant'
+  | 'official' | 'captain' | 'drumboss';
+
+export type EnemyBehavior =
+  | 'chase' // runs at the player and swings
+  | 'ranged' // keeps distance, lobs bottles
+  | 'leaper' // bounds through the air (ground effects miss mid-leap)
+  | 'support' // aura that hastes nearby enemies; weak itself
+  | 'thumper' // telegraphed drum shockwave around itself
+  | 'cone' // keeps distance, vuvuzela blast shoves the player back
+  | 'wall' // slow moving barricade, body-blocks lanes
+  | 'flanker' // fast circler with a telegraphed blinding flash
+  | 'summoner'; // chant that rallies fresh invaders onto the pitch
 
 export interface EnemyDef {
   id: EnemyId;
@@ -253,35 +267,71 @@ export interface EnemyDef {
   /** relative spawn weight once unlocked */
   weight: number;
   coinChance: number;
-  behavior: 'chase' | 'ranged';
+  behavior: EnemyBehavior;
   scale: number; // render scale
+  /** melee shove inflicted on the player on hit (feel/counterplay) */
+  push?: number;
 }
 
-export const ENEMIES: Record<Exclude<EnemyId, 'referee' | 'captain'>, EnemyDef> = {
-  hooligan: {
-    id: 'hooligan', name: 'Hooligan', hp: 20, speed: 55, damage: 7, xp: 2,
+export const ENEMIES: Record<Exclude<EnemyId, 'official' | 'captain' | 'drumboss'>, EnemyDef> = {
+  invader: {
+    id: 'invader', name: 'Pitch Invader', hp: 20, speed: 55, damage: 7, xp: 2,
     radius: 16, unlockAt: 0, weight: 100, coinChance: 0.22, behavior: 'chase', scale: 1,
   },
-  ultra: {
-    id: 'ultra', name: 'Ultra', hp: 14, speed: 98, damage: 6, xp: 2,
+  sprinter: {
+    id: 'sprinter', name: 'Scarf Sprinter', hp: 14, speed: 98, damage: 6, xp: 2,
     radius: 14, unlockAt: 60, weight: 55, coinChance: 0.2, behavior: 'chase', scale: 0.92,
   },
-  thrower: {
-    id: 'thrower', name: 'Bottle Thrower', hp: 17, speed: 52, damage: 7, xp: 2,
+  lobber: {
+    id: 'lobber', name: 'Bottle Lobber', hp: 17, speed: 52, damage: 7, xp: 2,
     radius: 15, unlockAt: 115, weight: 32, coinChance: 0.3, behavior: 'ranged', scale: 0.95,
+  },
+  flare: {
+    id: 'flare', name: 'Flare Runner', hp: 22, speed: 88, damage: 8, xp: 3,
+    radius: 15, unlockAt: 150, weight: 30, coinChance: 0.24, behavior: 'leaper', scale: 0.95,
+  },
+  flag: {
+    id: 'flag', name: 'Flag Bearer', hp: 30, speed: 58, damage: 5, xp: 4,
+    radius: 16, unlockAt: 185, weight: 24, coinChance: 0.26, behavior: 'support', scale: 1,
+  },
+  foam: {
+    id: 'foam', name: 'Foam Finger Fan', hp: 55, speed: 44, damage: 13, xp: 3,
+    radius: 18, unlockAt: 210, weight: 30, coinChance: 0.3, behavior: 'chase', scale: 1.18, push: 260,
   },
   steward: {
     id: 'steward', name: 'Rogue Steward', hp: 62, speed: 40, damage: 14, xp: 3,
-    radius: 19, unlockAt: 185, weight: 30, coinChance: 0.38, behavior: 'chase', scale: 1.15,
+    radius: 19, unlockAt: 230, weight: 30, coinChance: 0.38, behavior: 'chase', scale: 1.15, push: 200,
+  },
+  drummer: {
+    id: 'drummer', name: 'Drumline Bruiser', hp: 85, speed: 36, damage: 16, xp: 5,
+    radius: 20, unlockAt: 260, weight: 22, coinChance: 0.34, behavior: 'thumper', scale: 1.25,
+  },
+  vuvuzela: {
+    id: 'vuvuzela', name: 'Vuvuzela Blaster', hp: 40, speed: 50, damage: 9, xp: 4,
+    radius: 15, unlockAt: 300, weight: 24, coinChance: 0.3, behavior: 'cone', scale: 1,
   },
   mascot: {
     id: 'mascot', name: 'Rival Mascot', hp: 130, speed: 46, damage: 18, xp: 8,
-    radius: 24, unlockAt: 300, weight: 14, coinChance: 0.6, behavior: 'chase', scale: 1.45,
+    radius: 24, unlockAt: 340, weight: 14, coinChance: 0.6, behavior: 'chase', scale: 1.45, push: 300,
+  },
+  banner: {
+    id: 'banner', name: 'Banner Wall', hp: 220, speed: 26, damage: 10, xp: 9,
+    radius: 30, unlockAt: 380, weight: 12, coinChance: 0.5, behavior: 'wall', scale: 1.6,
+  },
+  paparazzo: {
+    id: 'paparazzo', name: 'Flash Paparazzo', hp: 34, speed: 92, damage: 8, xp: 5,
+    radius: 14, unlockAt: 420, weight: 20, coinChance: 0.3, behavior: 'flanker', scale: 0.9,
+  },
+  chant: {
+    id: 'chant', name: 'Chant Leader', hp: 70, speed: 48, damage: 10, xp: 7,
+    radius: 17, unlockAt: 460, weight: 14, coinChance: 0.4, behavior: 'summoner', scale: 1.05,
   },
 };
 
+export type BossId = 'drumboss' | 'official' | 'captain';
+
 export interface BossDef {
-  id: 'referee' | 'captain';
+  id: BossId;
   name: string;
   title: string;
   hp: number;
@@ -293,9 +343,13 @@ export interface BossDef {
   scale: number;
 }
 
-export const BOSSES: Record<'referee' | 'captain', BossDef> = {
-  referee: {
-    id: 'referee', name: 'The Referee', title: 'HALF-TIME BOSS', hp: 1400, speed: 62,
+export const BOSSES: Record<BossId, BossDef> = {
+  drumboss: {
+    id: 'drumboss', name: 'The Riot Drummer', title: 'FIRST-QUARTER BOSS', hp: 900, speed: 55,
+    damage: 20, xp: 40, radius: 28, coins: 60, scale: 1.55,
+  },
+  official: {
+    id: 'official', name: 'The Crooked Official', title: 'HALF-TIME BOSS', hp: 1400, speed: 62,
     damage: 22, xp: 60, radius: 26, coins: 80, scale: 1.5,
   },
   captain: {
@@ -309,6 +363,7 @@ export const BOSSES: Record<'referee' | 'captain', BossDef> = {
 /* ------------------------------------------------------------------ */
 
 export const RUN_LENGTH = 600; // seconds; maps to 90' on the match clock
+export const BOSS0_AT = 150;
 export const BOSS1_AT = 300;
 export const BOSS2_AT = 540;
 

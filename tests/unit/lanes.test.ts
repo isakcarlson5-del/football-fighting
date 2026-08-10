@@ -4,7 +4,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { Sim } from '../../src/game/sim';
-import { ENEMIES, PLAYERS } from '../../src/game/data';
+import { PLAYERS } from '../../src/game/data';
 import { Save } from '../../src/game/meta';
 
 function makeSim(playerIdx = 0, seed = 1234): Sim {
@@ -30,36 +30,36 @@ describe('attack lanes', () => {
     clearField(sim);
     const nearP = far(sim, 120);
     const farP = far(sim, 420);
-    sim.debugSpawn('hooligan', nearP.x, nearP.y);
-    sim.debugSpawn('thrower', farP.x, farP.y);
+    sim.debugSpawn('invader', nearP.x, nearP.y);
+    sim.debugSpawn('lobber', farP.x, farP.y);
     const pick = sim.pickAerialTarget(sim.player.x, sim.player.y);
-    expect(sim.enemies[pick].def.id).toBe('thrower');
+    expect(sim.enemies[pick].def.id).toBe('lobber');
   });
 
   it('between two far targets the ranged one wins over the plain chaser', () => {
     const sim = makeSim();
     clearField(sim);
-    sim.debugSpawn('hooligan', far(sim, 300).x, sim.player.y);
-    sim.debugSpawn('thrower', far(sim, 500).x, sim.player.y);
+    sim.debugSpawn('invader', far(sim, 300).x, sim.player.y);
+    sim.debugSpawn('lobber', far(sim, 500).x, sim.player.y);
     const pick = sim.pickAerialTarget(sim.player.x, sim.player.y);
-    expect(sim.enemies[pick].def.id).toBe('thrower');
+    expect(sim.enemies[pick].def.id).toBe('lobber');
   });
 
   it('falls back to a near target when nothing is in the far band', () => {
     const sim = makeSim();
     clearField(sim);
-    sim.debugSpawn('hooligan', far(sim, 130).x, sim.player.y);
+    sim.debugSpawn('invader', far(sim, 130).x, sim.player.y);
     const pick = sim.pickAerialTarget(sim.player.x, sim.player.y);
     expect(pick).toBeGreaterThanOrEqual(0);
-    expect(sim.enemies[pick].def.id).toBe('hooligan');
+    expect(sim.enemies[pick].def.id).toBe('invader');
   });
 
   it('volleys distribute onto living targets instead of overkill-stacking (reservation)', () => {
     const sim = makeSim(0); // Messi: strike L1 lobs 2 balls
     clearField(sim);
-    sim.debugSpawn('thrower', far(sim, 380).x, sim.player.y);
-    sim.debugSpawn('thrower', far(sim, 430, 0.6).x, far(sim, 430, 0.6).y);
-    const [a, b] = sim.enemies.filter((e) => e.active);
+    sim.debugSpawn('lobber', far(sim, 380).x, sim.player.y);
+    sim.debugSpawn('lobber', far(sim, 430, 0.6).x, far(sim, 430, 0.6).y);
+    const [a] = sim.enemies.filter((e) => e.active);
     a.hp = 5; // almost dead: one reserved lob already projects the kill
     a.maxHp = 5;
     sim.player.strikeCd = 0;
@@ -74,7 +74,7 @@ describe('attack lanes', () => {
     clearField(sim);
     sim.applyUpgrade({ kind: 'ability', id: 'pressure', name: '', desc: '', color: '', level: 1 });
     const pos = far(sim, 100);
-    sim.debugSpawn('hooligan', pos.x, pos.y);
+    sim.debugSpawn('invader', pos.x, pos.y);
     const e = sim.enemies.find((x) => x.active)!;
     e.speed = 0;
     e.hp = 500; // tanky: survives the window so the slot is never reused
@@ -98,7 +98,7 @@ describe('attack lanes', () => {
     const sim = makeSim(0); // Messi starts with strike
     clearField(sim);
     const pos = far(sim, 340);
-    sim.debugSpawn('thrower', pos.x, pos.y);
+    sim.debugSpawn('lobber', pos.x, pos.y);
     const e = sim.enemies.find((x) => x.active)!;
     e.speed = 0;
     e.hp = 500;
@@ -114,7 +114,7 @@ describe('attack lanes', () => {
     const sim = makeSim(1); // Ronaldo: whistle L1
     clearField(sim);
     const pos = far(sim, 100);
-    sim.debugSpawn('hooligan', pos.x, pos.y);
+    sim.debugSpawn('invader', pos.x, pos.y);
     const e = sim.enemies.find((x) => x.active)!;
     e.speed = 0;
     sim.damageEnemy(sim.enemies.indexOf(e), 1, 400, 0); // heavy shove
@@ -126,8 +126,8 @@ describe('attack lanes', () => {
   it('aerial lobs land a group splash (both nearby enemies take damage)', () => {
     const sim = makeSim(0);
     clearField(sim);
-    sim.debugSpawn('thrower', far(sim, 360).x, sim.player.y);
-    sim.debugSpawn('thrower', far(sim, 400).x, sim.player.y + 40);
+    sim.debugSpawn('lobber', far(sim, 360).x, sim.player.y);
+    sim.debugSpawn('lobber', far(sim, 400).x, sim.player.y + 40);
     const pair = sim.enemies.filter((e) => e.active);
     for (const e of pair) {
       e.speed = 0;

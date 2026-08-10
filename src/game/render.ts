@@ -6,7 +6,7 @@
 
 import { clamp, TAU } from '../core/math';
 import { ballSprite, bossAtlas, bottleSprite, coinSprite, enemyAtlas, getStripAtlas, guardAtlas, loadStripAtlas, playerAtlas, xpSprite, type Atlas } from '../core/sprites';
-import { BOSSES, SKINS, type PlayerDef } from './data';
+import { BOSSES, ENEMIES, SKINS, type BossId, type EnemyDef, type PlayerDef } from './data';
 import { ARENA_H, ARENA_W, type Sim } from './sim';
 import type { Save } from './meta';
 
@@ -36,6 +36,7 @@ export class Renderer {
   private atlasCache = new Map<string, Atlas>();
   private crowdSeed: number[] = [];
   private flashWarn = 0;
+  private flashWhiteT = 0;
 
   camX = ARENA_W / 2;
   camY = ARENA_H / 2;
@@ -55,6 +56,20 @@ export class Renderer {
   setArenaImage(img: HTMLImageElement): void {
     this.plate = img;
     this.pitch = this.buildPitch();
+  }
+
+  /** Enemy visuals: generated 2.5D strip when available, else the procedural atlas. */
+  private enemyAtlasFor(e: { def: EnemyDef; boss: '' | BossId }): Atlas {
+    const id = e.boss ? `boss-${e.boss}` : e.def.id;
+    const strip = getStripAtlas(id);
+    if (strip) return strip;
+    void loadStripAtlas(id, `art/enemies/${id}.png`);
+    return e.boss ? bossAtlas(e.boss) : enemyAtlas(e.def.id as Parameters<typeof enemyAtlas>[0]);
+  }
+
+  /** White blinding flash (paparazzo). */
+  flashWhite(): void {
+    this.flashWhiteT = 0.28;
   }
 
   addShake(amount: number): void {
@@ -411,16 +426,43 @@ export class Renderer {
     for (const t of sim.telegraphs) {
       if (!t.active) continue;
       const u = 1 - t.t / t.max;
-      ctx.fillStyle = `rgba(232,40,63,${0.12 + u * 0.15})`;
-      ctx.strokeStyle = `rgba(232,40,63,${0.5 + u * 0.5})`;
+      const tx = toSX(t.x);
+      const ty = toSY(t.y);
+      if (t.kind === 'cone') {
+        // vuvuzela wedge: pulsing gold sector down the blast axis
+        ctx.fillStyle = `rgba(255,210,63,${0.1 + u * 0.16})`;
+        ctx.strokeStyle = `rgba(255,210,63,${0.45 + u * 0.45})`;
+        ctx.lineWidth = 2.5;
+        ctx.beginPath();
+        ctx.moveTo(tx, ty);
+        ctx.ellipse(tx, ty, t.r * (0.25 + u * 0.75), t.r * (0.25 + u * 0.75) * TILT, 0, t.dir - 0.55, t.dir + 0.55);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+        continue;
+      }
+      const col =
+        t.kind === 'shock' ? '232,40,63'
+        : t.kind === 'flash' ? '245,247,250'
+        : t.kind === 'chant' ? '55,214,122'
+        : '232,40,63';
+      ctx.fillStyle = `rgba(${col},${0.12 + u * 0.15})`;
+      ctx.strokeStyle = `rgba(${col},${0.5 + u * 0.5})`;
       ctx.lineWidth = 3;
       ctx.beginPath();
-      ctx.ellipse(toSX(t.x), toSY(t.y), t.r, t.r * TILT, 0, 0, TAU);
+      ctx.ellipse(tx, ty, t.r, t.r * TILT, 0, 0, TAU);
       ctx.fill();
       ctx.stroke();
-      ctx.beginPath();
-      ctx.ellipse(toSX(t.x), toSY(t.y), t.r * u, t.r * u * TILT, 0, 0, TAU);
-      ctx.stroke();
+      if (t.kind === 'chant') {
+        // sound waves radiating from the chant
+        ctx.beginPath();
+        ctx.ellipse(tx, ty, t.r * (0.4 + u * 0.6), t.r * (0.4 + u * 0.6) * TILT, 0, 0, TAU);
+        ctx.stroke();
+      } else {
+        ctx.beginPath();
+        ctx.ellipse(tx, ty, t.r * u, t.r * u * TILT, 0, 0, TAU);
+        ctx.stroke();
+      }
     }
     for (const z of sim.flareZones) {
       ctx.fillStyle = `rgba(255,120,40,${0.16 + 0.08 * Math.sin(time * 9)})`;
@@ -452,6 +494,29 @@ export class Renderer {
       ctx.drawImage(img, toSX(pk.x) - (img.width * s) / 2, toSY(pk.y) - (img.height * s) / 2 + bobY, img.width * s, img.height * s);
     }
 
+    /* corpses: fallen enemies topple sideways, sink and fade (under live entities) */
+    for (const c of sim.corpses) {
+      if (!c.active) continue;
+      const u = c.t / c.max;
+      const atlas = this.enemyAtlasFor({ def: ENEMIES[c.enemyId as keyof typeof ENEMIES] ?? ENEMIES.invader, boss: c.boss });
+      // Generated strips are 4x the procedural atlas resolution. Normalize by
+      // source height so swapping art never changes the enemy's world size.
+      const sc = ENTITY_SCALE * (80 / atlas.fh) * (c.boss ? BOSSES[c.boss].scale : (ENEMIES[c.enemyId as keyof typeof ENEMIES]?.scale ?? 1)) * (c.elite ? 1.22 : 1);
+      const fall = Math.min(1, u * 2.4); // topple quickly, then fade
+      const alpha = u < 0.5 ? 1 : Math.max(0, 1 - (u - 0.5) / 0.5);
+      const x = toSX(c.x);
+      const y = toSY(c.y);
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      ctx.translate(x, y - 3);
+      ctx.rotate(c.face * fall * 1.35); // topple toward the facing side
+      const dw = atlas.fw * sc;
+      const dh = atlas.fh * sc;
+      ctx.drawImage(atlas.canvas, 0, 0, atlas.fw, atlas.fh, -dw / 2, -atlas.feetY * sc, dw, dh);
+      ctx.restore();
+    }
+    ctx.globalAlpha = 1;
+
     /* depth-sorted draw list */
     interface Item {
       y: number;
@@ -470,8 +535,8 @@ export class Renderer {
     for (const it of items) {
       if (it.kind === 0) {
         const e = sim.enemies[it.idx];
-        const atlas = e.boss ? bossAtlas(e.boss) : enemyAtlas(e.def.id as Parameters<typeof enemyAtlas>[0]);
-        const sc = ENTITY_SCALE * (e.boss ? BOSSES[e.boss].scale : e.def.scale) * (e.elite ? 1.22 : 1);
+        const atlas = this.enemyAtlasFor(e);
+        const sc = ENTITY_SCALE * (80 / atlas.fh) * (e.boss ? BOSSES[e.boss].scale : e.def.scale) * (e.elite ? 1.22 : 1);
         const x = toSX(e.x);
         const y = toSY(e.y);
         // airborne mobs lift off the pitch; the shadow stays on the grass
@@ -497,15 +562,25 @@ export class Renderer {
           ctx.ellipse(x, y, 230, 230 * TILT, 0, 0, TAU);
           ctx.stroke();
         }
-        const frame = Math.floor(e.animT * 10) % atlas.frames;
+        // combat states: wind-up pull-back, strike lunge, then recover
+        const frame = e.windup > 0 ? 1 : e.lungeT > 0 ? 2 : Math.floor(e.animT * 10) % atlas.frames;
         const useFlash = e.flash > 0;
         const img = useFlash ? atlas.flash : atlas.canvas;
         const dw = atlas.fw * sc;
         const dh = atlas.fh * sc;
         ctx.save();
         ctx.translate(x, y - lift);
+        if (e.windup > 0) {
+          const w = 1 - e.windup / 0.34; // pull back harder as the strike nears
+          ctx.translate(-e.face * (3 + w * 5), w * 2);
+          ctx.rotate(-e.face * 0.08 * w);
+        } else if (e.lungeT > 0) {
+          const l = e.lungeT / 0.14;
+          ctx.translate(e.face * l * 9, 0);
+          ctx.rotate(e.face * 0.05 * l);
+        }
         if (e.face < 0) ctx.scale(-1, 1);
-        ctx.drawImage(img, frame * atlas.fw, 0, atlas.fw, atlas.fh, -dw / 2, -dh + 6 * sc, dw, dh);
+        ctx.drawImage(img, frame * atlas.fw, 0, atlas.fw, atlas.fh, -dw / 2, -atlas.feetY * sc, dw, dh);
         ctx.restore();
         // boss hp bar (only while the boss is actually on screen)
         if (e.boss && x > -80 && x < vw + 80 && y > -80 && y < vh + 80) {
@@ -546,13 +621,13 @@ export class Renderer {
           ctx.lineTo(x - p.dashDx * 60, y - p.dashDy * 60 * TILT - 20);
           ctx.stroke();
         }
-        // idle plays the dedicated neutral clip; without idle art the first
-        // run frame is held with a faint breathing bob (never a frozen stride)
+        // Idle plays the dedicated neutral clip. Keep the feet planted; any
+        // breathing motion belongs inside the art rather than moving the body.
         const frame =
           vis.kind === 'idle' ? Math.floor(time * 4.5) % atlas.frames
           : vis.kind === 'run' ? Math.floor(p.animT * 11) % atlas.frames
           : 0;
-        const bobY = vis.kind === 'idle' ? Math.sin(time * 2.2) * 1.2 : vis.kind === 'run-held' ? Math.sin(time * 2.6) * 1.6 : 0;
+        const bobY = vis.kind === 'run-held' ? Math.sin(time * 2.6) * 1.6 : 0;
         const sc = ENTITY_SCALE * (80 / atlas.fh);
         const dw = atlas.fw * sc;
         const dh = atlas.fh * sc;
@@ -719,6 +794,12 @@ export class Renderer {
     if (this.flashWarn > 0) {
       this.flashWarn -= 1 / 60;
       ctx.fillStyle = `rgba(232,40,63,${Math.max(0, this.flashWarn) * 0.9})`;
+      ctx.fillRect(0, 0, vw, vh);
+    }
+    // paparazzo white flash
+    if (this.flashWhiteT > 0) {
+      this.flashWhiteT -= 1 / 60;
+      ctx.fillStyle = `rgba(245,247,250,${Math.max(0, this.flashWhiteT) * 2.4})`;
       ctx.fillRect(0, 0, vw, vh);
     }
 

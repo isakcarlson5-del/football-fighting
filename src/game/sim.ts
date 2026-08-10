@@ -7,6 +7,7 @@ import { Rng, weightedPick } from '../core/rng';
 import { clamp, dist2, TAU } from '../core/math';
 import {
   ABILITIES,
+  BOSS0_AT,
   BOSS1_AT,
   BOSS2_AT,
   BOSSES,
@@ -18,6 +19,7 @@ import {
   spawnInterval,
   xpForLevel,
   type AbilityId,
+  type BossId,
   type EnemyDef,
   type PlayerDef,
   type StatId,
@@ -46,7 +48,7 @@ export interface Enemy {
   radius: number;
   xp: number;
   elite: boolean;
-  boss: '' | 'referee' | 'captain';
+  boss: '' | BossId;
   kx: number; // knockback velocity
   ky: number;
   flash: number;
@@ -57,10 +59,21 @@ export interface Enemy {
   slow: number;
   face: number; // -1 | 1
   animT: number;
+  /** generic behavior cooldown (bottle throws, leaps, thumps, flashes, chants) */
   rangedCd: number;
-  /** >0: briefly airborne (big knockback). Ground effects sweep harmlessly
-   *  underneath; aerial attacks connect normally. Never a permanent immunity. */
+  /** melee wind-up: >0 while visibly pulling back before the strike */
+  windup: number;
+  /** >0 during the strike lunge itself (after windup) */
+  lungeT: number;
+  /** >0: briefly airborne (big knockback / leapers). Ground effects sweep
+   *  harmlessly underneath; aerial attacks connect. Never a permanent immunity. */
   airT: number;
+  /** haste aura multiplier from nearby Flag Bearers (recomputed each frame) */
+  haste: number;
+  /** >0: boss haste pulse active */
+  boostT: number;
+  /** non-melee wind-up marker ('' = melee swing, 'bottle' = lobbed bottle) */
+  casting: string;
   // boss ability timers
   bossCd: number;
   bossCd2: number;
@@ -150,7 +163,9 @@ export interface Telegraph {
   r: number;
   t: number;
   max: number;
-  kind: 'flare' | 'shock';
+  kind: 'flare' | 'shock' | 'cone' | 'flash' | 'chant';
+  dmg: number;
+  dir: number; // cone facing (radians)
 }
 
 export interface Ring {
@@ -185,6 +200,19 @@ export interface Reticle {
   max: number;
 }
 
+/** Death visual: a fallen enemy that topples, sinks and fades (no gameplay). */
+export interface Corpse {
+  active: boolean;
+  x: number;
+  y: number;
+  enemyId: string;
+  boss: '' | BossId;
+  elite: boolean;
+  face: number;
+  t: number;
+  max: number;
+}
+
 export type SimEvent =
   | { type: 'hit'; x: number; y: number }
   | { type: 'kill'; x: number; y: number; elite: boolean }
@@ -198,6 +226,9 @@ export type SimEvent =
   | { type: 'dash' }
   | { type: 'hurt' }
   | { type: 'punch' }
+  | { type: 'vuvuzela'; x: number; y: number }
+  | { type: 'flash'; x: number; y: number }
+  | { type: 'chant'; x: number; y: number }
   | { type: 'bossSpawn'; name: string; title: string }
   | { type: 'bossDie'; x: number; y: number; coins: number }
   | { type: 'victory' }
@@ -221,6 +252,9 @@ export interface PlayerState {
   animT: number;
   iframes: number;
   regenAcc: number;
+  kx: number; // knockback velocity (heavy enemy hits, vuvuzela blasts)
+  ky: number;
+  slowT: number; // >0: slowed (paparazzo flash)
   abilities: Partial<Record<AbilityId, number>>;
   stats: Record<StatId, number>;
   // ability timers
@@ -267,8 +301,10 @@ export class Sim {
   rings: Ring[] = [];
   pressures: Pressure[] = [];
   reticles: Reticle[] = [];
+  corpses: Corpse[] = [];
   events: SimEvent[] = [];
   pendingLevelups = 0;
+  boss0Spawned = false;
   boss1Spawned = false;
   boss2Spawned = false;
   bossAlive: Enemy | null = null;
@@ -276,6 +312,7 @@ export class Sim {
   flareZones: { x: number; y: number; r: number; t: number; tick: number }[] = [];
 
   private grid = new Map<number, number[]>();
+  private flagBearers: Enemy[] = [];
   private spawnAcc = 0;
   private eliteAcc = 0;
   private def: PlayerDef;
@@ -311,6 +348,9 @@ export class Sim {
       animT: 0,
       iframes: 0,
       regenAcc: 0,
+      kx: 0,
+      ky: 0,
+      slowT: 0,
       abilities: { [def.startAbility]: 1 },
       stats: { power: 0, speed: 0, maxhp: 0, regen: 0, magnet: 0, armor: 0 },
       strikeCd: 0.4,
@@ -329,11 +369,11 @@ export class Sim {
     };
     if (def.id === 'neymar') this.player.dashCds = [0];
     this.spawnInitial();
-    // opening wave: a few hooligans just past the view edge so first contact
+    // opening wave: a few invaders just past the view edge so first contact
     // happens within ~3 seconds instead of an empty pitch
     for (let i = 0; i < 6; i++) {
       const a = (i / 6) * TAU + 0.6;
-      this.spawnEnemy(ENEMIES.hooligan, this.player.x + Math.cos(a) * 520, this.player.y + Math.sin(a) * 520, false);
+      this.spawnEnemy(ENEMIES.invader, this.player.x + Math.cos(a) * 520, this.player.y + Math.sin(a) * 520, false);
     }
   }
 
@@ -370,9 +410,9 @@ export class Sim {
     this.enemies = [];
     for (let i = 0; i < MAX_ENEMIES; i++) {
       this.enemies.push({
-        active: false, def: ENEMIES.hooligan, x: 0, y: 0, hp: 1, maxHp: 1, speed: 0, damage: 0,
+        active: false, def: ENEMIES.invader, x: 0, y: 0, hp: 1, maxHp: 1, speed: 0, damage: 0,
         radius: 10, xp: 1, elite: false, boss: '', kx: 0, ky: 0, flash: 0, attackCd: 0, orbitCd: 0,
-        dashMark: -1, stun: 0, slow: 0, face: 1, animT: 0, rangedCd: 2, airT: 0, bossCd: 4, bossCd2: 8, telegraph: 0,
+        dashMark: -1, stun: 0, slow: 0, face: 1, animT: 0, rangedCd: 2, windup: 0, lungeT: 0, airT: 0, haste: 1, boostT: 0, casting: '', bossCd: 4, bossCd2: 8, telegraph: 0,
       });
     }
     for (let i = 0; i < 400; i++) this.balls.push({ active: false, x: 0, y: 0, vx: 0, vy: 0, z: 0, vz: 0, dmg: 0, splash: 60, ricochet: 0, spin: 0, tx: 0, ty: 0, targetIdx: -1, flightT: 0, maxFlightT: 1 });
@@ -380,10 +420,11 @@ export class Sim {
     for (let i = 0; i < 500; i++) this.pickups.push({ active: false, kind: 'xp', tier: 1, x: 0, y: 0, vx: 0, vy: 0, value: 1, t: 0 });
     for (let i = 0; i < 600; i++) this.particles.push({ active: false, x: 0, y: 0, vx: 0, vy: 0, life: 0, maxLife: 1, size: 2, color: '#fff', grav: 0 });
     for (let i = 0; i < 120; i++) this.dmgNums.push({ active: false, x: 0, y: 0, value: '', life: 0, crit: false });
-    for (let i = 0; i < 16; i++) this.telegraphs.push({ active: false, x: 0, y: 0, r: 0, t: 0, max: 1, kind: 'flare' });
+    for (let i = 0; i < 16; i++) this.telegraphs.push({ active: false, x: 0, y: 0, r: 0, t: 0, max: 1, kind: 'flare', dmg: 0, dir: 0 });
     for (let i = 0; i < 16; i++) this.rings.push({ active: false, x: 0, y: 0, r: 0, maxR: 100, life: 0, color: '#fff' });
     for (let i = 0; i < 24; i++) this.pressures.push({ active: false, x: 0, y: 0, r: 0, maxR: 100, dmg: 0, knock: 0, hitSet: [] });
     for (let i = 0; i < 32; i++) this.reticles.push({ active: false, x: 0, y: 0, t: 0, max: 1 });
+    for (let i = 0; i < 64; i++) this.corpses.push({ active: false, x: 0, y: 0, enemyId: 'invader', boss: '', elite: false, face: 1, t: 0, max: 0.55 });
     this.refreshGuards();
   }
 
@@ -488,12 +529,17 @@ export class Sim {
     e.slow = 0;
     e.animT = this.rng.range(0, 1);
     e.rangedCd = this.rng.range(1, 2.6);
+    e.windup = 0;
+    e.lungeT = 0;
     e.airT = 0;
+    e.haste = 1;
+    e.boostT = 0;
+    e.casting = '';
     e.telegraph = 0;
     return e;
   }
 
-  private spawnBoss(which: 'referee' | 'captain'): void {
+  private spawnBoss(which: BossId): void {
     const def = BOSSES[which];
     const e = this.alloc(this.enemies);
     if (!e) return;
@@ -521,9 +567,14 @@ export class Sim {
     e.slow = 0;
     e.animT = 0;
     e.rangedCd = 2;
+    e.windup = 0;
+    e.lungeT = 0;
     e.airT = 0;
-    e.bossCd = 5;
-    e.bossCd2 = 9;
+    e.haste = 1;
+    e.boostT = 0;
+    e.casting = '';
+    e.bossCd = 3;
+    e.bossCd2 = 7;
     e.telegraph = 0;
     this.bossAlive = e;
     this.events.push({ type: 'bossSpawn', name: def.name, title: def.title });
@@ -615,6 +666,7 @@ export class Sim {
     e.active = false;
     this.kills++;
     this.dropLoot(e);
+    this.spawnCorpse(e);
     this.burst(e.x, e.y, e.boss ? 26 : e.elite ? 14 : 6, e.boss ? '#ffd23f' : '#e8b88a');
     this.events.push({ type: 'kill', x: e.x, y: e.y, elite: e.elite || !!e.boss });
     if (e.boss) {
@@ -640,12 +692,30 @@ export class Sim {
     }
   }
 
-  private hurtPlayer(raw: number): void {
+  /** Death visual: the fallen enemy topples, sinks and fades beside the loot. */
+  private spawnCorpse(e: Enemy): void {
+    const c = this.alloc(this.corpses);
+    if (!c) return;
+    c.active = true;
+    c.x = e.x;
+    c.y = e.y;
+    c.enemyId = e.def.id;
+    c.boss = e.boss;
+    c.elite = e.elite;
+    c.face = e.face;
+    c.t = 0;
+    c.max = e.boss ? 1.4 : 0.55;
+  }
+
+  private hurtPlayer(raw: number, kx = 0, ky = 0, slowT = 0): void {
     const p = this.player;
     if (p.iframes > 0 || p.dashT > 0 || this.over !== 'playing') return;
     const dmg = Math.max(1, Math.round(raw - this.armor));
     p.hp -= dmg;
     p.iframes = 0.55;
+    p.kx += kx;
+    p.ky += ky;
+    if (slowT > 0) p.slowT = Math.max(p.slowT, slowT);
     this.events.push({ type: 'hurt' });
     this.burst(p.x, p.y, 8, '#ff6b6b');
     if (p.hp <= 0) {
@@ -717,7 +787,7 @@ export class Sim {
     r.color = color;
   }
 
-  private telegraph(x: number, y: number, r: number, delay: number, kind: 'flare' | 'shock'): void {
+  private telegraph(x: number, y: number, r: number, delay: number, kind: Telegraph['kind'], dmg = 0, dir = 0): void {
     const t = this.alloc(this.telegraphs);
     if (!t) return;
     t.active = true;
@@ -727,6 +797,26 @@ export class Sim {
     t.t = delay;
     t.max = delay;
     t.kind = kind;
+    t.dmg = dmg;
+    t.dir = dir;
+  }
+
+  /** Bottle Lobber's throw (after the visible wind-up). */
+  private throwBottle(e: Enemy): void {
+    const b = this.alloc(this.bottles);
+    if (!b) return;
+    const p = this.player;
+    b.active = true;
+    b.x = e.x;
+    b.y = e.y;
+    const lead = 0.4;
+    const tx = p.x + p.dashDx * (p.moving ? this.moveSpeed * lead : 0);
+    const ty = p.y + p.dashDy * (p.moving ? this.moveSpeed * lead : 0);
+    const dd = Math.hypot(tx - e.x, ty - e.y) || 1;
+    b.vx = ((tx - e.x) / dd) * 280;
+    b.vy = ((ty - e.y) / dd) * 280;
+    b.dmg = e.damage;
+    b.life = 2.2;
   }
 
   /* ---------------- level-ups ---------------- */
@@ -1129,10 +1219,16 @@ export class Sim {
         }
       }
     } else {
-      const sp = this.moveSpeed;
+      const sp = this.moveSpeed * (p.slowT > 0 ? 0.55 : 1);
       p.x += ax * sp * dt;
       p.y += ay * sp * dt;
     }
+    // player knockback (heavy hits, vuvuzela blasts)
+    p.slowT = Math.max(0, p.slowT - dt);
+    p.x += p.kx * dt;
+    p.y += p.ky * dt;
+    p.kx *= Math.pow(0.001, dt);
+    p.ky *= Math.pow(0.001, dt);
     p.x = clamp(p.x, 30, ARENA_W - 30);
     p.y = clamp(p.y, 30, ARENA_H - 30);
     p.animT += dt * (p.moving || p.dashT > 0 ? 1 : 0.4);
@@ -1210,18 +1306,27 @@ export class Sim {
         this.spawnEnemy(def, pos.x, pos.y, true);
       }
     }
-    // bosses
-    if (!this.boss1Spawned && this.time >= BOSS1_AT) {
-      this.boss1Spawned = true;
-      this.spawnBoss('referee');
+    // bosses: introduced progressively, never two on the pitch at once
+    if (!this.boss0Spawned && this.time >= BOSS0_AT && !this.bossAlive) {
+      this.boss0Spawned = true;
+      this.spawnBoss('drumboss');
     }
-    if (!this.boss2Spawned && this.time >= BOSS2_AT) {
+    if (!this.boss1Spawned && this.time >= BOSS1_AT && !this.bossAlive) {
+      this.boss1Spawned = true;
+      this.spawnBoss('official');
+    }
+    if (!this.boss2Spawned && this.time >= BOSS2_AT && !this.bossAlive) {
       this.boss2Spawned = true;
       this.spawnBoss('captain');
     }
 
     /* enemies */
     this.rebuildGrid();
+    // haste auras: collect active Flag Bearers once per frame
+    this.flagBearers.length = 0;
+    for (const e of this.enemies) {
+      if (e.active && !e.boss && e.def.behavior === 'support') this.flagBearers.push(e);
+    }
     for (let i = 0; i < this.enemies.length; i++) {
       const e = this.enemies[i];
       if (!e.active) continue;
@@ -1229,7 +1334,10 @@ export class Sim {
       e.attackCd = Math.max(0, e.attackCd - dt);
       e.orbitCd = Math.max(0, e.orbitCd - dt);
       e.stun = Math.max(0, e.stun - dt);
+      const wasAir = e.airT > 0;
       e.airT = Math.max(0, e.airT - dt);
+      e.lungeT = Math.max(0, e.lungeT - dt);
+      e.boostT = Math.max(0, e.boostT - dt);
       e.animT += dt;
       // knockback decay
       e.x += e.kx * dt;
@@ -1238,7 +1346,24 @@ export class Sim {
       e.ky *= Math.pow(0.001, dt);
       e.x = clamp(e.x, 20, ARENA_W - 20);
       e.y = clamp(e.y, 20, ARENA_H - 20);
-      if (e.stun > 0) continue;
+      // leapers land with a visible thump (ground moves work again from here)
+      if (wasAir && e.airT <= 0 && !e.boss) {
+        this.burst(e.x, e.y, 6, '#ff9a3d');
+        this.ring(e.x, e.y, 60, '#ff9a3d');
+      }
+      if (e.stun > 0) {
+        e.windup = 0; // stun interrupts the swing
+        continue;
+      }
+
+      // haste: Flag Bearer aura + boss pulses
+      e.haste = e.boostT > 0 ? 1.45 : 1;
+      for (const f of this.flagBearers) {
+        if (f !== e && dist2(e.x, e.y, f.x, f.y) < 190 * 190) {
+          e.haste *= 1.35;
+          break;
+        }
+      }
 
       // slow zones
       let slowMult = 1;
@@ -1254,41 +1379,41 @@ export class Sim {
       const d = Math.hypot(dx, dy) || 1;
       e.face = dx > 0 ? 1 : -1;
 
-      if (e.boss === 'referee') {
-        this.updateReferee(e, dx / d, dy / d, dt);
+      // Orbiting Press: enemies inside the ring are constantly pushed out
+      let press = 0;
+      if (orbitLvl > 0) {
+        const ringR = [0, 90, 90, 115, 115, 140][orbitLvl];
+        if (d < ringR) press = 36;
+      }
+
+      if (e.boss === 'official') {
+        this.updateOfficial(e, dx / d, dy / d, dt);
       } else if (e.boss === 'captain') {
         this.updateCaptain(e, dx / d, dy / d, dt);
-      } else if (e.def.behavior === 'ranged') {
-        // keep distance, throw bottles
-        const want = 240;
-        const mv = d > want + 30 ? 1 : d < want - 40 ? -1 : 0;
-        e.x += (dx / d) * e.speed * mv * slowMult * dt;
-        e.y += (dy / d) * e.speed * mv * slowMult * dt;
-        e.rangedCd -= dt;
-        if (e.rangedCd <= 0 && d < 480) {
-          e.rangedCd = 2.4;
-          const b = this.alloc(this.bottles);
-          if (b) {
-            b.active = true;
-            b.x = e.x;
-            b.y = e.y;
-            const lead = 0.4;
-            const tx = p.x + p.dashDx * (p.moving ? this.moveSpeed * lead : 0);
-            const ty = p.y + p.dashDy * (p.moving ? this.moveSpeed * lead : 0);
-            const dd = Math.hypot(tx - e.x, ty - e.y) || 1;
-            b.vx = ((tx - e.x) / dd) * 280;
-            b.vy = ((ty - e.y) / dd) * 280;
-            b.dmg = e.damage;
-            b.life = 2.2;
+      } else if (e.boss === 'drumboss') {
+        this.updateDrumboss(e, dx / d, dy / d, dt);
+      } else if (e.windup > 0) {
+        // ---- wind-up: visibly pull back, then strike ----
+        e.windup -= dt;
+        if (e.windup <= 0) {
+          e.lungeT = 0.14;
+          e.attackCd = e.def.behavior === 'chase' || e.def.behavior === 'wall' ? 0.9 : 1.4;
+          if (e.casting === 'bottle') {
+            e.casting = '';
+            this.throwBottle(e);
+          } else if (e.airT <= 0 && dist2(e.x, e.y, p.x, p.y) < (e.radius + 30) * (e.radius + 30)) {
+            const push = e.def.push ?? 120;
+            this.hurtPlayer(e.damage, (dx / d) * push, (dy / d) * push);
           }
+          this.events.push({ type: 'punch' });
         }
+      } else if (e.lungeT > 0) {
+        // ---- strike lunge: quick step in ----
+        e.x += (dx / d) * e.speed * 3.2 * dt;
+        e.y += (dy / d) * e.speed * 3.2 * dt;
       } else {
-        // Orbiting Press: enemies inside the ring are constantly pushed out
-        let press = 0;
-        if (orbitLvl > 0) {
-          const ringR = [0, 90, 90, 115, 115, 140][orbitLvl];
-          if (d < ringR) press = 36;
-        }
+        // ---- locomotion + behavior specials ----
+        const sp = e.speed * e.haste * slowMult;
         // separation from neighbors
         let sx = 0;
         let sy = 0;
@@ -1304,14 +1429,74 @@ export class Sim {
             sy += ((e.y - o.y) / od) * (min - od) * 2.4;
           }
         }
-        e.x += ((dx / d) * (e.speed * slowMult - press) + sx) * dt;
-        e.y += ((dy / d) * (e.speed * slowMult - press) + sy) * dt;
-      }
-
-      // contact damage (airborne mobs are mid-flight and can't strike)
-      if (e.airT <= 0 && e.attackCd <= 0 && dist2(e.x, e.y, p.x, p.y) < (e.radius + 18) * (e.radius + 18)) {
-        e.attackCd = 0.9;
-        this.hurtPlayer(e.damage);
+        const beh = e.def.behavior;
+        if (e.airT > 0) {
+          // mid-leap: momentum carries the leap (no steering)
+        } else if (beh === 'chase' || beh === 'wall' || beh === 'thumper' || beh === 'leaper') {
+          e.x += ((dx / d) * (sp - press) + sx) * dt;
+          e.y += ((dy / d) * (sp - press) + sy) * dt;
+          if (beh === 'wall' && d < e.radius + 16) {
+            // Banner Wall body-blocks: shove the player out of the wall
+            p.x = e.x + (dx / d) * (e.radius + 16);
+            p.y = e.y + (dy / d) * (e.radius + 16);
+            p.kx += (dx / d) * 160;
+            p.ky += (dy / d) * 160;
+          }
+          if (beh === 'leaper') {
+            e.rangedCd -= dt;
+            if (e.rangedCd <= 0 && d > 140) {
+              e.rangedCd = 3.4;
+              e.airT = 0.55; // bounds through the air: ground effects miss
+              e.kx += (dx / d) * 470;
+              e.ky += (dy / d) * 470;
+              this.events.push({ type: 'dash' });
+            }
+          }
+          if (beh === 'thumper') {
+            e.rangedCd -= dt;
+            if (e.rangedCd <= 0 && d < 280) {
+              e.rangedCd = 3.2;
+              this.telegraph(e.x, e.y, 210, 0.85, 'shock', e.damage, 0);
+            }
+          }
+        } else if (beh === 'support') {
+          e.x += ((dx / d) * (sp * 0.65 - press) + sx) * dt;
+          e.y += ((dy / d) * (sp * 0.65 - press) + sy) * dt;
+        } else if (beh === 'ranged' || beh === 'cone' || beh === 'summoner') {
+          // keep distance and pester
+          const want = beh === 'ranged' ? 240 : beh === 'cone' ? 250 : 300;
+          const mv = d > want + 30 ? 1 : d < want - 40 ? -1 : 0;
+          e.x += ((dx / d) * sp * mv + sx) * dt;
+          e.y += ((dy / d) * sp * mv + sy) * dt;
+          e.rangedCd -= dt;
+          if (beh === 'ranged' && e.rangedCd <= 0 && d < 480) {
+            e.rangedCd = 2.4;
+            e.casting = 'bottle';
+            e.windup = 0.42; // visible arm raise before the throw
+          } else if (beh === 'cone' && e.rangedCd <= 0 && d < 430) {
+            e.rangedCd = 3.4;
+            this.telegraph(e.x, e.y, 400, 0.6, 'cone', e.damage, Math.atan2(dy, dx));
+          } else if (beh === 'summoner' && e.rangedCd <= 0 && d < 520) {
+            e.rangedCd = 6.5;
+            this.telegraph(e.x, e.y, 120, 0.9, 'chant', 0, 0);
+          }
+        } else if (beh === 'flanker') {
+          // circle the player at mid range, flashing on cooldown
+          const want = 210;
+          const tang = Math.atan2(dy, dx) + Math.PI / 2;
+          const radial = d > want + 25 ? 1 : d < want - 35 ? -0.8 : 0;
+          e.x += ((dx / d) * sp * radial + Math.cos(tang) * sp * 0.85 + sx) * dt;
+          e.y += ((dy / d) * sp * radial + Math.sin(tang) * sp * 0.85 + sy) * dt;
+          e.rangedCd -= dt;
+          if (e.rangedCd <= 0 && d < 300) {
+            e.rangedCd = 4.2;
+            this.telegraph(e.x, e.y, 230, 0.7, 'flash', e.damage, 0);
+          }
+        }
+        // every grounded enemy swings when the player is in reach
+        if (e.airT <= 0 && e.attackCd <= 0 && e.casting === '' && dist2(e.x, e.y, p.x, p.y) < (e.radius + 20) * (e.radius + 20)) {
+          e.windup = 0.34; // readable pull-back before the hit lands
+        }
       }
     }
 
@@ -1424,10 +1609,65 @@ export class Sim {
       t.t -= dt;
       if (t.t <= 0) {
         t.active = false;
+        const p = this.player;
         if (t.kind === 'flare') {
           this.flareZones.push({ x: t.x, y: t.y, r: t.r, t: 2.6, tick: 0 });
           this.burst(t.x, t.y, 14, '#ff9a3d');
           this.events.push({ type: 'flare' });
+        } else if (t.kind === 'shock') {
+          // drum thump / whistle blast: ground shockwave around the point
+          this.ring(t.x, t.y, t.r, '#e8283f');
+          this.burst(t.x, t.y, 10, '#e8283f');
+          this.events.push({ type: 'whistle', x: t.x, y: t.y });
+          const dd = dist2(p.x, p.y, t.x, t.y);
+          if (dd < t.r * t.r) {
+            const d = Math.sqrt(dd) || 1;
+            this.hurtPlayer(t.dmg, ((p.x - t.x) / d) * 190, ((p.y - t.y) / d) * 190);
+          }
+        } else if (t.kind === 'cone') {
+          // vuvuzela blast: a hard shove down the cone axis if the player is inside it
+          this.events.push({ type: 'vuvuzela', x: t.x, y: t.y });
+          for (let k = 0; k < 8; k++) {
+            const pt = this.alloc(this.particles);
+            if (!pt) break;
+            pt.active = true;
+            pt.x = t.x + Math.cos(t.dir) * (30 + k * 42);
+            pt.y = t.y + Math.sin(t.dir) * (30 + k * 42);
+            const sp = this.rng.range(60, 150);
+            pt.vx = Math.cos(t.dir) * sp;
+            pt.vy = Math.sin(t.dir) * sp;
+            pt.life = pt.maxLife = 0.4;
+            pt.size = 4;
+            pt.color = '#ffd23f';
+            pt.grav = 0;
+          }
+          const ddx = p.x - t.x;
+          const ddy = p.y - t.y;
+          const dd = Math.hypot(ddx, ddy);
+          if (dd < t.r) {
+            const ang = Math.atan2(ddy, ddx);
+            let diff = Math.abs(ang - t.dir) % TAU;
+            if (diff > Math.PI) diff = TAU - diff;
+            if (diff < 0.55) this.hurtPlayer(t.dmg, Math.cos(t.dir) * 340, Math.sin(t.dir) * 340);
+          }
+        } else if (t.kind === 'flash') {
+          // paparazzo flash: blinding burst slows the player briefly
+          this.burst(t.x, t.y, 16, '#f5f7fa');
+          this.events.push({ type: 'flash', x: t.x, y: t.y });
+          if (dist2(p.x, p.y, t.x, t.y) < t.r * t.r) this.hurtPlayer(t.dmg, 0, 0, 1.2);
+        } else if (t.kind === 'chant') {
+          // Chant Leader rallies fresh invaders onto the pitch
+          this.ring(t.x, t.y, t.r + 60, '#37d67a');
+          this.events.push({ type: 'chant', x: t.x, y: t.y });
+          for (let k = 0; k < 2; k++) {
+            const a = this.rng.range(0, TAU);
+            this.spawnEnemy(
+              ENEMIES.invader,
+              clamp(t.x + Math.cos(a) * 90, 40, ARENA_W - 40),
+              clamp(t.y + Math.sin(a) * 90, 40, ARENA_H - 40),
+              false,
+            );
+          }
         }
       }
     }
@@ -1494,40 +1734,63 @@ export class Sim {
     }
   }
 
-  private updateReferee(e: Enemy, nx: number, ny: number, dt: number): void {
-    e.x += nx * e.speed * dt;
-    e.y += ny * e.speed * dt;
+  /** Shared boss melee: wind-up swing when the player is in reach. */
+  private bossMelee(e: Enemy, dx: number, dy: number, d: number, dt: number): void {
+    const p = this.player;
+    if (e.windup > 0) {
+      e.windup -= dt;
+      if (e.windup <= 0) {
+        e.lungeT = 0.16;
+        e.attackCd = 1.1;
+        if (e.airT <= 0 && dist2(e.x, e.y, p.x, p.y) < (e.radius + 34) * (e.radius + 34)) {
+          this.hurtPlayer(e.damage, (dx / d) * 260, (dy / d) * 260);
+        }
+        this.events.push({ type: 'punch' });
+      }
+    } else if (e.lungeT > 0) {
+      e.lungeT -= dt;
+      e.x += (dx / d) * e.speed * 2.8 * dt;
+      e.y += (dy / d) * e.speed * 2.8 * dt;
+    } else if (e.attackCd <= 0 && d < e.radius + 26) {
+      e.windup = 0.42;
+    }
+  }
+
+  private updateOfficial(e: Enemy, nx: number, ny: number, dt: number): void {
+    if (e.windup <= 0 && e.lungeT <= 0) {
+      e.x += nx * e.speed * dt;
+      e.y += ny * e.speed * dt;
+    }
+    this.bossMelee(e, nx, ny, Math.hypot(this.player.x - e.x, this.player.y - e.y) || 1, dt);
     e.bossCd -= dt;
     e.bossCd2 -= dt;
+    e.rangedCd -= dt;
     if (e.bossCd <= 0) {
       e.bossCd = 6;
-      e.telegraph = 0.9;
-      // whistle shockwave after telegraph
-      this.deferred.push({
-        t: 0.9,
-        fn: () => {
-          if (!e.active) return;
-          e.telegraph = 0;
-          const p = this.player;
-          this.ring(e.x, e.y, 230, '#e8283f');
-          this.events.push({ type: 'whistle', x: e.x, y: e.y });
-          if (dist2(p.x, p.y, e.x, e.y) < 230 * 230) this.hurtPlayer(18);
-        },
-      });
+      // whistle shockwave, telegraphed around the official
+      this.telegraph(e.x, e.y, 230, 0.9, 'shock', 18, 0);
     }
     if (e.bossCd2 <= 0) {
       e.bossCd2 = 9;
-      // book the crowd: summon 4 hooligans
+      // book the crowd: summon 4 invaders
       for (let i = 0; i < 4; i++) {
         const a = this.rng.range(0, TAU);
-        this.spawnEnemy(ENEMIES.hooligan, clamp(e.x + Math.cos(a) * 120, 40, ARENA_W - 40), clamp(e.y + Math.sin(a) * 120, 40, ARENA_H - 40), false);
+        this.spawnEnemy(ENEMIES.invader, clamp(e.x + Math.cos(a) * 120, 40, ARENA_W - 40), clamp(e.y + Math.sin(a) * 120, 40, ARENA_H - 40), false);
       }
+    }
+    if (e.rangedCd <= 0) {
+      e.rangedCd = 12;
+      // red card: telegraphed marker on the player, brief slow on verdict
+      this.telegraph(this.player.x, this.player.y, 150, 1.0, 'flash', 10, 0);
     }
   }
 
   private updateCaptain(e: Enemy, nx: number, ny: number, dt: number): void {
-    e.x += nx * e.speed * dt;
-    e.y += ny * e.speed * dt;
+    if (e.windup <= 0 && e.lungeT <= 0) {
+      e.x += nx * e.speed * dt;
+      e.y += ny * e.speed * dt;
+    }
+    this.bossMelee(e, nx, ny, Math.hypot(this.player.x - e.x, this.player.y - e.y) || 1, dt);
     e.bossCd -= dt;
     e.bossCd2 -= dt;
     if (e.bossCd <= 0) {
@@ -1546,6 +1809,41 @@ export class Sim {
       e.kx += nx * 700;
       e.ky += ny * 700;
       this.events.push({ type: 'dash' });
+    }
+  }
+
+  private updateDrumboss(e: Enemy, nx: number, ny: number, dt: number): void {
+    if (e.windup <= 0 && e.lungeT <= 0) {
+      e.x += nx * e.speed * dt;
+      e.y += ny * e.speed * dt;
+    }
+    this.bossMelee(e, nx, ny, Math.hypot(this.player.x - e.x, this.player.y - e.y) || 1, dt);
+    e.bossCd -= dt;
+    e.bossCd2 -= dt;
+    e.rangedCd -= dt;
+    if (e.bossCd <= 0) {
+      e.bossCd = 3.4;
+      // drum shockwave, telegraphed around the drummer
+      this.telegraph(e.x, e.y, 225, 1.0, 'shock', 16, 0);
+    }
+    if (e.bossCd2 <= 0) {
+      e.bossCd2 = 8.5;
+      // rally the drumline: 2 invaders + 1 sprinter join in
+      for (let i = 0; i < 2; i++) {
+        const a = this.rng.range(0, TAU);
+        this.spawnEnemy(ENEMIES.invader, clamp(e.x + Math.cos(a) * 130, 40, ARENA_W - 40), clamp(e.y + Math.sin(a) * 130, 40, ARENA_H - 40), false);
+      }
+      const a = this.rng.range(0, TAU);
+      this.spawnEnemy(ENEMIES.sprinter, clamp(e.x + Math.cos(a) * 160, 40, ARENA_W - 40), clamp(e.y + Math.sin(a) * 160, 40, ARENA_H - 40), false);
+    }
+    if (e.rangedCd <= 0) {
+      e.rangedCd = 11;
+      // beat surge: every nearby fan charges faster for 2s
+      for (const o of this.enemies) {
+        if (o.active && !o.boss && dist2(e.x, e.y, o.x, o.y) < 520 * 520) o.boostT = 2;
+      }
+      this.ring(e.x, e.y, 520, '#ff9a3d');
+      this.events.push({ type: 'chant', x: e.x, y: e.y });
     }
   }
 
@@ -1577,6 +1875,11 @@ export class Sim {
       if (!rc.active) continue;
       rc.t -= dt;
       if (rc.t <= 0) rc.active = false;
+    }
+    for (const c of this.corpses) {
+      if (!c.active) continue;
+      c.t += dt;
+      if (c.t >= c.max) c.active = false;
     }
   }
 

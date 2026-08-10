@@ -50,7 +50,7 @@ test('run starts: HUD, auto-attacks, kills and XP flow to level-up', async ({ pa
   await expect(page.locator('#hp-wrap')).toBeVisible();
   await expect(page.locator('#ability-dock .ability-slot')).toHaveCount(1); // start ability
   // pin an enemy near the player: auto-attack must kill it without input
-  await page.evaluate(() => window.__FF.debugSpawn('hooligan', 150, 0));
+  await page.evaluate(() => window.__FF.debugSpawn('invader', 150, 0));
   await page.waitForFunction(() => window.__FF.getSim()!.kills > 0, null, { timeout: 8000 });
   expect(errors).toEqual([]);
 });
@@ -102,10 +102,15 @@ test('boss spawns at half time with nameplate', async ({ page }) => {
   await page.click('[data-act="play"]');
   await page.click('[data-act="start"]');
   await page.waitForTimeout(300);
-  await page.evaluate(() => window.__FF.skipToBoss(1));
+  await page.evaluate(() => {
+    // Bosses are serialized; stage half-time as if the first-quarter boss was
+    // already defeated so this test specifically verifies the official.
+    window.__FF.getSim().boss0Spawned = true;
+    window.__FF.skipToBoss(1);
+  });
   await page.waitForTimeout(1500);
   await expect(page.locator('#boss-plate')).toBeVisible();
-  await expect(page.locator('#boss-plate .name')).toContainText('The Referee');
+  await expect(page.locator('#boss-plate .name')).toContainText('The Crooked Official');
 });
 
 test('shop purchases persist across reload (localStorage save)', async ({ page }) => {

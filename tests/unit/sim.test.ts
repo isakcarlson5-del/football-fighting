@@ -32,7 +32,7 @@ describe('sim core loop', () => {
   it('Precision Strike fires automatically and kills enemies, dropping XP', () => {
     const sim = makeSim(0); // Messi starts with strike
     // pin an enemy right next to the player
-    sim.debugSpawn('hooligan', sim.player.x + 120, sim.player.y);
+    sim.debugSpawn('invader', sim.player.x + 120, sim.player.y);
     const e = sim.enemies.find((x) => x.active)!;
     e.speed = 0;
     step(sim, 60 * 8);
@@ -65,7 +65,7 @@ describe('sim core loop', () => {
     const sim = makeSim();
     sim.player.hp = 1;
     sim.player.iframes = 0;
-    sim.debugSpawn('hooligan', sim.player.x + 5, sim.player.y);
+    sim.debugSpawn('invader', sim.player.x + 5, sim.player.y);
     step(sim, 240);
     expect(sim.over).toBe('lost');
   });
@@ -82,9 +82,13 @@ describe('sim core loop', () => {
 
   it('half-time boss spawns and is clearly flagged', () => {
     const sim = makeSim();
+    // The first-quarter boss is normally still alive when time is jumped
+    // directly to half-time. Mark that encounter as completed so this test
+    // isolates the serialized half-time spawn.
+    sim.boss0Spawned = true;
     sim.time = BOSS1_AT;
     step(sim, 5);
-    const boss = sim.enemies.find((e) => e.active && e.boss === 'referee');
+    const boss = sim.enemies.find((e) => e.active && e.boss === 'official');
     expect(boss).toBeTruthy();
     expect(boss!.maxHp).toBeGreaterThan(ENEMIES.mascot.hp);
     expect(sim.bossAlive).toBeTruthy();
@@ -94,7 +98,7 @@ describe('sim core loop', () => {
     const sim = makeSim();
     sim.applyUpgrade({ kind: 'ability', id: 'guard', name: '', desc: '', color: '', level: 1 });
     expect(sim.guards.length).toBe(1);
-    sim.debugSpawn('hooligan', sim.player.x + 100, sim.player.y);
+    sim.debugSpawn('invader', sim.player.x + 100, sim.player.y);
     step(sim, 240);
     // guard punched the pinned enemy to death (slot reuse makes hp checks unreliable)
     expect(sim.kills).toBeGreaterThan(0);
@@ -102,7 +106,7 @@ describe('sim core loop', () => {
 
   it('Nutmeg Dash grants invulnerability frames while dashing', () => {
     const sim = makeSim(2); // Neymar starts with dash
-    sim.debugSpawn('hooligan', sim.player.x + 28, sim.player.y); // adjacent threat
+    sim.debugSpawn('invader', sim.player.x + 28, sim.player.y); // adjacent threat
     step(sim, 6, 1, 0); // dash triggers immediately, lasts ~14 frames
     expect(sim.player.dashT).toBeGreaterThan(0);
     const hpBefore = sim.player.hp;
@@ -112,7 +116,7 @@ describe('sim core loop', () => {
 
   it('Orbiting Press damages enemies that get close', () => {
     const sim = makeSim(3); // Yamal starts with orbit
-    sim.debugSpawn('hooligan', sim.player.x + 90, sim.player.y);
+    sim.debugSpawn('invader', sim.player.x + 90, sim.player.y);
     step(sim, 240);
     expect(sim.kills).toBeGreaterThan(0);
   });
@@ -120,7 +124,7 @@ describe('sim core loop', () => {
   it("Captain's Whistle knocks groups back", () => {
     const sim = makeSim(1); // Ronaldo starts with whistle
     sim.enemies.forEach((e) => (e.active = false)); // clear the opening wave
-    sim.debugSpawn('hooligan', sim.player.x + 80, sim.player.y);
+    sim.debugSpawn('invader', sim.player.x + 80, sim.player.y);
     const enemy = sim.enemies.find((x) => x.active)!;
     enemy.speed = 0;
     const d0 = Math.hypot(enemy.x - sim.player.x, enemy.y - sim.player.y);

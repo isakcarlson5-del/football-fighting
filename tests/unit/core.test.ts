@@ -72,13 +72,13 @@ describe('data integrity', () => {
     }
   });
   it('enemy roster escalates: later enemies are tougher', () => {
-    expect(ENEMIES.steward.hp).toBeGreaterThan(ENEMIES.hooligan.hp);
+    expect(ENEMIES.steward.hp).toBeGreaterThan(ENEMIES.invader.hp);
     expect(ENEMIES.mascot.hp).toBeGreaterThan(ENEMIES.steward.hp);
-    expect(ENEMIES.ultra.speed).toBeGreaterThan(ENEMIES.hooligan.speed);
+    expect(ENEMIES.sprinter.speed).toBeGreaterThan(ENEMIES.invader.speed);
   });
   it('bosses are clearly stronger than regular enemies', () => {
-    expect(BOSSES.referee.hp).toBeGreaterThan(ENEMIES.mascot.hp * 5);
-    expect(BOSSES.captain.hp).toBeGreaterThan(BOSSES.referee.hp);
+    expect(BOSSES.official.hp).toBeGreaterThan(ENEMIES.mascot.hp * 5);
+    expect(BOSSES.captain.hp).toBeGreaterThan(BOSSES.official.hp);
   });
 });
 

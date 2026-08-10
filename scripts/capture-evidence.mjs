@@ -35,6 +35,24 @@ await page.waitForTimeout(700);
 await page.keyboard.up('d');
 await page.screenshot({ path: `${OUT}/03-gameplay.png` });
 
+// Accepted generated enemy art, staged before the later density tests.
+await page.evaluate(() => {
+  const ff = window.__FF;
+  const sim = ff.getSim();
+  sim.enemies.forEach((e) => { e.active = false; });
+  ff.debugSpawn('invader', -260, -105);
+  ff.debugSpawn('sprinter', -85, -105);
+  ff.debugSpawn('lobber', 90, -105);
+  ff.debugSpawn('steward', 265, -105);
+  for (const e of sim.enemies.filter((enemy) => enemy.active)) {
+    e.hp = 9999;
+    e.maxHp = 9999;
+  }
+});
+await page.waitForTimeout(80);
+await page.screenshot({ path: `${OUT}/43-ai-enemy-lineup.png` });
+await page.evaluate(() => window.__FF.getSim().enemies.forEach((e) => { e.active = false; }));
+
 // level-up
 await page.evaluate(() => window.__FF.giveXp(40));
 await page.waitForSelector('#levelup-screen');
@@ -49,8 +67,14 @@ await page.evaluate(() => {
   sim.player.abilities = { strike: 4, orbit: 4, whistle: 3, dash: 3, guard: 3 };
   sim.player.maxHp = 2000;
   sim.player.hp = 2000;
+  // Keep capture timing deterministic instead of letting an earned level-up
+  // cover the combat and boss evidence frames.
+  window.__ffAuto = setInterval(() => {
+    if (window.__FF.getState().run === 'levelup') window.__FF.pickUpgrade(0);
+  }, 100);
+  sim.boss0Spawned = true;
   ff.setTime(210);
-  const types = ['hooligan', 'ultra', 'thrower', 'steward', 'mascot'];
+  const types = ['invader', 'sprinter', 'lobber', 'steward', 'mascot'];
   for (let i = 0; i < 16; i++) {
     const a = (i / 16) * Math.PI * 2;
     ff.debugSpawn(types[i % 5], Math.cos(a) * 330, Math.sin(a) * 250, i % 6 === 0);
@@ -59,37 +83,75 @@ await page.evaluate(() => {
 await page.waitForTimeout(1200);
 await page.screenshot({ path: `${OUT}/05-combat.png` });
 
+// first-quarter boss close
+await page.evaluate(() => {
+  const sim = window.__FF.getSim();
+  sim.enemies.forEach((e) => { e.active = false; });
+  sim.bossAlive = null;
+  sim.boss0Spawned = false;
+  sim.boss1Spawned = false;
+  sim.boss2Spawned = false;
+  window.__FF.setTime(150.2);
+});
+await page.waitForFunction(() => {
+  const sim = window.__FF.getSim();
+  return sim?.bossAlive?.boss === 'drumboss'
+    && Math.hypot(sim.bossAlive.x - sim.player.x, sim.bossAlive.y - sim.player.y) < 430;
+}, null, { timeout: 25000 });
+await page.evaluate(() => {
+  const sim = window.__FF.getSim();
+  sim.enemies.forEach((e) => { if (e !== sim.bossAlive) e.active = false; });
+  sim.bossAlive.x = sim.player.x + 165;
+  sim.bossAlive.y = sim.player.y + 20;
+});
+await page.waitForTimeout(80);
+await page.screenshot({ path: `${OUT}/40-boss-drumboss.png` });
+
 // half-time boss close
 await page.evaluate(() => {
-  // auto-dismiss level-up overlays while staging boss shots
-  window.__ffAuto = setInterval(() => {
-    if (window.__FF.getState().run === 'levelup') window.__FF.pickUpgrade(0);
-  }, 250);
   const sim = window.__FF.getSim();
-  sim.enemies.forEach((e) => { if (e.boss) e.active = false; });
+  sim.enemies.forEach((e) => { e.active = false; });
   sim.bossAlive = null;
+  sim.boss0Spawned = true;
+  sim.boss1Spawned = false;
   window.__FF.setTime(300.2);
 });
 await page.waitForFunction(() => {
   const sim = window.__FF.getSim();
-  if (!sim || !sim.bossAlive) return false;
+  if (sim?.bossAlive?.boss !== 'official') return false;
   return Math.hypot(sim.bossAlive.x - sim.player.x, sim.bossAlive.y - sim.player.y) < 430;
 }, null, { timeout: 25000 });
-await page.screenshot({ path: `${OUT}/06-boss-referee.png` });
+await page.evaluate(() => {
+  const sim = window.__FF.getSim();
+  sim.enemies.forEach((e) => { if (e !== sim.bossAlive) e.active = false; });
+  sim.bossAlive.x = sim.player.x + 165;
+  sim.bossAlive.y = sim.player.y + 20;
+});
+await page.waitForTimeout(80);
+await page.screenshot({ path: `${OUT}/41-boss-official.png` });
 
 // final boss + flare telegraphs
 await page.evaluate(() => {
   const sim = window.__FF.getSim();
-  sim.enemies.forEach((e) => { if (e.boss) e.active = false; });
+  sim.enemies.forEach((e) => { e.active = false; });
   sim.bossAlive = null;
+  sim.boss0Spawned = true;
+  sim.boss1Spawned = true;
+  sim.boss2Spawned = false;
   window.__FF.setTime(540.2);
 });
 await page.waitForFunction(() => {
   const sim = window.__FF.getSim();
-  return sim && sim.bossAlive && sim.telegraphs.some((t) => t.active);
+  return sim?.bossAlive?.boss === 'captain' && sim.telegraphs.some((t) => t.active);
 }, null, { timeout: 25000 });
-await page.waitForTimeout(300);
-await page.screenshot({ path: `${OUT}/07-boss-captain.png` });
+await page.evaluate(() => {
+  const sim = window.__FF.getSim();
+  sim.enemies.forEach((e) => { if (e !== sim.bossAlive) e.active = false; });
+  sim.bossAlive.x = sim.player.x + 165;
+  sim.bossAlive.y = sim.player.y + 20;
+});
+await page.waitForTimeout(80);
+await page.screenshot({ path: `${OUT}/42-boss-captain.png` });
 await page.evaluate(() => clearInterval(window.__ffAuto));
 
 // death result (dismiss any pending level-up first)
@@ -132,7 +194,7 @@ await m.waitForTimeout(800);
 await m.screenshot({ path: `${OUT}/12-mobile-menu.png` });
 await m.tap('[data-act="play"]');
 await m.tap('[data-act="start"]');
-await m.waitForTimeout(600);
+await m.waitForTimeout(1600);
 const cdp = await ctx2.newCDPSession(m);
 await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: 100, y: 500, id: 1 }] });
 for (let i = 0; i < 8; i++) {

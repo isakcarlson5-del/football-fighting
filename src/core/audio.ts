@@ -139,6 +139,23 @@ export class AudioEngine {
     this.noise({ dur: 0.4, gain: 0.3, freq: 300, sweepTo: 90, q: 0.7 });
     this.tone({ freq: 90, freqEnd: 40, dur: 0.35, type: 'sine', gain: 0.4 });
   }
+  /** Vuvuzela blast: nasal low blat. */
+  horn(): void {
+    const t = this.now();
+    this.tone({ freq: 233, freqEnd: 220, dur: 0.5, type: 'sawtooth', gain: 0.22, when: t });
+    this.tone({ freq: 117, freqEnd: 110, dur: 0.5, type: 'square', gain: 0.14, when: t });
+    this.noise({ dur: 0.3, gain: 0.08, freq: 700 });
+  }
+  /** Paparazzo flash: shutter click + faint charge whine. */
+  cameraFlash(): void {
+    this.noise({ dur: 0.05, gain: 0.22, freq: 3200, q: 1.6 });
+    this.tone({ freq: 1800, freqEnd: 2600, dur: 0.09, type: 'sine', gain: 0.1 });
+  }
+  /** Crowd roar for chants/rallies (short). */
+  chant(): void {
+    this.noise({ dur: 0.7, gain: 0.16, freq: 500, sweepTo: 900, q: 0.5 });
+    this.tone({ freq: 196, dur: 0.5, type: 'triangle', gain: 0.12 });
+  }
   bossHorn(): void {
     const t = this.now();
     [98, 123, 147].forEach((f) => this.tone({ freq: f, freqEnd: f * 0.94, dur: 0.7, type: 'sawtooth', gain: 0.2, when: t }));
