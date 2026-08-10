@@ -28,6 +28,8 @@ import type { Save } from './meta';
 
 export const ARENA_W = 2600;
 export const ARENA_H = 1416; // tuned playfield height; the renderer maps the arena plate's grass rect onto this exactly
+export const KICK_DURATION = 0.36;
+export const KICK_CONTACT_DELAY = KICK_DURATION / 2;
 const MAX_ENEMIES = 240;
 const CELL = 72;
 const LOB_GRAVITY = 1500; // aerial lob downward acceleration (world units/s²)
@@ -272,7 +274,7 @@ export interface PlayerState {
   pressureCd: number;
   pressureQueue: number; // staggered pulses still to release
   pressureQueueT: number;
-  kickT: number; // >0 during the lob's kick animation (active frame)
+  kickT: number; // >0 during the lob's kick animation (contact at half duration)
   dashCds: number[];
   dashT: number; // >0 while dashing
   dashDx: number;
@@ -971,7 +973,15 @@ export class Sim {
     return this.nearestEnemy(fromX, fromY, Sim.AERIAL_MAX_RANGE);
   }
 
+  /** Starts the readable wind-up; the ball is created on the strip's contact frame. */
   private fireStrike(): void {
+    if (this.abilityLevel('strike') === 0) return;
+    this.player.kickT = KICK_DURATION;
+    this.deferred.push({ t: KICK_CONTACT_DELAY, fn: () => this.releaseStrike() });
+  }
+
+  /** Releases the aerial volley on the exact contact beat of the kick strip. */
+  private releaseStrike(): void {
     const lvl = this.abilityLevel('strike');
     if (lvl === 0) return;
     const p = this.player;
@@ -990,7 +1000,6 @@ export class Sim {
       launched++;
     }
     if (launched > 0) {
-      p.kickT = 0.22; // active kick frame, synced to the launch
       this.burst(p.x + p.face * 22, p.y, 4, '#ffd166');
       this.events.push({ type: 'kick' });
     }

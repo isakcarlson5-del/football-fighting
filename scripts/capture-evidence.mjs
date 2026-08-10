@@ -156,6 +156,22 @@ await page.waitForTimeout(40);
 await page.screenshot({ path: `${OUT}/48-bodyguard-states.png` });
 await page.keyboard.press('p');
 
+// Every selectable hero has a dedicated generated contact pose. Freeze the
+// renderer on frame 3/4 (the same beat that releases Precision Strike).
+for (const playerId of ['messi', 'ronaldo', 'neymar', 'yamal']) {
+  await page.evaluate((id) => window.__FF.startRun(id), playerId);
+  await page.keyboard.press('p');
+  await page.evaluate(() => {
+    document.getElementById('pause-screen')?.remove();
+    const sim = window.__FF.getSim();
+    sim.enemies.forEach((e) => { e.active = false; });
+    sim.player.kickT = 0.17;
+  });
+  await page.waitForTimeout(40);
+  await page.screenshot({ path: `${OUT}/49-kick-${playerId}.png` });
+}
+await page.evaluate(() => window.__FF.startRun('messi'));
+
 // level-up
 await page.evaluate(() => window.__FF.giveXp(40));
 await page.waitForSelector('#levelup-screen');

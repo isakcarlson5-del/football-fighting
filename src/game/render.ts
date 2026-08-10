@@ -7,7 +7,7 @@
 import { clamp, TAU } from '../core/math';
 import { ballSprite, bossAtlas, bottleSprite, coinSprite, enemyAtlas, getStripAtlas, guardAtlas, loadStripAtlas, playerAtlas, xpSprite, type Atlas } from '../core/sprites';
 import { BOSSES, ENEMIES, SKINS, type BossId, type EnemyDef, type PlayerDef } from './data';
-import { ARENA_H, ARENA_W, type Enemy, type Guard, type Sim } from './sim';
+import { ARENA_H, ARENA_W, KICK_DURATION, type Enemy, type Guard, type Sim } from './sim';
 import type { Save } from './meta';
 
 const TILT = 0.62;
@@ -367,15 +367,21 @@ export class Renderer {
 
   /**
    * Picks the hero's atlas for the current locomotion state.
+   * kind 'kick'     — one-shot wind-up/contact/recovery strip
    * kind 'idle'     — dedicated idle strip (generated art), loop its frames
    * kind 'run'      — run strip cycling while moving/dashing
-   * kind 'run-held'— no idle art yet: hold the run strip's first frame
-   *                  (a subtle breathing bob is added at draw time)
+   * kind 'run-held' — no idle art yet: hold the run strip's first frame
+   *                   (a subtle breathing bob is added at draw time)
    */
-  private heroVisual(def: PlayerDef, save: Save, running: boolean): { atlas: Atlas; kind: 'idle' | 'run' | 'run-held' } {
+  private heroVisual(def: PlayerDef, save: Save, running: boolean, kicking: boolean): { atlas: Atlas; kind: 'kick' | 'idle' | 'run' | 'run-held' } {
     const skinId = save.equippedSkin(def.id);
     const skin = skinId ? SKINS.find((s) => s.id === skinId) : undefined;
     const tint = skin?.kit.shirt;
+    if (kicking) {
+      const kickStrip = getStripAtlas(`${def.id}-kick`, tint);
+      if (kickStrip) return { atlas: kickStrip, kind: 'kick' };
+      void loadStripAtlas(`${def.id}-kick`, `art/players/${def.id}-kick.png`, tint);
+    }
     if (!running) {
       const idleStrip = getStripAtlas(`${def.id}-idle`, tint);
       if (idleStrip) return { atlas: idleStrip, kind: 'idle' };
@@ -627,7 +633,7 @@ export class Renderer {
         }
       } else if (it.kind === 1) {
         const running = p.moving || p.dashT > 0;
-        const vis = this.heroVisual(def, save, running);
+        const vis = this.heroVisual(def, save, running, p.kickT > 0);
         const atlas = vis.atlas;
         const x = toSX(p.x);
         const y = toSY(p.y);
@@ -659,7 +665,9 @@ export class Renderer {
         // Idle plays the dedicated neutral clip. Keep the feet planted; any
         // breathing motion belongs inside the art rather than moving the body.
         const frame =
-          vis.kind === 'idle' ? Math.floor(time * 4.5) % atlas.frames
+          vis.kind === 'kick'
+            ? Math.min(atlas.frames - 1, Math.floor(clamp(1 - p.kickT / KICK_DURATION, 0, 0.999) * atlas.frames))
+          : vis.kind === 'idle' ? Math.floor(time * 4.5) % atlas.frames
           : vis.kind === 'run' ? Math.floor(p.animT * 11) % atlas.frames
           : 0;
         const bobY = vis.kind === 'run-held' ? Math.sin(time * 2.6) * 1.6 : 0;
@@ -669,12 +677,6 @@ export class Renderer {
         const blink = p.iframes > 0 && Math.floor(time * 20) % 2 === 0;
         ctx.save();
         ctx.translate(x, y);
-        // active kick frame: quick forward lean synced to the lob launch
-        if (p.kickT > 0) {
-          const k = Math.sin(Math.PI * (1 - p.kickT / 0.22));
-          ctx.translate(p.face * k * 7, -k * 2);
-          ctx.rotate(p.face * k * 0.09);
-        }
         if (p.face < 0 && atlas.flippable) ctx.scale(-1, 1);
         if (blink) ctx.globalAlpha = 0.45;
         ctx.drawImage(atlas.canvas, frame * atlas.fw, 0, atlas.fw, atlas.fh, -dw / 2, -atlas.feetY * sc + bobY, dw, dh);

@@ -128,11 +128,12 @@ export function getStripAtlas(id: string, tint?: string): Atlas | null {
   return stripCache.get(`strip:${id}:${tint ?? 'base'}`) ?? null;
 }
 
-/** Kick off loading all four player strips (fallbacks stay procedural). */
+/** Kick off loading all player locomotion and attack strips. */
 export function primePlayerStrips(playerIds: string[]): void {
   for (const id of playerIds) {
     void loadStripAtlas(id, `art/players/${id}.png`);
     void loadStripAtlas(`${id}-idle`, `art/players/${id}-idle.png`);
+    void loadStripAtlas(`${id}-kick`, `art/players/${id}-kick.png`);
   }
 }
 

@@ -64,6 +64,9 @@ describe('attack lanes', () => {
     a.maxHp = 5;
     sim.player.strikeCd = 0;
     step(sim, 2);
+    expect(sim.player.kickT).toBeGreaterThan(0);
+    expect(sim.balls.filter((x) => x.active)).toHaveLength(0); // wind-up precedes contact
+    step(sim, 11); // pass the 180ms contact beat
     const targets = sim.balls.filter((x) => x.active).map((x) => x.targetIdx);
     expect(targets.length).toBe(2);
     expect(new Set(targets).size).toBe(2); // each ball reserved a different enemy
@@ -104,7 +107,7 @@ describe('attack lanes', () => {
     e.hp = 500;
     e.maxHp = 500;
     sim.player.strikeCd = 0;
-    step(sim, 3); // lobs launch
+    step(sim, 14); // wind-up completes and lobs launch on contact
     e.airT = 3; // mid-leap when the ball lands
     step(sim, 90); // ~1.5s: balls land
     expect(e.hp).toBeLessThan(500);
