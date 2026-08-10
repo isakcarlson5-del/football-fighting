@@ -292,7 +292,7 @@ export const ENEMIES: Record<Exclude<EnemyId, 'official' | 'captain' | 'drumboss
   },
   flag: {
     id: 'flag', name: 'Flag Bearer', hp: 30, speed: 58, damage: 5, xp: 4,
-    radius: 16, unlockAt: 185, weight: 24, coinChance: 0.26, behavior: 'support', scale: 1,
+    radius: 16, unlockAt: 185, weight: 24, coinChance: 0.26, behavior: 'support', scale: 1.15,
   },
   foam: {
     id: 'foam', name: 'Foam Finger Fan', hp: 55, speed: 44, damage: 13, xp: 3,
