@@ -14,12 +14,19 @@ while making positioning, pursuit and the continuously rising pressure more imme
 Built with TypeScript + Vite + Canvas 2D. The four player characters use
 generated 2.5D idle/run/kick sprite strips (`public/art/players/`, with a
 procedural in-code fallback). The kick wind-up releases its aerial ball on the
-drawn contact frame. All 15 regular enemies and all 3 bosses use generated
-semantic idle/attack/hurt strips plus dedicated six-frame locomotion cycles.
+drawn contact frame. All 15 regular enemies use generated semantic
+idle/attack/hurt strips plus dedicated six-frame locomotion cycles. All 3
+bosses retain those semantic states and add eight authored movement directions
+with 12 concrete frames each (288 directional boss poses total); the original
+six-frame boss strips remain as automatic loading fallbacks. Directional boss
+atlases are loaded on demand, skip unused flash/frost copies and use a six-entry
+LRU cache so the richer animation remains mobile-safe.
 Three XP tiers, coins, healing drinks, boss trophies and the rare Full-Pitch
 Magnet, Matchday Wipeout and Stoppage-Time Freeze drops use dedicated generated
 pickup art. The magnet vacuums every ground collectible, the bomb clears regular
-threats while chunking bosses, and the freeze pauses the hostile layer for 5.5s.
+threats while chunking bosses and now plays a six-stage AI-authored full-pitch
+explosion instead of the old procedural ring, and the freeze pauses the hostile
+layer for 5.5s.
 Directional contact
 sparks and distinct aerial landing bursts use pooled, mobile-safe rendering
 with layered light/heavy/critical hit audio. Curveball Swarm and Golden Boot
@@ -105,13 +112,14 @@ public/art/  generated runtime images: backgrounds, sprite strips and icons
 art-source/  original generated source plates retained for asset provenance
 tools/       dev-only art composer + sprite sheet viewer (not in the bundle)
 tests/       vitest unit tests + playwright e2e
-scripts/     playtest + art generation harnesses
+scripts/     playtest + art generation, chroma-key normalization and runtime encoding
 ```
 
 ## Verification evidence
 
-- `npm test` — 125 unit tests green (rng, data, pacing, meta/save, combat lanes,
-  stateful poses, generated asset headers, rare pickups and simulation behaviours).
+- `npm test` — 151 unit tests green (rng, data, pacing, meta/save, combat lanes,
+  eight-way boss direction selection, stateful poses, generated PNG/WebP asset
+  headers, Wipeout ring removal, rare pickups and simulation behaviours).
 - `npm run test:e2e` — 16 browser tests cover menu, selection, combat, level-up,
   persistence, boss loot, dense late-game performance and sustained live play
   without a crash or an unintended return to the menu. The suite also covers
@@ -119,5 +127,7 @@ scripts/     playtest + art generation harnesses
   boss nameplates, shop/skin persistence and pause/resume.
 - Live playtest screenshots: `evidence/shots/` (menu/select/gameplay/level-up,
   all ability galleries, enemy lineups, semantic poses, bosses, mobile and victory).
+- In-app browser QA at 1280×720 verified three simultaneous directional bosses,
+  the full six-stage Matchday Wipeout sequence and zero console warnings/errors.
 - Sound: autoplay-safe synthesized WebAudio SFX, crowd bed and adaptive music;
   mute and separate master/SFX/music levels persist locally.

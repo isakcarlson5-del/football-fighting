@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { Sim } from '../../src/game/sim';
 import { BOSS0_AT, BOSS1_AT, BOSSES, ENEMIES, PLAYERS, RUN_LENGTH } from '../../src/game/data';
 import { Save } from '../../src/game/meta';
-import { enemyHealthBarStyle, enemyPoseFrame, guardPoseFrame } from '../../src/game/render';
+import { enemyHealthBarStyle, enemyPoseFrame, guardPoseFrame, movementDirection } from '../../src/game/render';
 
 function freshSave(): Save {
   return new Save(null);
@@ -18,6 +18,18 @@ function step(sim: Sim, frames: number, ax = 0, ay = 0): void {
 }
 
 describe('sim core loop', () => {
+  it('quantizes boss movement into all eight authored sprite directions', () => {
+    expect(movementDirection(0, -1)).toBe('n');
+    expect(movementDirection(1, -1)).toBe('ne');
+    expect(movementDirection(1, 0)).toBe('e');
+    expect(movementDirection(1, 1)).toBe('se');
+    expect(movementDirection(0, 1)).toBe('s');
+    expect(movementDirection(-1, 1)).toBe('sw');
+    expect(movementDirection(-1, 0)).toBe('w');
+    expect(movementDirection(-1, -1)).toBe('nw');
+    expect(movementDirection(0, 0)).toBe('s');
+  });
+
   it('announces a max evolution when an ability reaches level five', () => {
     const sim = makeSim();
     sim.player.abilities.strike = 4;
@@ -470,6 +482,7 @@ describe('sim core loop', () => {
     expect(boss.hp).toBeLessThan(bossHp);
     expect(boss.hp).toBeGreaterThan(0);
     expect(sim.events.some((event) => event.type === 'bomb')).toBe(true);
+    expect(sim.rings.some((ring) => ring.active && ring.color === '#ff7a2e')).toBe(false);
   });
 
   it('Stoppage-Time Freeze pauses every enemy across the map while the player remains mobile', () => {

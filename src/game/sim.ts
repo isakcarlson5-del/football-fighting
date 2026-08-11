@@ -100,6 +100,9 @@ export interface Enemy {
   animT: number;
   /** True only when the enemy changed world position during the latest step. */
   moving: boolean;
+  /** Last real world-space movement direction retained for directional art. */
+  moveDx: number;
+  moveDy: number;
   /** generic behavior cooldown (bottle throws, leaps, thumps, flashes, chants) */
   rangedCd: number;
   /** melee wind-up: >0 while visibly pulling back before the strike */
@@ -558,7 +561,7 @@ export class Sim {
       this.enemies.push({
         active: false, def: ENEMIES.invader, variant: 0, x: 0, y: 0, hp: 1, maxHp: 1, barHp: 1, barHitT: 0, speed: 0, damage: 0,
         radius: 10, xp: 1, elite: false, boss: '', kx: 0, ky: 0, flash: 0, hurtT: 0, hurtDx: 0, hurtDy: 0, hurtStrength: 0, orbitHitT: 0, attackAnimT: 0, attackCd: 0, orbitCd: 0,
-        dashMark: -1, stun: 0, slow: 0, face: 1, animT: 0, moving: false, rangedCd: 2, windup: 0, lungeT: 0, airT: 0, haste: 1, boostT: 0, casting: '', bossCd: 4, bossCd2: 8, telegraph: 0, chargeDx: 0, chargeDy: 0, chargeHit: false,
+        dashMark: -1, stun: 0, slow: 0, face: 1, animT: 0, moving: false, moveDx: 0, moveDy: 1, rangedCd: 2, windup: 0, lungeT: 0, airT: 0, haste: 1, boostT: 0, casting: '', bossCd: 4, bossCd2: 8, telegraph: 0, chargeDx: 0, chargeDy: 0, chargeHit: false,
       });
     }
     for (let i = 0; i < 400; i++) this.balls.push({ active: false, x: 0, y: 0, vx: 0, vy: 0, z: 0, vz: 0, dmg: 0, splash: 60, ricochet: 0, spin: 0, tx: 0, ty: 0, targetIdx: -1, flightT: 0, maxFlightT: 1 });
@@ -741,6 +744,8 @@ export class Sim {
     e.slow = 0;
     e.animT = this.rng.range(0, 1);
     e.moving = false;
+    e.moveDx = 0;
+    e.moveDy = 1;
     e.rangedCd = this.rng.range(1, 2.6);
     e.windup = 0;
     e.lungeT = 0;
@@ -796,6 +801,8 @@ export class Sim {
     e.slow = 0;
     e.animT = 0;
     e.moving = false;
+    e.moveDx = 0;
+    e.moveDy = 1;
     e.rangedCd = 2;
     e.windup = 0;
     e.lungeT = 0;
@@ -924,7 +931,6 @@ export class Sim {
       this.bombResolving = false;
     }
     this.burst(this.player.x, this.player.y, 48, '#ffb02e');
-    this.ring(this.player.x, this.player.y, 760, '#ff7a2e');
     this.events.push({ type: 'bomb', x: this.player.x, y: this.player.y, defeated });
   }
 
@@ -2136,7 +2142,14 @@ export class Sim {
       }
       if (e.stun > 0) {
         e.windup = 0; // stun interrupts the swing
-        e.moving = dist2(e.x, e.y, stepX, stepY) > 0.01;
+        const movedX = e.x - stepX;
+        const movedY = e.y - stepY;
+        e.moving = movedX * movedX + movedY * movedY > 0.01;
+        if (e.moving) {
+          const movedLength = Math.hypot(movedX, movedY) || 1;
+          e.moveDx = movedX / movedLength;
+          e.moveDy = movedY / movedLength;
+        }
         continue;
       }
 
@@ -2346,7 +2359,14 @@ export class Sim {
           e.windup = 0.34; // readable pull-back before the hit lands
         }
       }
-      e.moving = dist2(e.x, e.y, stepX, stepY) > 0.01;
+      const movedX = e.x - stepX;
+      const movedY = e.y - stepY;
+      e.moving = movedX * movedX + movedY * movedY > 0.01;
+      if (e.moving) {
+        const movedLength = Math.hypot(movedX, movedY) || 1;
+        e.moveDx = movedX / movedLength;
+        e.moveDy = movedY / movedLength;
+      }
     }
 
     /* balls (AERIAL lane: lobbed ballistics, damage only on landing) */

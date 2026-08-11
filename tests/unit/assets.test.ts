@@ -28,6 +28,8 @@ const animatedVfxIds = [
   'captains-heart-strip',
   'drone-shot-strip',
 ];
+const bossIds = ['boss-drumboss', 'boss-official', 'boss-captain'];
+const bossDirections = ['n', 'ne', 'e', 'se', 's', 'sw', 'w', 'nw'];
 
 function pngHeader(path: string): { width: number; height: number; colorType: number } {
   const bytes = readFileSync(path);
@@ -38,11 +40,32 @@ function pngHeader(path: string): { width: number; height: number; colorType: nu
   };
 }
 
+function webpHeader(path: string): { width: number; height: number; alpha: boolean } {
+  const bytes = readFileSync(path);
+  expect(bytes.toString('ascii', 0, 4)).toBe('RIFF');
+  expect(bytes.toString('ascii', 8, 12)).toBe('WEBP');
+  expect(bytes.toString('ascii', 12, 16)).toBe('VP8X');
+  return {
+    width: 1 + bytes.readUIntLE(24, 3),
+    height: 1 + bytes.readUIntLE(27, 3),
+    alpha: (bytes[20] & 0x10) !== 0,
+  };
+}
+
 describe('generated locomotion art', () => {
   it.each(enemyIds)('%s has a six-frame transparent enemy strip', (id) => {
     const header = pngHeader(resolve(`public/art/enemies/${id}-run.png`));
     expect(header).toEqual({ width: 256 * 6, height: 320, colorType: 6 });
   });
+
+  it.each(bossIds.flatMap((boss) => bossDirections.map((direction) => [boss, direction])))(
+    '%s has a 12-frame transparent %s directional runtime strip',
+    (boss, direction) => {
+      const path = resolve(`public/art/enemies/directional-v2/${boss}/${direction}.webp`);
+      expect(webpHeader(path)).toEqual({ width: 480 * 12, height: 320, alpha: true });
+      expect(statSync(path).size).toBeGreaterThan(100_000);
+    },
+  );
 
   it.each(playerIds)('%s has a six-frame transparent player strip', (id) => {
     const header = pngHeader(resolve(`public/art/players/${id}-run.png`));
@@ -72,6 +95,12 @@ describe('generated locomotion art', () => {
   it.each(animatedVfxIds)('%s has a six-frame transparent VFX strip', (id) => {
     const header = pngHeader(resolve(`public/art/vfx/${id}.png`));
     expect(header).toEqual({ width: 256 * 6, height: 256, colorType: 6 });
+  });
+
+  it('ships a six-stage alpha Matchday Wipeout explosion', () => {
+    const path = resolve('public/art/vfx/matchday-wipeout-strip.webp');
+    expect(webpHeader(path)).toEqual({ width: 512 * 6, height: 512, alpha: true });
+    expect(statSync(path).size).toBeGreaterThan(300_000);
   });
 
   it('ships the sharp production arena plate', () => {

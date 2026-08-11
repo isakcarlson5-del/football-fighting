@@ -16,6 +16,7 @@ import {
   guardAtlas,
   loadStripAtlas,
   playerAtlas,
+  trimStripAtlasCache,
   trophySprite,
   xpSprite,
   type Atlas,
@@ -37,6 +38,16 @@ const PLATE_GRASS = { x: 124, y: 150, w: 1288, h: 790 };
 /** Camera never gets closer than this to the painted world's outer edge. */
 const EDGE_PAD = 6;
 type SpriteBitmap = HTMLCanvasElement | HTMLImageElement;
+export type MovementDirection = 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w' | 'nw';
+const MOVEMENT_DIRECTIONS: readonly MovementDirection[] = ['e', 'se', 's', 'sw', 'w', 'nw', 'n', 'ne'];
+const BOSS_DIRECTION_FRAME_WIDTH = 480;
+
+/** Quantize a world-space movement vector into one of eight authored views. */
+export function movementDirection(dx: number, dy: number): MovementDirection {
+  if (!Number.isFinite(dx) || !Number.isFinite(dy) || Math.abs(dx) + Math.abs(dy) < 0.0001) return 's';
+  const octant = Math.round(Math.atan2(dy, dx) / (Math.PI / 4));
+  return MOVEMENT_DIRECTIONS[(octant + 8) % 8];
+}
 
 /** Generated enemy strips use semantic poses: idle, move, attack/cast, hurt. */
 export function enemyPoseFrame(
@@ -126,12 +137,14 @@ export class Renderer {
   private aerialTargetSpr: HTMLImageElement | null = null;
   private captainsHeartSpr: HTMLImageElement | null = null;
   private droneShotSpr: HTMLImageElement | null = null;
+  private matchdayWipeoutSpr: HTMLImageElement | null = null;
   private bottleSpr: HTMLCanvasElement;
   private atlasCache = new Map<string, Atlas>();
   private crowdSeed: number[] = [];
   private flashWarn = 0;
   private flashWhiteT = 0;
   private lossStartedAt = -1;
+  private matchdayWipeoutStartedAt = -1;
 
   camX = ARENA_W / 2;
   camY = ARENA_H / 2;
@@ -222,6 +235,9 @@ export class Renderer {
     });
     this.loadPickupSprite('art/vfx/drone-shot-strip.png', (img) => {
       this.droneShotSpr = img;
+    });
+    this.loadPickupSprite('art/vfx/matchday-wipeout-strip.webp', (img) => {
+      this.matchdayWipeoutSpr = img;
     });
     void loadStripAtlas('ally-bodyguard-rookie', 'art/allies/bodyguard-rookie.png');
     void loadStripAtlas('ally-bodyguard-rookie-run', 'art/allies/bodyguard-rookie-run.png');
@@ -482,11 +498,38 @@ export class Renderer {
 
   /** Dedicated six-frame locomotion art. Semantic idle/attack/hurt strips are
    * kept separate so an enemy never appears to run while standing still. */
-  private enemyRunAtlasFor(e: { def: EnemyDef; boss: '' | BossId; variant: 0 | 1 | 2 }): Atlas | null {
+  private enemyRunAtlasFor(e: Pick<Enemy, 'def' | 'boss' | 'variant' | 'moveDx' | 'moveDy'>): Atlas | null {
     // The drone is a hovering machine, not a footstep character. Holding its
     // clean thrust pose and animating roll/height continuously avoids the
     // clipped, off-centre cells in the generated locomotion strip.
     if (e.def.behavior === 'aerial') return null;
+    if (e.boss) {
+      const direction = movementDirection(e.moveDx, e.moveDy);
+      const directionalId = `boss-directional-${e.boss}-${direction}`;
+      const directional = getStripAtlas(directionalId);
+      if (directional) {
+        trimStripAtlasCache('boss-directional-', directionalId, 6);
+        return directional;
+      }
+      void loadStripAtlas(
+        directionalId,
+        `art/enemies/directional-v2/boss-${e.boss}/${direction}.webp`,
+        undefined,
+        {
+          frameWidth: BOSS_DIRECTION_FRAME_WIDTH,
+          frameHeight: 320,
+          feetY: 312,
+          minFrames: 12,
+          maxFrames: 12,
+          buildEffects: false,
+        },
+      ).then(() => trimStripAtlasCache('boss-directional-', directionalId, 6));
+      const fallbackId = `boss-${e.boss}-run`;
+      const fallback = getStripAtlas(fallbackId);
+      if (fallback) return fallback;
+      void loadStripAtlas(fallbackId, `art/enemies/boss-${e.boss}-run.png`);
+      return null;
+    }
     const id = e.boss
       ? `boss-${e.boss}`
       : e.def.id === 'invader' && e.variant === 1 ? 'invader-ultra'
@@ -510,6 +553,10 @@ export class Renderer {
 
   warnFlash(): void {
     this.flashWarn = 0.42;
+  }
+
+  playMatchdayWipeout(): void {
+    this.matchdayWipeoutStartedAt = performance.now() / 1000;
   }
 
   /* ------------------------------------------------------------------ */
@@ -1039,6 +1086,7 @@ export class Renderer {
         const locomoting = e.moving && e.windup <= 0 && e.lungeT <= 0 && e.attackAnimT <= 0 && e.telegraph <= 0 && e.hurtT <= 0;
         const runAtlas = locomoting ? this.enemyRunAtlasFor(e) : null;
         const atlas = runAtlas ?? semanticAtlas;
+        const directionalBossRun = !!(e.boss && runAtlas && runAtlas.frames === 12);
         const bossBreath = e.boss ? 1 + Math.sin(time * (e.boss === 'captain' ? 2.6 : 2.2) + it.idx) * 0.018 : 1;
         // Semantic lobber frames are already height-normalized in the source
         // strip (idle 233px, throw 232px). A previous 0.87 multiplier made the
@@ -1109,14 +1157,15 @@ export class Renderer {
         }
         // Six-frame locomotion plays only while the simulation reports real
         // movement. Idle, attack and hurt remain explicit semantic poses.
-        const frame = runAtlas ? Math.floor(e.animT * (e.def.behavior === 'aerial' ? 8 : 10.5)) % runAtlas.frames : enemyPoseFrame(e, atlas.frames);
+        const runFps = directionalBossRun ? 14 : e.def.behavior === 'aerial' ? 8 : 10.5;
+        const frame = runAtlas ? Math.floor(e.animT * runFps) % runAtlas.frames : enemyPoseFrame(e, atlas.frames);
         const useFlash = e.flash > 0;
         const img = useFlash ? atlas.flash : atlas.canvas;
         const dw = atlas.fw * sc;
         const dh = atlas.fh * sc;
         ctx.save();
         ctx.translate(x, y - lift);
-        if (locomoting) {
+        if (locomoting && !directionalBossRun) {
           const gait = Math.sin(e.animT * 12);
           ctx.translate(e.face * gait * 1.5, 0);
           ctx.rotate(e.face * gait * 0.018);
@@ -1168,7 +1217,7 @@ export class Renderer {
           ctx.rotate(hover * 0.018);
           ctx.scale(1 + Math.abs(hover) * 0.012, 1 - Math.abs(hover) * 0.008);
         }
-        if (e.face < 0) ctx.scale(-1, 1);
+        if (e.face < 0 && !directionalBossRun) ctx.scale(-1, 1);
         ctx.drawImage(img, frame * atlas.fw, 0, atlas.fw, atlas.fh, -dw / 2, -atlas.feetY * sc, dw, dh);
         if (sim.freezeT > 0) {
           // The precomputed material is clipped to this atlas and exact pose;
@@ -1594,6 +1643,32 @@ export class Renderer {
       this.drawVfxFrame(ctx, sprite, frame, x, impactY, size, landing ? 0 : angle, Math.min(1, remaining * 1.8), true);
     }
     ctx.globalAlpha = 1;
+
+    // Matchday Wipeout is authored as a six-stage, full-pitch explosion. It
+    // replaces the old oversized procedural ring and remains below HUD text.
+    if (this.matchdayWipeoutStartedAt >= 0) {
+      const age = time - this.matchdayWipeoutStartedAt;
+      const duration = 1.05;
+      if (age < duration) {
+        const progress = clamp(age / duration, 0, 0.999);
+        const frame = Math.min(5, Math.floor(progress * 6));
+        const fade = progress < 0.72 ? 1 : 1 - (progress - 0.72) / 0.28;
+        const size = Math.max(vw, vh * 1.45) * 1.34;
+        this.drawVfxFrame(
+          ctx,
+          this.matchdayWipeoutSpr,
+          frame,
+          toSX(sim.player.x),
+          toSY(sim.player.y) - 20,
+          size,
+          0,
+          clamp(fade, 0, 1),
+          false,
+        );
+      } else {
+        this.matchdayWipeoutStartedAt = -1;
+      }
+    }
 
     // The final player knockout is also a generated sequence. It has enough
     // time to complete before the result screen replaces the live pitch.

@@ -214,6 +214,7 @@ function drainEvents(): void {
         break;
       case 'bomb':
         audio.arenaBomb();
+        renderer.playMatchdayWipeout();
         renderer.addShake(14);
         hitStop = Math.max(hitStop, 0.16);
         ui.banner(ev.defeated > 0 ? `MATCHDAY WIPEOUT · ${ev.defeated} DOWN` : 'MATCHDAY WIPEOUT');
@@ -878,6 +879,64 @@ if (debugStage === 'damage') {
       boss.bossCd2 = 0;
       boss.rangedCd = 999;
     }
+    document.getElementById('banner')?.classList.remove('show');
+  }
+} else if (debugStage === 'boss-directions') {
+  ff.startRun('messi');
+  const stagedSim = ff.getSim();
+  if (stagedSim) {
+    stagedSim.player.abilities = {};
+    stagedSim.player.maxHp = 99_999;
+    stagedSim.player.hp = 99_999;
+    stagedSim.player.xpNext = 999_999;
+    stagedSim.boss0Spawned = true;
+    stagedSim.boss1Spawned = true;
+    stagedSim.boss2Spawned = true;
+    const lineup: Array<['drumboss' | 'official' | 'captain', number]> = [
+      ['drumboss', -2.45],
+      ['official', -0.55],
+      ['captain', 1.35],
+    ];
+    for (const [bossId, angle] of lineup) {
+      stagedSim.debugSpawnBoss(bossId);
+      const boss = [...stagedSim.enemies].reverse().find((enemy) => enemy.active && enemy.boss === bossId);
+      if (!boss) continue;
+      boss.x = stagedSim.player.x + Math.cos(angle) * 440;
+      boss.y = stagedSim.player.y + Math.sin(angle) * 440;
+      boss.damage = 0;
+      boss.hp = boss.maxHp = boss.barHp = 99_999;
+      boss.bossCd = 999;
+      boss.bossCd2 = 999;
+      boss.rangedCd = 999;
+    }
+    stagedSim.events.length = 0;
+    document.getElementById('banner')?.classList.remove('show');
+  }
+} else if (debugStage === 'wipeout-vfx') {
+  ff.startRun('messi');
+  const stagedSim = ff.getSim();
+  if (stagedSim) {
+    stagedSim.player.abilities = {};
+    stagedSim.player.maxHp = 99_999;
+    stagedSim.player.hp = 99_999;
+    stagedSim.player.xpNext = 999_999;
+    stagedSim.boss0Spawned = true;
+    stagedSim.boss1Spawned = true;
+    stagedSim.boss2Spawned = true;
+    const stageTargets = () => {
+      for (let index = 0; index < 14; index++) {
+        const angle = (index / 14) * Math.PI * 2;
+        const radius = 240 + (index % 2) * 95;
+        stagedSim.debugSpawn(
+          index % 4 === 0 ? 'steward' : index % 3 === 0 ? 'sprinter' : 'invader',
+          stagedSim.player.x + Math.cos(angle) * radius,
+          stagedSim.player.y + Math.sin(angle) * radius,
+        );
+      }
+      stagedSim.debugDropPickup('bomb', stagedSim.player.x, stagedSim.player.y);
+    };
+    window.setTimeout(stageTargets, 350);
+    window.setInterval(stageTargets, 1_800);
     document.getElementById('banner')?.classList.remove('show');
   }
 } else if (debugStage === 'variants') {

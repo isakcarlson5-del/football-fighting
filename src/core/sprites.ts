@@ -150,30 +150,58 @@ const STRIP_FH = 320;
 const STRIP_FEET = 312; // 8px bottom padding in the delivered strips
 const stripCache = new Map<string, Atlas | null>(); // null = unavailable -> procedural fallback
 const stripPending = new Map<string, Promise<Atlas | null>>();
+const stripLastUsed = new Map<string, number>();
+let stripUseClock = 0;
+
+export interface StripAtlasOptions {
+  frameWidth?: number;
+  frameHeight?: number;
+  feetY?: number;
+  minFrames?: number;
+  maxFrames?: number;
+  flippable?: boolean;
+  buildEffects?: boolean;
+}
 
 /**
- * Loads a generated strip (4 semantic frames or a 6-frame locomotion cycle)
+ * Loads a generated strip (4 semantic frames, a 6-frame locomotion cycle,
+ * or a 12-frame authored directional boss cycle)
  * into an Atlas with a white flash variant. `tint` optionally recolors the
  * torso zone (skins).
  * Returns null when the file is missing/unreadable so callers fall back to
  * the procedural atlas.
  */
-export function loadStripAtlas(id: string, url: string, tint?: string): Promise<Atlas | null> {
+export function loadStripAtlas(
+  id: string,
+  url: string,
+  tint?: string,
+  options: StripAtlasOptions = {},
+): Promise<Atlas | null> {
+  const frameWidth = options.frameWidth ?? STRIP_FW;
+  const frameHeight = options.frameHeight ?? STRIP_FH;
+  const feetY = options.feetY ?? STRIP_FEET;
+  const minFrames = options.minFrames ?? 4;
+  const maxFrames = options.maxFrames ?? 12;
   const key = `strip:${id}:${tint ?? 'base'}`;
   const cached = stripCache.get(key);
-  if (cached !== undefined) return Promise.resolve(cached);
+  if (cached !== undefined) {
+    stripLastUsed.set(key, ++stripUseClock);
+    return Promise.resolve(cached);
+  }
   const pending = stripPending.get(key);
   if (pending) return pending;
   const p = new Promise<Atlas | null>((resolve) => {
     const img = new Image();
     img.onload = () => {
-      const frameCount = img.width / STRIP_FW;
-      if (img.height !== STRIP_FH || !Number.isInteger(frameCount) || frameCount < 4 || frameCount > 8) {
+      const frameCount = img.width / frameWidth;
+      if (img.height !== frameHeight || !Number.isInteger(frameCount) || frameCount < minFrames || frameCount > maxFrames) {
         stripCache.set(key, null);
+        stripLastUsed.set(key, ++stripUseClock);
+        stripPending.delete(key);
         resolve(null);
         return;
       }
-      const canvas = makeCanvas(img.width, STRIP_FH);
+      const canvas = makeCanvas(img.width, frameHeight);
       const ctx = canvas.getContext('2d')!;
       ctx.drawImage(img, 0, 0);
       if (tint) {
@@ -181,25 +209,42 @@ export function loadStripAtlas(id: string, url: string, tint?: string): Promise<
         ctx.globalCompositeOperation = 'hue';
         ctx.globalAlpha = 0.92;
         ctx.fillStyle = tint;
-        for (let f = 0; f < frameCount; f++) ctx.fillRect(f * STRIP_FW + 62, 96, 132, 96);
+        for (let f = 0; f < frameCount; f++) ctx.fillRect(f * frameWidth + 62, 96, 132, 96);
         ctx.globalAlpha = 1;
         ctx.globalCompositeOperation = 'source-over';
       }
-      const flash = makeCanvas(img.width, STRIP_FH);
-      const fctx = flash.getContext('2d')!;
-      fctx.drawImage(canvas, 0, 0);
-      fctx.globalCompositeOperation = 'source-in';
-      fctx.fillStyle = '#ffffff';
-      fctx.fillRect(0, 0, flash.width, flash.height);
-      const frost = buildFrostAtlas(canvas, STRIP_FW, STRIP_FH, frameCount);
+      let flash = canvas;
+      let frost = canvas;
+      if (options.buildEffects !== false) {
+        flash = makeCanvas(img.width, frameHeight);
+        const fctx = flash.getContext('2d')!;
+        fctx.drawImage(canvas, 0, 0);
+        fctx.globalCompositeOperation = 'source-in';
+        fctx.fillStyle = '#ffffff';
+        fctx.fillRect(0, 0, flash.width, flash.height);
+        frost = buildFrostAtlas(canvas, frameWidth, frameHeight, frameCount);
+      }
       // front-facing strips with printed shirt numbers are never mirrored:
       // a flipped "19" reads garbled. Direction feel comes from the run cycle.
-      const atlas: Atlas = { canvas, flash, frost, fw: STRIP_FW, fh: STRIP_FH, frames: frameCount, feetY: STRIP_FEET, flippable: false };
+      const atlas: Atlas = {
+        canvas,
+        flash,
+        frost,
+        fw: frameWidth,
+        fh: frameHeight,
+        frames: frameCount,
+        feetY,
+        flippable: options.flippable ?? false,
+      };
       stripCache.set(key, atlas);
+      stripLastUsed.set(key, ++stripUseClock);
+      stripPending.delete(key);
       resolve(atlas);
     };
     img.onerror = () => {
       stripCache.set(key, null);
+      stripLastUsed.set(key, ++stripUseClock);
+      stripPending.delete(key);
       resolve(null);
     };
     img.src = url;
@@ -210,7 +255,27 @@ export function loadStripAtlas(id: string, url: string, tint?: string): Promise<
 
 /** Synchronously returns a loaded strip atlas, or null if not ready/missing. */
 export function getStripAtlas(id: string, tint?: string): Atlas | null {
-  return stripCache.get(`strip:${id}:${tint ?? 'base'}`) ?? null;
+  const key = `strip:${id}:${tint ?? 'base'}`;
+  const atlas = stripCache.get(key) ?? null;
+  if (atlas) stripLastUsed.set(key, ++stripUseClock);
+  return atlas;
+}
+
+/** Bound large directional atlases while preserving all small semantic art. */
+export function trimStripAtlasCache(idPrefix: string, keepId: string, maxEntries: number): void {
+  const prefix = `strip:${idPrefix}`;
+  const keepPrefix = `strip:${keepId}:`;
+  const keys = [...stripCache.keys()].filter((key) => key.startsWith(prefix) && stripCache.get(key));
+  if (keys.length <= maxEntries) return;
+  keys.sort((a, b) => (stripLastUsed.get(a) ?? 0) - (stripLastUsed.get(b) ?? 0));
+  let remaining = keys.length;
+  for (const key of keys) {
+    if (remaining <= maxEntries) break;
+    if (key.startsWith(keepPrefix)) continue;
+    stripCache.delete(key);
+    stripLastUsed.delete(key);
+    remaining--;
+  }
 }
 
 /** Kick off loading all player locomotion and attack strips. */
