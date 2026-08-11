@@ -42,7 +42,7 @@ export type MovementDirection = 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w' | 'nw
 const MOVEMENT_DIRECTIONS: readonly MovementDirection[] = ['e', 'se', 's', 'sw', 'w', 'nw', 'n', 'ne'];
 const BOSS_DIRECTION_FRAME_WIDTH = 480;
 const PLAYER_DIRECTION_FRAME_WIDTH = 256;
-const PLAYER_DIRECTION_RUN_FPS = 20;
+const PLAYER_DIRECTION_RUN_FPS = 18;
 
 /** Quantize a world-space movement vector into one of eight authored views. */
 export function movementDirection(dx: number, dy: number): MovementDirection {
@@ -57,6 +57,11 @@ export interface DirectionalFrameBlend {
   mix: number;
 }
 
+export interface PlayerStepCue {
+  strength: number;
+  foot: -1 | 1;
+}
+
 /** Smoothly blend authored poses at render rate while retaining the concrete
  *  12-frame cycle. The cubic easing prevents a visible snap at frame edges. */
 export function directionalFrameBlend(animT: number, fps: number, frames: number): DirectionalFrameBlend {
@@ -64,11 +69,36 @@ export function directionalFrameBlend(animT: number, fps: number, frames: number
   const phase = Math.max(0, Number.isFinite(animT) ? animT : 0) * Math.max(0, fps);
   const base = Math.floor(phase);
   const fraction = phase - base;
-  const mix = fraction * fraction * (3 - 2 * fraction);
+  // Hold each authored pose briefly before cross-fading. Legs and planted
+  // cleats remain readable at gameplay scale, while the middle transition is
+  // still interpolated smoothly at the display refresh rate.
+  const transition = clamp((fraction - 0.16) / 0.68, 0, 1);
+  const mix = transition * transition * (3 - 2 * transition);
   return {
     frame: base % count,
     nextFrame: (base + 1) % count,
     mix,
+  };
+}
+
+/** Two authored foot plants per 12-frame running cycle. This drives a tiny
+ *  turf-contact cue and body lift; it never appears while the player is idle. */
+export function playerStepCue(animT: number, fps = PLAYER_DIRECTION_RUN_FPS, frames = 12): PlayerStepCue {
+  const count = Math.max(2, Math.floor(frames));
+  const phase = Math.max(0, Number.isFinite(animT) ? animT : 0) * Math.max(0, fps);
+  const frame = phase % count;
+  const contacts = [2, 2 + count / 2];
+  const circularDistance = (value: number, target: number) => {
+    const raw = Math.abs(value - target);
+    return Math.min(raw, count - raw);
+  };
+  const firstDistance = circularDistance(frame, contacts[0]);
+  const secondDistance = circularDistance(frame, contacts[1]);
+  const distance = Math.min(firstDistance, secondDistance);
+  const normalized = clamp(1 - distance / 0.9, 0, 1);
+  return {
+    strength: normalized * normalized * (3 - 2 * normalized),
+    foot: firstDistance <= secondDistance ? -1 : 1,
   };
 }
 
@@ -1042,6 +1072,66 @@ export class Renderer {
       ctx.fill();
     }
 
+    // AERIAL aim/landing markers belong to the pitch decal layer. Drawing
+    // them here guarantees that every enemy billboard, health bar and combat
+    // pose is painted over the marker instead of being obscured by it.
+    for (const rc of sim.reticles) {
+      if (!rc.active) continue;
+      const target = rc.targetIdx >= 0 ? sim.enemies[rc.targetIdx] : undefined;
+      const u = clamp(rc.t / rc.max, 0, 1); // 1 -> 0 as the ball descends
+      const x = toSX(rc.x);
+      const y = toSY(rc.y);
+      const baseDiameter = target?.active
+        ? clamp(54 + target.radius * 1.45, 74, target.boss ? 176 : 112)
+        : 86;
+      const aiming = rc.phase === 'aim';
+      const pulse = aiming ? 1 + Math.sin(time * 16) * 0.055 : 1;
+      const targetFrame = aiming ? 1 : Math.min(5, Math.floor((1 - u) * 6));
+      const diameter = aiming
+        ? baseDiameter * 1.08 * pulse
+        : baseDiameter * (0.82 + u * 0.55);
+      this.drawGroundVfxFrame(
+        ctx,
+        this.aerialTargetSpr,
+        targetFrame,
+        x,
+        y,
+        diameter,
+        aiming ? 0.72 : 0.58 + (1 - u) * 0.42,
+      );
+    }
+
+    // A short alternating cleat press makes each authored foot plant legible
+    // without restoring the artificial selection ring removed from the hero.
+    if (p.moving && p.dashT <= 0 && p.kickT <= 0) {
+      const step = playerStepCue(p.animT);
+      if (step.strength > 0.01) {
+        const dx = p.dashDx;
+        const dy = p.dashDy * TILT;
+        const length = Math.hypot(dx, dy) || 1;
+        const forwardX = dx / length;
+        const forwardY = dy / length;
+        const sideX = -forwardY;
+        const sideY = forwardX;
+        const footX = toSX(p.x) - forwardX * 4 + sideX * step.foot * 6;
+        const footY = toSY(p.y) - forwardY * 4 + sideY * step.foot * 6 + 1;
+        ctx.save();
+        ctx.translate(footX, footY);
+        ctx.rotate(Math.atan2(forwardY, forwardX));
+        ctx.globalAlpha = step.strength * 0.48;
+        ctx.strokeStyle = '#d8f3c8';
+        ctx.lineWidth = 1.35;
+        ctx.lineCap = 'round';
+        for (const offset of [-2.2, 0, 2.2]) {
+          ctx.beginPath();
+          ctx.moveTo(-6.5, offset);
+          ctx.lineTo(3.5, offset * 0.72);
+          ctx.stroke();
+        }
+        ctx.restore();
+      }
+    }
+
     // pickups
     for (const pk of sim.pickups) {
       if (!pk.active) continue;
@@ -1387,7 +1477,10 @@ export class Renderer {
           : directionalBlend ? directionalBlend.frame
           : vis.kind === 'run' ? Math.floor(p.animT * 12.2) % atlas.frames
           : 0;
-        const bobY = 0;
+        const step = directionalBlend ? playerStepCue(p.animT, PLAYER_DIRECTION_RUN_FPS, atlas.frames) : null;
+        // Lift only between planted poses. Contact frames retain the exact
+        // delivered feet baseline, so the runner reads as stepping, not sliding.
+        const bobY = step ? -(1 - step.strength) * 1.5 : 0;
         const sc = PLAYER_ENTITY_SCALE * (80 / atlas.fh);
         const dw = atlas.fw * sc;
         const dh = atlas.fh * sc;
@@ -1674,24 +1767,6 @@ export class Renderer {
         }
         ctx.restore();
       }
-    }
-
-    // landing reticles for incoming aerial lobs
-    for (const rc of sim.reticles) {
-      if (!rc.active) continue;
-      const u = clamp(rc.t / rc.max, 0, 1); // 1 -> 0 as the ball descends
-      const x = toSX(rc.x);
-      const y = toSY(rc.y);
-      const targetFrame = Math.min(5, Math.floor((1 - u) * 6));
-      this.drawGroundVfxFrame(
-        ctx,
-        this.aerialTargetSpr,
-        targetFrame,
-        x,
-        y,
-        76 + u * 58,
-        0.58 + (1 - u) * 0.42,
-      );
     }
 
     // particles

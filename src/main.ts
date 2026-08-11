@@ -828,6 +828,25 @@ if (debugStage === 'damage') {
     stagedSim.player.heartFxT = Number.POSITIVE_INFINITY;
     document.getElementById('banner')?.classList.remove('show');
   }
+} else if (debugStage === 'aim-kick') {
+  ff.startRun('messi');
+  const stagedSim = ff.getSim();
+  if (stagedSim) {
+    stagedSim.player.abilities = { strike: 1 };
+    stagedSim.player.maxHp = 9999;
+    stagedSim.player.hp = 9999;
+    stagedSim.debugSpawn('steward', stagedSim.player.x + 330, stagedSim.player.y + 115);
+    const target = stagedSim.enemies.find((enemy) => enemy.active);
+    if (target) {
+      target.speed = 0;
+      target.damage = 0;
+      target.stun = 9999;
+      target.maxHp = 999999;
+      target.hp = target.maxHp;
+    }
+    stagedSim.player.strikeCd = 0;
+    document.getElementById('banner')?.classList.remove('show');
+  }
 } else if (debugStage === 'target-marker') {
   ff.startRun('messi');
   const stagedSim = ff.getSim();
@@ -842,6 +861,7 @@ if (debugStage === 'damage') {
     marker.t = 45_000;
     marker.max = 100_000;
     marker.targetIdx = -1;
+    marker.phase = 'landing';
     document.getElementById('banner')?.classList.remove('show');
   }
 } else if (debugStage === 'freeze-field') {

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { Sim } from '../../src/game/sim';
 import { BOSS0_AT, BOSS1_AT, BOSSES, ENEMIES, PLAYERS, RUN_LENGTH } from '../../src/game/data';
 import { Save } from '../../src/game/meta';
-import { directionalFrameBlend, enemyHealthBarStyle, enemyPoseFrame, guardPoseFrame, movementDirection } from '../../src/game/render';
+import { directionalFrameBlend, enemyHealthBarStyle, enemyPoseFrame, guardPoseFrame, movementDirection, playerStepCue } from '../../src/game/render';
 
 function freshSave(): Save {
   return new Save(null);
@@ -32,9 +32,19 @@ describe('sim core loop', () => {
 
   it('smoothly blends directional run poses and wraps the 12-frame cycle', () => {
     expect(directionalFrameBlend(0, 20, 12)).toEqual({ frame: 0, nextFrame: 1, mix: 0 });
-    expect(directionalFrameBlend(0.025, 20, 12)).toEqual({ frame: 0, nextFrame: 1, mix: 0.5 });
-    expect(directionalFrameBlend(0.575, 20, 12)).toEqual({ frame: 11, nextFrame: 0, mix: 0.5 });
+    expect(directionalFrameBlend(0.025, 20, 12)).toMatchObject({ frame: 0, nextFrame: 1 });
+    expect(directionalFrameBlend(0.025, 20, 12).mix).toBeCloseTo(0.5, 12);
+    expect(directionalFrameBlend(0.575, 20, 12)).toMatchObject({ frame: 11, nextFrame: 0 });
+    expect(directionalFrameBlend(0.575, 20, 12).mix).toBeCloseTo(0.5, 12);
     expect(directionalFrameBlend(Number.NaN, 20, 12)).toEqual({ frame: 0, nextFrame: 1, mix: 0 });
+    expect(directionalFrameBlend(0.005, 20, 12).mix).toBe(0);
+    expect(directionalFrameBlend(0.045, 20, 12).mix).toBe(1);
+  });
+
+  it('exposes alternating concrete foot plants during the run cycle', () => {
+    expect(playerStepCue(2 / 18)).toEqual({ strength: 1, foot: -1 });
+    expect(playerStepCue(8 / 18)).toEqual({ strength: 1, foot: 1 });
+    expect(playerStepCue(5 / 18).strength).toBe(0);
   });
 
   it('announces a max evolution when an ability reaches level five', () => {
@@ -213,6 +223,24 @@ describe('sim core loop', () => {
     expect(ball.ty).toBeCloseTo(enemy.y, 4);
     const reticle = sim.reticles.find((r) => r.active && r.targetIdx === ball.targetIdx)!;
     expect(reticle.y).toBeCloseTo(enemy.y, 4);
+  });
+
+  it('locks aim and shows a ground marker before the kick contact frame', () => {
+    const sim = makeSim(0);
+    sim.debugSpawn('invader', sim.player.x - 430, sim.player.y + 120);
+    const enemy = sim.enemies.find((e) => e.active)!;
+    enemy.speed = 0;
+    sim.player.strikeCd = 0;
+    step(sim, 1);
+
+    expect(sim.player.kickT).toBeGreaterThan(0);
+    expect(sim.player.kickTargetIdx).toBe(sim.enemies.indexOf(enemy));
+    expect(sim.player.face).toBe(-1);
+    expect(sim.balls.some((ball) => ball.active)).toBe(false);
+    const aim = sim.reticles.find((marker) => marker.active && marker.phase === 'aim');
+    expect(aim?.targetIdx).toBe(sim.enemies.indexOf(enemy));
+    expect(aim?.x).toBeCloseTo(enemy.x, 4);
+    expect(aim?.y).toBeCloseTo(enemy.y, 4);
   });
 
   it('exposes attack and red-hit feedback state when a melee enemy connects', () => {

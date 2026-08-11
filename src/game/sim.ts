@@ -293,7 +293,7 @@ export interface Pressure {
   hitSet: number[];
 }
 
-/** Landing marker for an incoming aerial lob (purely visual, no gameplay). */
+/** Ground-layer marker for an aimed or incoming aerial lob (purely visual). */
 export interface Reticle {
   active: boolean;
   x: number;
@@ -301,6 +301,7 @@ export interface Reticle {
   t: number;
   max: number;
   targetIdx: number;
+  phase: 'aim' | 'landing';
 }
 
 /** Death visual: a fallen enemy that topples, sinks and fades (no gameplay). */
@@ -385,6 +386,10 @@ export interface PlayerState {
   pressureQueueT: number;
   blastCd: number;
   kickT: number; // >0 during the lob's kick animation (contact at half duration)
+  /** Locked primary target and facing vector for the complete kick motion. */
+  kickTargetIdx: number;
+  aimDx: number;
+  aimDy: number;
   dashCds: number[];
   dashT: number; // >0 while dashing
   dashDx: number;
@@ -500,6 +505,9 @@ export class Sim {
       pressureQueueT: 0,
       blastCd: 1.6,
       kickT: 0,
+      kickTargetIdx: -1,
+      aimDx: 1,
+      aimDy: 0,
       dashCds: [0],
       dashT: 0,
       dashDx: 1,
@@ -579,7 +587,7 @@ export class Sim {
     for (let i = 0; i < 24; i++) this.telegraphs.push({ active: false, x: 0, y: 0, r: 0, t: 0, max: 1, kind: 'flare', dmg: 0, dir: 0, summon: 0 });
     for (let i = 0; i < 16; i++) this.rings.push({ active: false, x: 0, y: 0, r: 0, maxR: 100, life: 0, color: '#fff' });
     for (let i = 0; i < 24; i++) this.pressures.push({ active: false, x: 0, y: 0, r: 0, maxR: 100, dmg: 0, knock: 0, hitSet: [] });
-    for (let i = 0; i < 32; i++) this.reticles.push({ active: false, x: 0, y: 0, t: 0, max: 1, targetIdx: -1 });
+    for (let i = 0; i < 32; i++) this.reticles.push({ active: false, x: 0, y: 0, t: 0, max: 1, targetIdx: -1, phase: 'landing' });
     for (let i = 0; i < 64; i++) this.corpses.push({ active: false, x: 0, y: 0, enemyId: 'invader', variant: 0, boss: '', elite: false, face: 1, t: 0, max: 0.55 });
     this.refreshGuards();
   }
@@ -1438,7 +1446,22 @@ export class Sim {
   /** Starts the readable wind-up; the ball is created on the strip's contact frame. */
   private fireStrike(): void {
     if (this.abilityLevel('strike') === 0) return;
-    this.player.kickT = KICK_DURATION;
+    const p = this.player;
+    const targetIdx = this.pickAerialTarget(p.x, p.y);
+    if (targetIdx < 0) return;
+    const target = this.enemies[targetIdx];
+    const dx = target.x - p.x;
+    const dy = target.y - p.y;
+    const distance = Math.hypot(dx, dy) || 1;
+    p.kickTargetIdx = targetIdx;
+    p.aimDx = dx / distance;
+    p.aimDy = dy / distance;
+    if (Math.abs(dx) > 0.001) p.face = dx > 0 ? 1 : -1;
+    p.kickT = KICK_DURATION;
+    // The selected threat is readable during the wind-up, not only after the
+    // ball already exists. This same marker is promoted to a landing marker
+    // on the contact frame so there is no duplicate decal or visual jump.
+    this.reticle(target.x, target.y, KICK_DURATION, targetIdx, 'aim');
     this.deferred.push({ t: KICK_CONTACT_DELAY, fn: () => this.releaseStrike() });
   }
 
@@ -1453,13 +1476,22 @@ export class Sim {
     const ric = lvl >= 5 ? 1 : 0;
     let launched = 0;
     for (let i = 0; i < count; i++) {
-      const ti = this.pickAerialTarget(p.x, p.y);
+      const locked = i === 0 ? this.enemies[p.kickTargetIdx] : undefined;
+      const ti = locked?.active ? p.kickTargetIdx : this.pickAerialTarget(p.x, p.y);
       if (ti < 0) break;
       const b = this.alloc(this.balls);
       if (!b) return;
       const e = this.enemies[ti];
-      this.lob(b, p.x, p.y, e.x, e.y, dmg, splash, ric, ti);
+      const aimReticle = i === 0
+        ? this.reticles.find((marker) => marker.active && marker.phase === 'aim' && marker.targetIdx === ti)
+        : undefined;
+      this.lob(b, p.x, p.y, e.x, e.y, dmg, splash, ric, ti, aimReticle);
       launched++;
+    }
+    // A dead target can force reacquisition. Remove any stale wind-up marker;
+    // the live replacement already received its own landing marker in lob().
+    for (const marker of this.reticles) {
+      if (marker.active && marker.phase === 'aim') marker.active = false;
     }
     if (launched > 0) {
       this.burst(p.x + p.face * 22, p.y, 4, '#ffd166');
@@ -1468,7 +1500,18 @@ export class Sim {
   }
 
   /** Launches a lobbed ball on a ballistic arc that lands exactly on (tx,ty). */
-  private lob(b: Ball, x: number, y: number, tx: number, ty: number, dmg: number, splash: number, ric: number, targetIdx: number): void {
+  private lob(
+    b: Ball,
+    x: number,
+    y: number,
+    tx: number,
+    ty: number,
+    dmg: number,
+    splash: number,
+    ric: number,
+    targetIdx: number,
+    existingReticle?: Reticle,
+  ): void {
     const d = Math.hypot(tx - x, ty - y);
     const T = Math.max(0.45, Math.min(1.15, d / 560));
     b.active = true;
@@ -1487,7 +1530,17 @@ export class Sim {
     b.targetIdx = targetIdx;
     b.flightT = 0;
     b.maxFlightT = T;
-    this.reticle(tx, ty, T, targetIdx);
+    if (existingReticle) {
+      existingReticle.active = true;
+      existingReticle.x = tx;
+      existingReticle.y = ty;
+      existingReticle.t = T;
+      existingReticle.max = T;
+      existingReticle.targetIdx = targetIdx;
+      existingReticle.phase = 'landing';
+    } else {
+      this.reticle(tx, ty, T, targetIdx);
+    }
   }
 
   /** Landing impact: a direct locked-target hit for ordinary footballs,
@@ -1785,7 +1838,7 @@ export class Sim {
     }
   }
 
-  private reticle(x: number, y: number, t: number, targetIdx = -1): void {
+  private reticle(x: number, y: number, t: number, targetIdx = -1, phase: Reticle['phase'] = 'landing'): void {
     const r = this.alloc(this.reticles);
     if (!r) return;
     r.active = true;
@@ -1794,6 +1847,7 @@ export class Sim {
     r.t = t;
     r.max = t;
     r.targetIdx = targetIdx;
+    r.phase = phase;
   }
 
   private fireWhistle(): void {
@@ -1887,6 +1941,19 @@ export class Sim {
     p.blastCd -= dt;
     p.orbitBreakCd = Math.max(0, p.orbitBreakCd - dt);
     p.kickT = Math.max(0, p.kickT - dt);
+    if (p.kickT > 0) {
+      const target = this.enemies[p.kickTargetIdx];
+      if (target?.active) {
+        const dx = target.x - p.x;
+        const dy = target.y - p.y;
+        const distance = Math.hypot(dx, dy) || 1;
+        p.aimDx = dx / distance;
+        p.aimDy = dy / distance;
+        if (Math.abs(dx) > 0.001) p.face = dx > 0 ? 1 : -1;
+      }
+    } else {
+      p.kickTargetIdx = -1;
+    }
     for (let i = 0; i < p.dashCds.length; i++) p.dashCds[i] -= dt;
     if (p.pressureQueue > 0) {
       p.pressureQueueT -= dt;
