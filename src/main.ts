@@ -1013,6 +1013,27 @@ if (debugStage === 'damage') {
       enemy.stun = 999;
     }
   }
+} else if (debugStage === 'guard-targeting') {
+  ff.startRun('messi');
+  const stagedSim = ff.getSim();
+  if (stagedSim) {
+    stagedSim.player.abilities = {};
+    stagedSim.player.maxHp = 9999;
+    stagedSim.player.hp = 9999;
+    stagedSim.debugSetGuardDamageMultiplier(0);
+    stagedSim.applyUpgrade({ kind: 'ability', id: 'guard', name: '', desc: '', color: '', level: 3 });
+    stagedSim.debugSpawn('invader', stagedSim.player.x - 290, stagedSim.player.y + 70);
+    stagedSim.debugSpawn('steward', stagedSim.player.x + 290, stagedSim.player.y + 70);
+    stagedSim.debugSpawn('drone', stagedSim.player.x, stagedSim.player.y - 250);
+    for (const enemy of stagedSim.enemies) {
+      if (!enemy.active) continue;
+      enemy.speed = 0;
+      enemy.damage = 0;
+      enemy.hp = enemy.maxHp = 999999;
+      enemy.barHp = enemy.hp;
+    }
+    document.getElementById('banner')?.classList.remove('show');
+  }
 } else if (debugStage === 'guards') {
   ff.startRun('messi');
   const stagedSim = ff.getSim();

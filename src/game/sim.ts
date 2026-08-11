@@ -2578,6 +2578,57 @@ export class Sim {
       const dmg = [0, 12, 18, 18, 18, 30][guardLvl] * this.guardDmgMult * this.damageMult;
       const swingCd = guardLvl >= 5 ? 0.55 : 0.8;
       const knock = guardLvl >= 4 ? 260 : 90;
+      const guardRange2 = 340 * 340;
+      const validGroundTarget = (targetIdx: number): boolean => {
+        const enemy = this.enemies[targetIdx];
+        return !!enemy?.active
+          && !this.isAerialEnemy(enemy)
+          && dist2(p.x, p.y, enemy.x, enemy.y) <= guardRange2;
+      };
+
+      // Preserve valid assignments first, then distribute unassigned guards
+      // across different grounded threats. This prevents a pair of guards
+      // from stacking on one enemy while another approaches from the opposite
+      // side, and it excludes drones/temporarily airborne mobs at acquisition.
+      const claimedGroundTargets = new Set<number>();
+      for (const guard of this.guards) {
+        if (validGroundTarget(guard.target) && !claimedGroundTargets.has(guard.target)) {
+          claimedGroundTargets.add(guard.target);
+        } else {
+          guard.target = -1;
+        }
+      }
+      for (const guard of this.guards) {
+        if (guard.target >= 0) continue;
+        let best = -1;
+        let bestDistance = Infinity;
+        for (let enemyIdx = 0; enemyIdx < this.enemies.length; enemyIdx++) {
+          if (claimedGroundTargets.has(enemyIdx) || !validGroundTarget(enemyIdx)) continue;
+          const enemy = this.enemies[enemyIdx];
+          const distance = dist2(guard.x, guard.y, enemy.x, enemy.y);
+          if (distance < bestDistance) {
+            bestDistance = distance;
+            best = enemyIdx;
+          }
+        }
+        // When there are fewer grounded threats than guards, sharing the only
+        // legal target is better than leaving protection idle. Air targets are
+        // still never eligible in this fallback.
+        if (best < 0) {
+          for (let enemyIdx = 0; enemyIdx < this.enemies.length; enemyIdx++) {
+            if (!validGroundTarget(enemyIdx)) continue;
+            const enemy = this.enemies[enemyIdx];
+            const distance = dist2(guard.x, guard.y, enemy.x, enemy.y);
+            if (distance < bestDistance) {
+              bestDistance = distance;
+              best = enemyIdx;
+            }
+          }
+        }
+        guard.target = best;
+        if (best >= 0) claimedGroundTargets.add(best);
+      }
+
       this.guards.forEach((g, gi) => {
         const variantDmg = g.variant === 0 ? 0.9 : g.variant === 2 ? 1.42 : g.variant === 3 ? 0.78 : 1;
         const variantCd = g.variant === 0 ? 0.82 : g.variant === 2 ? 1.16 : g.variant === 3 ? 0.68 : 1;
@@ -2589,12 +2640,7 @@ export class Sim {
         g.strikeT = Math.max(0, g.strikeT - dt);
         g.blockT = Math.max(0, g.blockT - dt);
         g.animT += dt;
-        // acquire target near player
-        let ti = g.target;
-        if (ti < 0 || !this.enemies[ti]?.active) {
-          ti = this.nearestEnemy(p.x, p.y, 340);
-          g.target = ti;
-        }
+        const ti = g.target;
         const formationTurn = p.moving ? p.animT * 0.3 : 0;
         let tx = p.x + Math.cos((gi / this.guards.length) * TAU + formationTurn) * 55;
         let ty = p.y + Math.sin((gi / this.guards.length) * TAU + formationTurn) * 55;

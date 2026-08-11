@@ -371,6 +371,41 @@ describe('sim core loop', () => {
     expect(sim.kills).toBeGreaterThan(0);
   });
 
+  it('two security guards split across grounded threats on opposite sides', () => {
+    const sim = makeSim();
+    sim.player.abilities = {};
+    sim.applyUpgrade({ kind: 'ability', id: 'guard', name: '', desc: '', color: '', level: 3 });
+    sim.debugSpawn('invader', sim.player.x + 250, sim.player.y - 30);
+    sim.debugSpawn('steward', sim.player.x - 250, sim.player.y + 30);
+    const threats = sim.enemies.filter((enemy) => enemy.active);
+    for (const enemy of threats) {
+      enemy.speed = 0;
+      enemy.hp = enemy.maxHp = 10_000;
+    }
+
+    step(sim, 1);
+    expect(sim.guards).toHaveLength(2);
+    expect(new Set(sim.guards.map((guard) => guard.target)).size).toBe(2);
+    const targetSides = sim.guards.map((guard) => Math.sign(sim.enemies[guard.target].x - sim.player.x));
+    expect(new Set(targetSides)).toEqual(new Set([-1, 1]));
+  });
+
+  it('security guards never acquire or punch aerial drones', () => {
+    const sim = makeSim();
+    sim.player.abilities = {};
+    sim.applyUpgrade({ kind: 'ability', id: 'guard', name: '', desc: '', color: '', level: 3 });
+    sim.debugSpawn('drone', sim.player.x + 180, sim.player.y);
+    const drone = sim.enemies.find((enemy) => enemy.active)!;
+    drone.speed = 0;
+    drone.damage = 0;
+    drone.hp = drone.maxHp = 10_000;
+
+    step(sim, 90);
+    expect(sim.guards.every((guard) => guard.target === -1)).toBe(true);
+    expect(sim.guards.every((guard) => guard.strikeT === 0)).toBe(true);
+    expect(drone.hp).toBe(10_000);
+  });
+
   it('bodyguard art selects idle, movement, punch and interception poses', () => {
     const sim = makeSim();
     sim.applyUpgrade({ kind: 'ability', id: 'guard', name: '', desc: '', color: '', level: 1 });

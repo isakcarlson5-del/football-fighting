@@ -254,6 +254,29 @@ test('boss trophy loot pauses for two consecutive ability picks', async ({ page 
   expect(await page.evaluate(() => window.__FF.getState().run)).toBe('playing');
 });
 
+test('security guards split grounded targets and ignore the aerial drone', async ({ page }) => {
+  const errors = await collectErrors(page);
+  await page.goto('/?debug=1&stage=guard-targeting');
+  await page.waitForTimeout(450);
+  const targeting = await page.evaluate(() => {
+    const sim = window.__FF.getSim()!;
+    const droneIdx = sim.enemies.findIndex((enemy) => enemy.active && enemy.def.id === 'drone');
+    return {
+      droneIdx,
+      targets: sim.guards.map((guard) => guard.target),
+      targetIds: sim.guards.map((guard) => sim.enemies[guard.target]?.def.id ?? ''),
+      droneHp: sim.enemies[droneIdx].hp,
+      droneMaxHp: sim.enemies[droneIdx].maxHp,
+    };
+  });
+  expect(targeting.targets).toHaveLength(2);
+  expect(new Set(targeting.targets).size).toBe(2);
+  expect(targeting.targets).not.toContain(targeting.droneIdx);
+  expect(new Set(targeting.targetIds)).toEqual(new Set(['invader', 'steward']));
+  expect(targeting.droneHp).toBe(targeting.droneMaxHp);
+  expect(errors).toEqual([]);
+});
+
 test('performance: stable fps with a heavy late-game horde', async ({ page }) => {
   await page.click('[data-act="play"]');
   await page.click('[data-act="start"]');
