@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { Sim } from '../../src/game/sim';
 import { BOSS0_AT, BOSS1_AT, BOSSES, ENEMIES, PLAYERS, RUN_LENGTH } from '../../src/game/data';
 import { Save } from '../../src/game/meta';
-import { enemyHealthBarStyle, enemyPoseFrame, guardPoseFrame, movementDirection } from '../../src/game/render';
+import { directionalFrameBlend, enemyHealthBarStyle, enemyPoseFrame, guardPoseFrame, movementDirection } from '../../src/game/render';
 
 function freshSave(): Save {
   return new Save(null);
@@ -28,6 +28,13 @@ describe('sim core loop', () => {
     expect(movementDirection(-1, 0)).toBe('w');
     expect(movementDirection(-1, -1)).toBe('nw');
     expect(movementDirection(0, 0)).toBe('s');
+  });
+
+  it('smoothly blends directional run poses and wraps the 12-frame cycle', () => {
+    expect(directionalFrameBlend(0, 20, 12)).toEqual({ frame: 0, nextFrame: 1, mix: 0 });
+    expect(directionalFrameBlend(0.025, 20, 12)).toEqual({ frame: 0, nextFrame: 1, mix: 0.5 });
+    expect(directionalFrameBlend(0.575, 20, 12)).toEqual({ frame: 11, nextFrame: 0, mix: 0.5 });
+    expect(directionalFrameBlend(Number.NaN, 20, 12)).toEqual({ frame: 0, nextFrame: 1, mix: 0 });
   });
 
   it('announces a max evolution when an ability reaches level five', () => {

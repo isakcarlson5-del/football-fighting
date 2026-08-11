@@ -165,7 +165,7 @@ export interface StripAtlasOptions {
 
 /**
  * Loads a generated strip (4 semantic frames, a 6-frame locomotion cycle,
- * or a 12-frame authored directional boss cycle)
+ * or a 12-frame authored directional player/boss cycle)
  * into an Atlas with a white flash variant. `tint` optionally recolors the
  * torso zone (skins).
  * Returns null when the file is missing/unreadable so callers fall back to

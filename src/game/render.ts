@@ -41,12 +41,35 @@ type SpriteBitmap = HTMLCanvasElement | HTMLImageElement;
 export type MovementDirection = 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w' | 'nw';
 const MOVEMENT_DIRECTIONS: readonly MovementDirection[] = ['e', 'se', 's', 'sw', 'w', 'nw', 'n', 'ne'];
 const BOSS_DIRECTION_FRAME_WIDTH = 480;
+const PLAYER_DIRECTION_FRAME_WIDTH = 256;
+const PLAYER_DIRECTION_RUN_FPS = 20;
 
 /** Quantize a world-space movement vector into one of eight authored views. */
 export function movementDirection(dx: number, dy: number): MovementDirection {
   if (!Number.isFinite(dx) || !Number.isFinite(dy) || Math.abs(dx) + Math.abs(dy) < 0.0001) return 's';
   const octant = Math.round(Math.atan2(dy, dx) / (Math.PI / 4));
   return MOVEMENT_DIRECTIONS[(octant + 8) % 8];
+}
+
+export interface DirectionalFrameBlend {
+  frame: number;
+  nextFrame: number;
+  mix: number;
+}
+
+/** Smoothly blend authored poses at render rate while retaining the concrete
+ *  12-frame cycle. The cubic easing prevents a visible snap at frame edges. */
+export function directionalFrameBlend(animT: number, fps: number, frames: number): DirectionalFrameBlend {
+  const count = Math.max(1, Math.floor(frames));
+  const phase = Math.max(0, Number.isFinite(animT) ? animT : 0) * Math.max(0, fps);
+  const base = Math.floor(phase);
+  const fraction = phase - base;
+  const mix = fraction * fraction * (3 - 2 * fraction);
+  return {
+    frame: base % count,
+    nextFrame: (base + 1) % count,
+    mix,
+  };
 }
 
 /** Generated enemy strips use semantic poses: idle, move, attack/cast, hurt. */
@@ -836,7 +859,13 @@ export class Renderer {
    * kind 'run-held' — no idle art yet: hold the run strip's first frame
    *                   (a subtle breathing bob is added at draw time)
    */
-  private heroVisual(def: PlayerDef, save: Save, running: boolean, kicking: boolean): { atlas: Atlas; kind: 'kick' | 'idle' | 'run' | 'run-held' } {
+  private heroVisual(
+    def: PlayerDef,
+    save: Save,
+    running: boolean,
+    kicking: boolean,
+    direction: MovementDirection,
+  ): { atlas: Atlas; kind: 'kick' | 'idle' | 'run-directional' | 'run' | 'run-held' } {
     const skinId = save.equippedSkin(def.id);
     const skin = skinId ? SKINS.find((s) => s.id === skinId) : undefined;
     const tint = skin?.kit.shirt;
@@ -852,6 +881,33 @@ export class Renderer {
       void loadStripAtlas(`${def.id}-idle`, `art/players/${def.id}-idle.png`, tint);
     }
     if (running) {
+      const directionalId = `player-directional-${def.id}-${direction}`;
+      const directional = getStripAtlas(directionalId, tint);
+      if (directional) {
+        trimStripAtlasCache('player-directional-', directionalId, 8);
+        return { atlas: directional, kind: 'run-directional' };
+      }
+      // Load the requested view plus its two neighboring octants. This keeps
+      // first-time turns seamless without decoding all 32 player atlases.
+      const directionIndex = MOVEMENT_DIRECTIONS.indexOf(direction);
+      for (const offset of [-1, 0, 1]) {
+        const nextDirection = MOVEMENT_DIRECTIONS[(directionIndex + offset + MOVEMENT_DIRECTIONS.length) % MOVEMENT_DIRECTIONS.length];
+        const nextId = `player-directional-${def.id}-${nextDirection}`;
+        void loadStripAtlas(
+          nextId,
+          `art/players/directional-v2/${def.id}/${nextDirection}.webp`,
+          tint,
+          {
+            frameWidth: PLAYER_DIRECTION_FRAME_WIDTH,
+            frameHeight: 320,
+            feetY: 312,
+            minFrames: 12,
+            maxFrames: 12,
+            flippable: false,
+            buildEffects: false,
+          },
+        ).then(() => trimStripAtlasCache('player-directional-', nextId, 8));
+      }
       const runStrip = getStripAtlas(`${def.id}-run`, tint);
       if (runStrip) return { atlas: runStrip, kind: 'run' };
       void loadStripAtlas(`${def.id}-run`, `art/players/${def.id}-run.png`, tint);
@@ -1268,7 +1324,8 @@ export class Renderer {
         if (!e.boss) this.drawEnemyHealthBar(ctx, e, x, healthY, time);
       } else if (it.kind === 1) {
         const running = p.moving || p.dashT > 0;
-        const vis = this.heroVisual(def, save, running, p.kickT > 0);
+        const direction = movementDirection(p.dashDx, p.dashDy);
+        const vis = this.heroVisual(def, save, running, p.kickT > 0, direction);
         const heroSkinId = save.equippedSkin(def.id);
         const heroSkin = heroSkinId ? SKINS.find((skin) => skin.id === heroSkinId) : undefined;
         const semanticAtlas = p.hurtT > 0 || sim.over === 'lost'
@@ -1319,11 +1376,15 @@ export class Renderer {
         }
         // Idle plays the dedicated neutral clip. Keep the feet planted; any
         // breathing motion belongs inside the art rather than moving the body.
+        const directionalBlend = vis.kind === 'run-directional'
+          ? directionalFrameBlend(p.animT, PLAYER_DIRECTION_RUN_FPS, atlas.frames)
+          : null;
         const frame = semanticAtlas
           ? Math.min(3, semanticAtlas.frames - 1)
           : vis.kind === 'kick'
             ? Math.min(atlas.frames - 1, Math.floor(clamp(1 - p.kickT / KICK_DURATION, 0, 0.999) * atlas.frames))
           : vis.kind === 'idle' ? Math.floor(time * 4.5) % atlas.frames
+          : directionalBlend ? directionalBlend.frame
           : vis.kind === 'run' ? Math.floor(p.animT * 12.2) % atlas.frames
           : 0;
         const bobY = 0;
@@ -1347,8 +1408,26 @@ export class Renderer {
           ctx.scale(1 + recoil * 0.05, 1 - recoil * 0.08);
         }
         if (p.face < 0 && atlas.flippable) ctx.scale(-1, 1);
-        if (blink) ctx.globalAlpha = 0.45;
-        ctx.drawImage(atlas.canvas, frame * atlas.fw, 0, atlas.fw, atlas.fh, -dw / 2, -atlas.feetY * sc + bobY, dw, dh);
+        const visibleAlpha = blink ? 0.45 : 1;
+        if (directionalBlend) {
+          ctx.globalAlpha = visibleAlpha * (1 - directionalBlend.mix);
+          ctx.drawImage(atlas.canvas, frame * atlas.fw, 0, atlas.fw, atlas.fh, -dw / 2, -atlas.feetY * sc + bobY, dw, dh);
+          ctx.globalAlpha = visibleAlpha * directionalBlend.mix;
+          ctx.drawImage(
+            atlas.canvas,
+            directionalBlend.nextFrame * atlas.fw,
+            0,
+            atlas.fw,
+            atlas.fh,
+            -dw / 2,
+            -atlas.feetY * sc + bobY,
+            dw,
+            dh,
+          );
+        } else {
+          ctx.globalAlpha = visibleAlpha;
+          ctx.drawImage(atlas.canvas, frame * atlas.fw, 0, atlas.fw, atlas.fh, -dw / 2, -atlas.feetY * sc + bobY, dw, dh);
+        }
         ctx.restore();
         if (p.heartFxT > 0) {
           const age = Number.isFinite(p.heartFxT) ? clamp(1 - p.heartFxT / 0.9, 0, 0.999) : 0.72;

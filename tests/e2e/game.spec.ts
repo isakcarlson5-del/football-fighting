@@ -42,6 +42,35 @@ test('character select shows all 4 players with stats and traits', async ({ page
   await expect(page.locator('.char-card .starts-with')).toHaveCount(4);
 });
 
+test('all 32 directional player cycles load during real movement', async ({ page }) => {
+  const errors = await collectErrors(page);
+  const players = ['messi', 'ronaldo', 'neymar', 'yamal'];
+  const directions = {
+    n: [0, -1], ne: [Math.SQRT1_2, -Math.SQRT1_2], e: [1, 0], se: [Math.SQRT1_2, Math.SQRT1_2],
+    s: [0, 1], sw: [-Math.SQRT1_2, Math.SQRT1_2], w: [-1, 0], nw: [-Math.SQRT1_2, -Math.SQRT1_2],
+  } as const;
+
+  for (const player of players) {
+    for (const [direction, [dx, dy]] of Object.entries(directions)) {
+      await page.goto(`/?debug=1&stage=player-directions&player=${player}&move=${direction}`);
+      await expect.poll(() => page.evaluate(
+        ({ playerId, directionId }) => performance
+          .getEntriesByType('resource')
+          .some((entry) => entry.name.endsWith(`/art/players/directional-v2/${playerId}/${directionId}.webp`)),
+        { playerId: player, directionId: direction },
+      )).toBe(true);
+      const movement = await page.evaluate(() => {
+        const state = window.__FF.getSim()!.player;
+        return { moving: state.moving, dx: state.dashDx, dy: state.dashDy };
+      });
+      expect(movement.moving).toBe(true);
+      expect(movement.dx).toBeCloseTo(dx, 5);
+      expect(movement.dy).toBeCloseTo(dy, 5);
+    }
+  }
+  expect(errors).toEqual([]);
+});
+
 test('run starts: HUD, auto-attacks, kills and XP flow to level-up', async ({ page }) => {
   const errors = await collectErrors(page);
   await page.click('[data-act="play"]');

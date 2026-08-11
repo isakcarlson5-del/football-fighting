@@ -30,6 +30,7 @@ const animatedVfxIds = [
 ];
 const bossIds = ['boss-drumboss', 'boss-official', 'boss-captain'];
 const bossDirections = ['n', 'ne', 'e', 'se', 's', 'sw', 'w', 'nw'];
+const playerDirections = ['n', 'ne', 'e', 'se', 's', 'sw', 'w', 'nw'];
 
 function pngHeader(path: string): { width: number; height: number; colorType: number } {
   const bytes = readFileSync(path);
@@ -71,6 +72,15 @@ describe('generated locomotion art', () => {
     const header = pngHeader(resolve(`public/art/players/${id}-run.png`));
     expect(header).toEqual({ width: 256 * 6, height: 320, colorType: 6 });
   });
+
+  it.each(playerIds.flatMap((player) => playerDirections.map((direction) => [player, direction])))(
+    '%s has a 12-frame transparent %s directional runtime strip',
+    (player, direction) => {
+      const path = resolve(`public/art/players/directional-v2/${player}/${direction}.webp`);
+      expect(webpHeader(path)).toEqual({ width: 256 * 12, height: 320, alpha: true });
+      expect(statSync(path).size).toBeGreaterThan(150_000);
+    },
+  );
 
   it.each(guardIds)('%s has semantic poses and a six-frame transparent run strip', (id) => {
     expect(pngHeader(resolve(`public/art/allies/${id}.png`))).toEqual({ width: 256 * 4, height: 320, colorType: 6 });

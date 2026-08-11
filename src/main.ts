@@ -36,6 +36,18 @@ let overTimer = -1;
 let resultShown = false;
 let menuArtUrl: string | null = null;
 const debug = new URLSearchParams(location.search).has('debug');
+const debugMoveKey = debug ? new URLSearchParams(location.search).get('move') : null;
+const debugMoveVectors: Record<string, readonly [number, number]> = {
+  n: [0, -1],
+  ne: [Math.SQRT1_2, -Math.SQRT1_2],
+  e: [1, 0],
+  se: [Math.SQRT1_2, Math.SQRT1_2],
+  s: [0, 1],
+  sw: [-Math.SQRT1_2, Math.SQRT1_2],
+  w: [-1, 0],
+  nw: [-Math.SQRT1_2, -Math.SQRT1_2],
+};
+const debugMove = debugMoveKey ? debugMoveVectors[debugMoveKey] : undefined;
 
 // Try to load generated menu art (public/art/menu-key-art.jpg); fallback: gradient.
 {
@@ -426,7 +438,7 @@ function frame(now: number): void {
         acc += dt;
         let steps = 0;
         while (acc >= STEP && steps < 5) {
-          sim.update(STEP, input.ax, input.ay);
+          sim.update(STEP, debugMove?.[0] ?? input.ax, debugMove?.[1] ?? input.ay);
           steps++;
           acc -= STEP;
         }
@@ -879,6 +891,21 @@ if (debugStage === 'damage') {
       boss.bossCd2 = 0;
       boss.rangedCd = 999;
     }
+    document.getElementById('banner')?.classList.remove('show');
+  }
+} else if (debugStage === 'player-directions') {
+  const playerId = new URLSearchParams(location.search).get('player') ?? 'messi';
+  ff.startRun(playerId);
+  const stagedSim = ff.getSim();
+  if (stagedSim) {
+    stagedSim.player.abilities = {};
+    stagedSim.player.maxHp = 99_999;
+    stagedSim.player.hp = 99_999;
+    stagedSim.player.xpNext = 999_999;
+    stagedSim.boss0Spawned = true;
+    stagedSim.boss1Spawned = true;
+    stagedSim.boss2Spawned = true;
+    stagedSim.events.length = 0;
     document.getElementById('banner')?.classList.remove('show');
   }
 } else if (debugStage === 'boss-directions') {
