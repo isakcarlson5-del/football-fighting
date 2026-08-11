@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { Sim } from '../../src/game/sim';
-import { BOSS1_AT, ENEMIES, PLAYERS, RUN_LENGTH } from '../../src/game/data';
+import { BOSS0_AT, BOSS1_AT, BOSSES, ENEMIES, PLAYERS, RUN_LENGTH } from '../../src/game/data';
 import { Save } from '../../src/game/meta';
-import { enemyPoseFrame, guardPoseFrame } from '../../src/game/render';
+import { enemyHealthBarStyle, enemyPoseFrame, guardPoseFrame } from '../../src/game/render';
 
 function freshSave(): Save {
   return new Save(null);
@@ -18,21 +18,88 @@ function step(sim: Sim, frames: number, ax = 0, ay = 0): void {
 }
 
 describe('sim core loop', () => {
-  it('opens on a quiet pitch, then launches a named formation wave', () => {
+  it('announces a max evolution when an ability reaches level five', () => {
+    const sim = makeSim();
+    sim.player.abilities.strike = 4;
+    sim.applyUpgrade({ kind: 'ability', id: 'strike', name: 'Precision Strike', desc: 'MAX', color: '#fff', level: 5 });
+    expect(sim.player.abilities.strike).toBe(5);
+    expect(sim.events).toContainEqual({ type: 'maxAbility', name: 'Precision Strike' });
+  });
+
+  it('opens on a quiet pitch, then introduces a continuous natural trickle', () => {
     const sim = makeSim();
     expect(sim.enemies.some((e) => e.active)).toBe(false);
     step(sim, 180); // 3 seconds: deliberate kickoff calm
     expect(sim.enemies.some((e) => e.active)).toBe(false);
-    step(sim, 90); // the 4-second formation wave has entered
-    expect(sim.enemies.filter((e) => e.active).length).toBeGreaterThanOrEqual(8);
-    expect(sim.events.some((event) => event.type === 'wave' && event.name === 'Warm-Up Press')).toBe(true);
+    step(sim, 210); // enemies arrive one at a time through continuous ingress
+    const active = sim.enemies.filter((e) => e.active).length;
+    expect(active + sim.kills).toBeGreaterThanOrEqual(1);
+    expect(active + sim.kills).toBeLessThan(5);
+  });
+
+  it('converts the checkpoint rate into a continuous capped spawn budget', () => {
+    const sim = makeSim();
+    sim.player.abilities = {};
+    sim.player.hp = sim.player.maxHp = 99999;
+    sim.boss0Spawned = true;
+    sim.boss1Spawned = true;
+    sim.time = 300;
+    step(sim, 60);
+    const active = sim.enemies.filter((enemy) => enemy.active && !enemy.boss).length;
+    expect(active).toBeGreaterThanOrEqual(6);
+    expect(active).toBeLessThanOrEqual(7);
+  });
+
+  it('reaches the late reference ingress without releasing a batch spike', () => {
+    const sim = makeSim();
+    sim.player.abilities = {};
+    sim.player.hp = sim.player.maxHp = 99999;
+    sim.player.xpNext = 999999;
+    sim.boss0Spawned = true;
+    sim.boss1Spawned = true;
+    sim.boss2Spawned = true;
+    sim.time = 590;
+    step(sim, 60);
+    const active = sim.enemies.filter((enemy) => enemy.active && !enemy.boss).length;
+    expect(active).toBeGreaterThanOrEqual(28);
+    expect(active).toBeLessThanOrEqual(31);
+  });
+
+  it('keeps ranged, drone, bull and summoner populations under director caps', () => {
+    const sim = makeSim();
+    sim.player.abilities = {};
+    sim.player.hp = sim.player.maxHp = 99999;
+    sim.boss0Spawned = true;
+    sim.boss1Spawned = true;
+    sim.time = 450;
+    for (let i = 0; i < 4; i++) sim.debugSpawn('drone', 120 + i * 80, 120);
+    for (let i = 0; i < 2; i++) sim.debugSpawn('lobber', 120 + i * 80, 240);
+    for (let i = 0; i < 3; i++) sim.debugSpawn('bull', 120 + i * 80, 360);
+    for (let i = 0; i < 2; i++) sim.debugSpawn('chant', 120 + i * 80, 480);
+    step(sim, 180);
+    const active = sim.enemies.filter((enemy) => enemy.active && !enemy.boss);
+    expect(active.filter((enemy) => ['ranged', 'cone', 'flanker', 'aerial'].includes(enemy.def.behavior))).toHaveLength(6);
+    expect(active.filter((enemy) => enemy.def.id === 'drone')).toHaveLength(4);
+    expect(active.filter((enemy) => enemy.def.id === 'bull')).toHaveLength(3);
+    expect(active.filter((enemy) => enemy.def.behavior === 'summoner')).toHaveLength(2);
+  });
+
+  it('makes elites eight times tougher and guarantees a meaningful rare drop', () => {
+    const sim = makeSim();
+    sim.player.abilities = {};
+    sim.debugSpawn('invader', sim.player.x + 300, sim.player.y, true);
+    const eliteIndex = sim.enemies.findIndex((enemy) => enemy.active && enemy.elite);
+    const elite = sim.enemies[eliteIndex];
+    expect(elite.maxHp).toBeCloseTo(ENEMIES.invader.hp * 0.82 * 8, 5);
+    sim.damageEnemy(eliteIndex, elite.hp + 1);
+    expect(sim.pickups.some((pickup) => pickup.active && ['magnet', 'freeze', 'bomb'].includes(pickup.kind))).toBe(true);
   });
 
   it('enemies spawn continuously and chase the player', () => {
     const sim = makeSim();
     step(sim, 600); // 10s
     const active = sim.enemies.filter((e) => e.active);
-    expect(active.length + sim.kills).toBeGreaterThan(3);
+    expect(active.length + sim.kills).toBeGreaterThanOrEqual(3);
     const p = sim.player;
     const d0 = Math.hypot(active[0].x - p.x, active[0].y - p.y);
     step(sim, 120);
@@ -52,8 +119,38 @@ describe('sim core loop', () => {
     expect(enemyPoseFrame(e, 4)).toBe(1);
     e.telegraph = 0.5;
     expect(enemyPoseFrame(e, 4)).toBe(2);
+    e.telegraph = 0;
+    e.attackAnimT = 0.2;
+    expect(enemyPoseFrame(e, 4)).toBe(2);
     e.hurtT = 0.2;
     expect(enemyPoseFrame(e, 4)).toBe(3);
+  });
+
+  it('enemy health bars scale cleanly from regular threats to elites and bosses', () => {
+    const small = enemyHealthBarStyle({ hp: 10, maxHp: 20, radius: 14, elite: false, boss: '' });
+    const regular = enemyHealthBarStyle({ hp: 50, maxHp: 100, radius: 16, elite: false, boss: '' });
+    const large = enemyHealthBarStyle({ hp: 110, maxHp: 220, radius: 30, elite: false, boss: '' });
+    const elite = enemyHealthBarStyle({ hp: 25, maxHp: 100, radius: 16, elite: true, boss: '' });
+    const firstBoss = enemyHealthBarStyle({ hp: 1200, maxHp: 1600, radius: 38, elite: false, boss: 'drumboss' });
+    const finalBoss = enemyHealthBarStyle({ hp: 3600, maxHp: 4800, radius: 50, elite: false, boss: 'captain' });
+    expect(regular.ratio).toBe(0.5);
+    expect(regular.numeric).toBe(false);
+    expect(small.width).toBeLessThan(regular.width);
+    expect(large.width).toBeGreaterThan(regular.width);
+    expect(elite.width).toBeGreaterThan(regular.width);
+    expect(elite.height).toBeGreaterThan(regular.height);
+    expect(elite.numeric).toBe(true);
+    expect(firstBoss.width).toBeGreaterThan(elite.width);
+    expect(finalBoss.width).toBeGreaterThan(firstBoss.width);
+    expect(finalBoss.height).toBeGreaterThan(firstBoss.height);
+    expect(finalBoss.numeric).toBe(true);
+    expect(enemyHealthBarStyle({ hp: -10, maxHp: 100, radius: 10, elite: false, boss: '' }).ratio).toBe(0);
+  });
+
+  it('base invaders cycle evenly through all three complete visual variants', () => {
+    const sim = makeSim();
+    for (let i = 0; i < 6; i++) sim.debugSpawn('invader', sim.player.x + 300 + i * 5, sim.player.y);
+    expect(sim.enemies.filter((enemy) => enemy.active).map((enemy) => enemy.variant)).toEqual([0, 1, 2, 0, 1, 2]);
   });
 
   it('movement state follows actual locomotion and stops while planted', () => {
@@ -71,7 +168,7 @@ describe('sim core loop', () => {
     expect(e.moving).toBe(false);
   });
 
-  it('Precision Strike fires automatically and kills enemies, dropping XP', () => {
+  it('Precision Strike fires automatically, kills enemies and awards XP', () => {
     const sim = makeSim(0); // Messi starts with strike
     // pin an enemy right next to the player
     sim.debugSpawn('invader', sim.player.x + 120, sim.player.y);
@@ -79,7 +176,38 @@ describe('sim core loop', () => {
     e.speed = 0;
     step(sim, 60 * 8);
     expect(sim.kills).toBeGreaterThan(0);
-    expect(sim.pickups.some((pk) => pk.active && pk.kind === 'xp')).toBe(true);
+    const xpStillOnPitch = sim.pickups.some((pk) => pk.active && pk.kind === 'xp');
+    expect(xpStillOnPitch || sim.player.xp > 0 || sim.player.level > 1).toBe(true);
+  });
+
+  it('keeps a kicked ball and its landing marker locked to a moving target', () => {
+    const sim = makeSim(0);
+    sim.debugSpawn('invader', sim.player.x + 430, sim.player.y);
+    const enemy = sim.enemies.find((e) => e.active)!;
+    enemy.speed = 0;
+    sim.player.strikeCd = 0;
+    step(sim, 14);
+    const ball = sim.balls.find((b) => b.active)!;
+    expect(ball).toBeTruthy();
+    enemy.y += 170;
+    step(sim, 1);
+    expect(ball.ty).toBeCloseTo(enemy.y, 4);
+    const reticle = sim.reticles.find((r) => r.active && r.targetIdx === ball.targetIdx)!;
+    expect(reticle.y).toBeCloseTo(enemy.y, 4);
+  });
+
+  it('exposes attack and red-hit feedback state when a melee enemy connects', () => {
+    const sim = makeSim();
+    sim.player.abilities = {};
+    sim.debugSpawn('invader', sim.player.x + 18, sim.player.y);
+    const enemy = sim.enemies.find((e) => e.active)!;
+    enemy.speed = 0;
+    const hpBefore = sim.player.hp;
+    step(sim, 25);
+    expect(sim.player.hp).toBeLessThan(hpBefore);
+    expect(sim.player.hurtT).toBeGreaterThan(0);
+    expect(enemy.lungeT).toBeGreaterThan(0);
+    expect(sim.events.some((event) => event.type === 'hurt')).toBe(true);
   });
 
   it('spawns and expires pooled directional contact impacts', () => {
@@ -138,11 +266,11 @@ describe('sim core loop', () => {
     expect(sim.over).toBe('won');
   });
 
-  it('half-time boss spawns and is clearly flagged', () => {
+  it('seven-minute miniboss spawns and is clearly flagged', () => {
     const sim = makeSim();
-    // The first-quarter boss is normally still alive when time is jumped
-    // directly to half-time. Mark that encounter as completed so this test
-    // isolates the serialized half-time spawn.
+    // The four-minute boss is normally still alive when time is jumped
+    // directly to 7:00. Mark that encounter as completed so this test
+    // isolates the serialized miniboss spawn.
     sim.boss0Spawned = true;
     sim.time = BOSS1_AT;
     step(sim, 5);
@@ -150,6 +278,40 @@ describe('sim core loop', () => {
     expect(boss).toBeTruthy();
     expect(boss!.maxHp).toBeGreaterThan(ENEMIES.mascot.hp);
     expect(sim.bossAlive).toBeTruthy();
+  });
+
+  it('bosses are progressively larger and substantially tougher than the roster', () => {
+    expect(BOSSES.drumboss.tier).toBe('minor');
+    expect(BOSSES.official.tier).toBe('major');
+    expect(BOSSES.captain.tier).toBe('major');
+    expect(BOSSES.drumboss.scale).toBeGreaterThan(ENEMIES.banner.scale);
+    expect(BOSSES.official.scale).toBeGreaterThan(BOSSES.drumboss.scale);
+    expect(BOSSES.captain.scale).toBeGreaterThan(BOSSES.official.scale);
+    expect(BOSSES.drumboss.hp).toBeGreaterThan(ENEMIES.banner.hp * 5);
+    expect(BOSSES.official.hp).toBeGreaterThan(BOSSES.drumboss.hp);
+    expect(BOSSES.captain.hp).toBeGreaterThan(BOSSES.official.hp);
+  });
+
+  it('Terrace Bull telegraphs and commits to a damaging charge', () => {
+    const sim = makeSim();
+    sim.enemies.forEach((e) => (e.active = false));
+    sim.player.abilities = {};
+    sim.debugSpawn('bull', sim.player.x + 440, sim.player.y);
+    const hp = sim.player.hp;
+    step(sim, 250);
+    expect(sim.events.some((event) => event.type === 'bullCharge')).toBe(true);
+    expect(sim.player.hp).toBeLessThan(hp);
+  });
+
+  it('Shock Drone circles in the aerial lane and fires an electric dart', () => {
+    const sim = makeSim();
+    sim.enemies.forEach((e) => (e.active = false));
+    sim.player.abilities = {};
+    sim.debugSpawn('drone', sim.player.x + 260, sim.player.y);
+    const hp = sim.player.hp;
+    step(sim, 300);
+    expect(sim.events.some((event) => event.type === 'zap')).toBe(true);
+    expect(sim.player.hp).toBeLessThan(hp);
   });
 
   it('Security Detail fields bodyguards that attack nearby enemies', () => {
@@ -175,6 +337,14 @@ describe('sim core loop', () => {
     expect(guardPoseFrame(g, 4)).toBe(3);
   });
 
+  it('max Security Detail fields four distinct guard silhouettes', () => {
+    const sim = makeSim();
+    for (let level = 1; level <= 5; level++) {
+      sim.applyUpgrade({ kind: 'ability', id: 'guard', name: '', desc: '', color: '', level });
+    }
+    expect(sim.guards.map((g) => g.variant)).toEqual([0, 1, 2, 3]);
+  });
+
   it('Nutmeg Dash grants invulnerability frames while dashing', () => {
     const sim = makeSim(2); // Neymar starts with dash
     sim.debugSpawn('invader', sim.player.x + 28, sim.player.y); // adjacent threat
@@ -192,9 +362,30 @@ describe('sim core loop', () => {
     expect(sim.kills).toBeGreaterThan(0);
   });
 
+  it('Orbiting Press records a directional knockback reaction for rendering', () => {
+    const sim = makeSim(3);
+    sim.enemies.forEach((enemy) => (enemy.active = false));
+    sim.player.abilities.orbit = 5;
+    sim.player.orbitAngle = 0;
+    sim.player.orbitBreakCd = 999;
+    sim.debugSpawn('invader', sim.player.x + 140, sim.player.y);
+    const enemy = sim.enemies.find((entry) => entry.active)!;
+    enemy.maxHp = 9999;
+    enemy.hp = 9999;
+    enemy.barHp = 9999;
+    enemy.speed = 0;
+
+    step(sim, 1);
+
+    expect(enemy.orbitHitT).toBeGreaterThan(0);
+    expect(enemy.hurtT).toBeGreaterThan(0);
+    expect(enemy.hurtDx).toBeGreaterThan(0.9);
+    expect(enemy.kx).toBeGreaterThan(0);
+  });
+
   it("Captain's Whistle knocks groups back", () => {
     const sim = makeSim(1); // Ronaldo starts with whistle
-    sim.enemies.forEach((e) => (e.active = false)); // clear the opening wave
+    sim.enemies.forEach((e) => (e.active = false)); // isolate the staged enemy
     sim.debugSpawn('invader', sim.player.x + 80, sim.player.y);
     const enemy = sim.enemies.find((x) => x.active)!;
     enemy.speed = 0;
@@ -221,10 +412,10 @@ describe('sim core loop', () => {
     expect(sim.pickups.some((p) => !p.active) || sim.coins >= 0).toBe(true);
   });
 
-  it('boss defeat drops a tiered trophy that grants its pickup bonus', () => {
+  it('boss defeat drops a tiered trophy with two ability-only picks', () => {
     const sim = makeSim();
     sim.enemies.forEach((e) => (e.active = false));
-    sim.time = 150.1;
+    sim.time = BOSS0_AT + 0.1;
     step(sim, 1);
     const bossIndex = sim.enemies.findIndex((e) => e.active && e.boss === 'drumboss');
     expect(bossIndex).toBeGreaterThanOrEqual(0);
@@ -235,7 +426,90 @@ describe('sim core loop', () => {
     trophy!.x = sim.player.x;
     trophy!.y = sim.player.y;
     step(sim, 1);
-    expect(sim.coins).toBe(before + 15);
+    expect(sim.coins).toBe(before + 30);
+    expect(sim.pendingBossAbilities).toBe(2);
+    expect(sim.rollBossAbilities().every((option) => option.kind === 'ability')).toBe(true);
     expect(sim.events.some((event) => event.type === 'trophy')).toBe(true);
+  });
+
+  it('Full-Pitch Magnet pulls distant ground loot toward the player', () => {
+    const sim = makeSim();
+    sim.player.abilities = {};
+    sim.enemies.forEach((e) => (e.active = false));
+    sim.debugSpawn('invader', sim.player.x + 520, sim.player.y);
+    const enemyIndex = sim.enemies.findIndex((e) => e.active);
+    sim.damageEnemy(enemyIndex, 9999, 0, 0, { crit: false });
+    const loot = sim.pickups.find((p) => p.active && p.kind === 'xp')!;
+    loot.vx = 0;
+    loot.vy = 0;
+    const before = Math.hypot(loot.x - sim.player.x, loot.y - sim.player.y);
+    sim.debugDropPickup('magnet', sim.player.x, sim.player.y);
+    step(sim, 1);
+    expect(sim.magnetT).toBeGreaterThan(3);
+    step(sim, 30);
+    const after = loot.active ? Math.hypot(loot.x - sim.player.x, loot.y - sim.player.y) : 0;
+    expect(after).toBeLessThan(before);
+    expect(sim.events.some((event) => event.type === 'magnet')).toBe(true);
+  });
+
+  it('Matchday Wipeout defeats regular threats and chunks, but does not erase, a boss', () => {
+    const sim = makeSim();
+    sim.player.abilities = {};
+    sim.enemies.forEach((e) => (e.active = false));
+    sim.boss0Spawned = true;
+    sim.time = BOSS1_AT;
+    step(sim, 1);
+    sim.debugSpawn('invader', sim.player.x + 180, sim.player.y);
+    sim.debugSpawn('drone', sim.player.x - 180, sim.player.y);
+    const boss = sim.enemies.find((e) => e.active && e.boss === 'official')!;
+    const bossHp = boss.hp;
+    sim.debugDropPickup('bomb', sim.player.x, sim.player.y);
+    step(sim, 1);
+    expect(sim.enemies.some((e) => e.active && !e.boss)).toBe(false);
+    expect(boss.active).toBe(true);
+    expect(boss.hp).toBeLessThan(bossHp);
+    expect(boss.hp).toBeGreaterThan(0);
+    expect(sim.events.some((event) => event.type === 'bomb')).toBe(true);
+  });
+
+  it('Stoppage-Time Freeze pauses every enemy across the map while the player remains mobile', () => {
+    const sim = makeSim();
+    sim.player.abilities = {};
+    sim.enemies.forEach((e) => (e.active = false));
+    sim.debugSpawn('invader', sim.player.x + 350, sim.player.y);
+    sim.debugSpawn('drone', sim.player.x - 980, sim.player.y - 520);
+    const frozen = sim.enemies.filter((e) => e.active);
+    sim.debugDropPickup('freeze', sim.player.x, sim.player.y);
+    step(sim, 1);
+    const positions = frozen.map((enemy) => [enemy.x, enemy.y]);
+    const playerX = sim.player.x;
+    const time = sim.time;
+    for (let frame = 0; frame < 120; frame++) sim.update(1 / 60, 1, 0);
+    expect(sim.freezeT).toBeGreaterThan(3);
+    frozen.forEach((enemy, index) => {
+      expect(enemy.x).toBeCloseTo(positions[index][0], 6);
+      expect(enemy.y).toBeCloseTo(positions[index][1], 6);
+    });
+    expect(sim.player.x).toBeGreaterThan(playerX + 100);
+    expect(sim.time).toBeCloseTo(time, 6);
+    expect(sim.events.some((event) => event.type === 'freeze')).toBe(true);
+  });
+
+  it('boss summons resolve only after their generated warning telegraph', () => {
+    const sim = makeSim();
+    sim.player.abilities = {};
+    sim.enemies.forEach((enemy) => (enemy.active = false));
+    sim.debugSpawnBoss('drumboss');
+    const boss = sim.enemies.find((enemy) => enemy.active && enemy.boss === 'drumboss')!;
+    boss.damage = 0;
+    boss.bossCd = 999;
+    boss.bossCd2 = 0;
+    boss.rangedCd = 999;
+    const before = sim.enemies.filter((enemy) => enemy.active && !enemy.boss).length;
+    step(sim, 1);
+    expect(sim.telegraphs.some((telegraph) => telegraph.active && telegraph.kind === 'summon')).toBe(true);
+    expect(sim.enemies.filter((enemy) => enemy.active && !enemy.boss)).toHaveLength(before);
+    step(sim, 60);
+    expect(sim.enemies.filter((enemy) => enemy.active && !enemy.boss).length).toBeGreaterThan(before);
   });
 });

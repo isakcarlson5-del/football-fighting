@@ -13,12 +13,18 @@ import {
   BOSSES,
   ENEMY_PACE_MULT,
   ENEMIES,
+  FREEZE_DURATION,
   PLAYER_PACE_MULT,
   RUN_LENGTH,
   STATS,
+  difficultyProgress,
+  eliteInterval,
+  enemyDamageScale,
+  enemySpawnWeight,
+  enemySpeedScale,
   hpScale,
-  spawnBatch,
-  spawnInterval,
+  powerPressure,
+  spawnRate,
   xpForLevel,
   type AbilityId,
   type BossId,
@@ -33,8 +39,22 @@ export const ARENA_H = 1416; // tuned playfield height; the renderer maps the ar
 export const KICK_DURATION = 0.36;
 export const KICK_CONTACT_DELAY = KICK_DURATION / 2;
 const MAX_ENEMIES = 240;
+const MAX_SPAWNS_PER_STEP = 3;
+const RANGED_MAX_ALIVE = 6;
+const DRONE_MAX_ALIVE = 4;
+const BULL_MAX_ALIVE = 3;
+const SUMMONER_MAX_ALIVE = 2;
 const CELL = 72;
 const LOB_GRAVITY = 1500; // aerial lob downward acceleration (world units/s²)
+const ENEMY_ROSTER = Object.values(ENEMIES) as EnemyDef[];
+const RANGED_BEHAVIORS = new Set(['ranged', 'cone', 'flanker', 'aerial']);
+
+interface DirectorCounts {
+  ranged: number;
+  drones: number;
+  bulls: number;
+  summoners: number;
+}
 
 /* ------------------------------------------------------------------ */
 /* Entity types                                                        */
@@ -43,10 +63,15 @@ const LOB_GRAVITY = 1500; // aerial lob downward acceleration (world units/s²)
 export interface Enemy {
   active: boolean;
   def: EnemyDef;
+  /** Base invaders rotate through three equally complete visual silhouettes. */
+  variant: 0 | 1 | 2;
   x: number;
   y: number;
   hp: number;
   maxHp: number;
+  /** Delayed health used by the renderer for a readable damage-loss trail. */
+  barHp: number;
+  barHitT: number;
   speed: number;
   damage: number;
   radius: number;
@@ -58,6 +83,14 @@ export interface Enemy {
   flash: number;
   /** Recoil pose timer; intentionally outlasts the brief white impact flash. */
   hurtT: number;
+  /** Screen-readable hit direction retained after physics velocity decays. */
+  hurtDx: number;
+  hurtDy: number;
+  hurtStrength: number;
+  /** Dedicated Orbiting Press reaction window for impact/skid VFX. */
+  orbitHitT: number;
+  /** Visual follow-through shared by melee, ranged and special attacks. */
+  attackAnimT: number;
   attackCd: number;
   orbitCd: number;
   dashMark: number; // dash id that already hit this enemy
@@ -87,10 +120,16 @@ export interface Enemy {
   bossCd2: number;
   /** >0 while a special attack is being telegraphed; drives the cast pose. */
   telegraph: number;
+  /** Direction locked when a bull commits to its charge. */
+  chargeDx: number;
+  chargeDy: number;
+  /** Prevents a charge from damaging the player more than once. */
+  chargeHit: boolean;
 }
 
 /** AERIAL lane: a lobbed ball with real height (z) flying to a reserved far
- *  target; it passes over near enemies and lands with a splash. */
+ *  target. Ordinary Precision Strikes hit only that locked target; explicitly
+ *  special relays can still opt into a landing radius. */
 export interface Ball {
   active: boolean;
   x: number;
@@ -141,6 +180,7 @@ export interface Seeker {
 
 export interface Bottle {
   active: boolean;
+  kind: 'bottle' | 'electric';
   x: number;
   y: number;
   vx: number;
@@ -151,7 +191,7 @@ export interface Bottle {
 
 export interface Pickup {
   active: boolean;
-  kind: 'xp' | 'coin' | 'heal' | 'trophy';
+  kind: 'xp' | 'coin' | 'heal' | 'trophy' | 'magnet' | 'bomb' | 'freeze';
   tier: 1 | 2 | 3;
   x: number;
   y: number;
@@ -162,6 +202,8 @@ export interface Pickup {
 }
 
 export interface Guard {
+  /** Visual/combat silhouette: rookie, close protection, heavy, fast scout. */
+  variant: 0 | 1 | 2 | 3;
   x: number;
   y: number;
   tx: number; // formation target
@@ -219,9 +261,10 @@ export interface Telegraph {
   r: number;
   t: number;
   max: number;
-  kind: 'flare' | 'shock' | 'cone' | 'flash' | 'chant';
+  kind: 'flare' | 'shock' | 'cone' | 'flash' | 'chant' | 'summon';
   dmg: number;
   dir: number; // cone facing (radians)
+  summon: 0 | 1 | 2 | 3;
 }
 
 export interface Ring {
@@ -254,6 +297,7 @@ export interface Reticle {
   y: number;
   t: number;
   max: number;
+  targetIdx: number;
 }
 
 /** Death visual: a fallen enemy that topples, sinks and fades (no gameplay). */
@@ -262,6 +306,7 @@ export interface Corpse {
   x: number;
   y: number;
   enemyId: string;
+  variant: 0 | 1 | 2;
   boss: '' | BossId;
   elite: boolean;
   face: number;
@@ -275,12 +320,14 @@ export type SimEvent =
   | { type: 'kick' }
   | { type: 'xp' }
   | { type: 'coin' }
-  | { type: 'trophy'; coins: number; tier: 1 | 2 | 3 }
+  | { type: 'trophy'; coins: number; tier: 1 | 2 | 3; abilityPicks: 2 }
+  | { type: 'magnet' }
+  | { type: 'bomb'; x: number; y: number; defeated: number }
+  | { type: 'freeze'; duration: number }
   | { type: 'levelup' }
   | { type: 'whistle'; x: number; y: number }
   | { type: 'pressure'; x: number; y: number }
   | { type: 'blast'; x: number; y: number }
-  | { type: 'wave'; number: number; name: string }
   | { type: 'lobLand'; x: number; y: number }
   | { type: 'seekerLaunch'; kind: 'curveball' | 'goldenboot' }
   | { type: 'seekerHit'; kind: 'curveball' | 'goldenboot'; x: number; y: number }
@@ -290,6 +337,9 @@ export type SimEvent =
   | { type: 'vuvuzela'; x: number; y: number }
   | { type: 'flash'; x: number; y: number }
   | { type: 'chant'; x: number; y: number }
+  | { type: 'zap'; x: number; y: number }
+  | { type: 'bullCharge'; x: number; y: number }
+  | { type: 'maxAbility'; name: string }
   | { type: 'bossSpawn'; name: string; title: string }
   | { type: 'bossDie'; x: number; y: number; coins: number }
   | { type: 'victory' }
@@ -312,6 +362,9 @@ export interface PlayerState {
   moving: boolean;
   animT: number;
   iframes: number;
+  hurtT: number;
+  hurtDx: number;
+  hurtDy: number;
   regenAcc: number;
   kx: number; // knockback velocity (heavy enemy hits, vuvuzela blasts)
   ky: number;
@@ -335,6 +388,10 @@ export interface PlayerState {
   dashDy: number;
   dashId: number;
   orbitAngle: number;
+  /** L5 Orbiting Press periodically converts a contact into an aerial counter. */
+  orbitBreakCd: number;
+  /** Generated Captain's Heart activation clip after a max-HP draft. */
+  heartFxT: number;
 }
 
 export interface UpgradeOption {
@@ -349,6 +406,7 @@ export interface UpgradeOption {
 
 export class Sim {
   rng = new Rng();
+  private invaderVariantCursor = 0;
   time = 0;
   over: 'playing' | 'won' | 'lost' = 'playing';
   kills = 0;
@@ -370,19 +428,23 @@ export class Sim {
   corpses: Corpse[] = [];
   events: SimEvent[] = [];
   pendingLevelups = 0;
+  /** Boss trophies queue two ability-only drafts before ordinary level-ups. */
+  pendingBossAbilities = 0;
   boss0Spawned = false;
   boss1Spawned = false;
   boss2Spawned = false;
   bossAlive: Enemy | null = null;
   slowZones: { x: number; y: number; r: number; t: number }[] = [];
   flareZones: { x: number; y: number; r: number; t: number; tick: number }[] = [];
+  /** Active rare-pickup effects are public so the renderer can communicate them. */
+  magnetT = 0;
+  freezeT = 0;
 
   private grid = new Map<number, number[]>();
   private flagBearers: Enemy[] = [];
-  private spawnAcc = 0;
+  /** Fractional spawn tokens. A capped budget prevents hitch recovery bursts. */
+  private spawnBudget = 0;
   private eliteAcc = 0;
-  private nextWaveAt = 4;
-  private waveIndex = 0;
   private def: PlayerDef;
   private deferred: { t: number; fn: () => void }[] = [];
   private powerMult = 1;
@@ -392,6 +454,7 @@ export class Sim {
   private guardExtra = 0;
   private xpMult = 1;
   private trailAcc = 0;
+  private bombResolving = false;
 
   constructor(def: PlayerDef, save: Save, seed = (Math.random() * 0xffffffff) >>> 0) {
     this.def = def;
@@ -415,6 +478,9 @@ export class Sim {
       moving: false,
       animT: 0,
       iframes: 0,
+      hurtT: 0,
+      hurtDx: 0,
+      hurtDy: 0,
       regenAcc: 0,
       kx: 0,
       ky: 0,
@@ -437,6 +503,8 @@ export class Sim {
       dashDy: 0,
       dashId: 0,
       orbitAngle: 0,
+      orbitBreakCd: 0,
+      heartFxT: 0,
     };
     if (def.id === 'neymar') this.player.dashCds = [0];
     this.spawnInitial();
@@ -460,6 +528,19 @@ export class Sim {
     return this.player.stats.armor;
   }
 
+  /** Smooth pressure estimate used by the deterministic pacing functions. */
+  get threatPressure(): number {
+    const abilityRanks = Object.values(this.player.abilities).reduce((sum, rank) => sum + (rank ?? 0), 0);
+    const statRanks = Object.values(this.player.stats).reduce((sum, rank) => sum + rank, 0);
+    return powerPressure(abilityRanks, statRanks);
+  }
+
+  /** Permanent aerial troops and temporarily launched enemies share the same
+   * lane rules. First Touch Blast is deliberately HYBRID and can hit both. */
+  private isAerialEnemy(e: Enemy): boolean {
+    return e.def.behavior === 'aerial' || e.airT > 0;
+  }
+
   abilityLevel(id: AbilityId): number {
     return this.player.abilities[id] ?? 0;
   }
@@ -475,9 +556,9 @@ export class Sim {
     this.enemies = [];
     for (let i = 0; i < MAX_ENEMIES; i++) {
       this.enemies.push({
-        active: false, def: ENEMIES.invader, x: 0, y: 0, hp: 1, maxHp: 1, speed: 0, damage: 0,
-        radius: 10, xp: 1, elite: false, boss: '', kx: 0, ky: 0, flash: 0, hurtT: 0, attackCd: 0, orbitCd: 0,
-        dashMark: -1, stun: 0, slow: 0, face: 1, animT: 0, moving: false, rangedCd: 2, windup: 0, lungeT: 0, airT: 0, haste: 1, boostT: 0, casting: '', bossCd: 4, bossCd2: 8, telegraph: 0,
+        active: false, def: ENEMIES.invader, variant: 0, x: 0, y: 0, hp: 1, maxHp: 1, barHp: 1, barHitT: 0, speed: 0, damage: 0,
+        radius: 10, xp: 1, elite: false, boss: '', kx: 0, ky: 0, flash: 0, hurtT: 0, hurtDx: 0, hurtDy: 0, hurtStrength: 0, orbitHitT: 0, attackAnimT: 0, attackCd: 0, orbitCd: 0,
+        dashMark: -1, stun: 0, slow: 0, face: 1, animT: 0, moving: false, rangedCd: 2, windup: 0, lungeT: 0, airT: 0, haste: 1, boostT: 0, casting: '', bossCd: 4, bossCd2: 8, telegraph: 0, chargeDx: 0, chargeDy: 0, chargeHit: false,
       });
     }
     for (let i = 0; i < 400; i++) this.balls.push({ active: false, x: 0, y: 0, vx: 0, vy: 0, z: 0, vz: 0, dmg: 0, splash: 60, ricochet: 0, spin: 0, tx: 0, ty: 0, targetIdx: -1, flightT: 0, maxFlightT: 1 });
@@ -487,16 +568,16 @@ export class Sim {
       vx: 0, vy: 0, speed: 420, turnRate: 4, targetIdx: -1, dmg: 0, splash: 0,
       knock: 0, life: 0, maxLife: 3, chain: 0, angle: 0, phase: 0,
     });
-    for (let i = 0; i < 200; i++) this.bottles.push({ active: false, x: 0, y: 0, vx: 0, vy: 0, dmg: 0, life: 0 });
+    for (let i = 0; i < 200; i++) this.bottles.push({ active: false, kind: 'bottle', x: 0, y: 0, vx: 0, vy: 0, dmg: 0, life: 0 });
     for (let i = 0; i < 500; i++) this.pickups.push({ active: false, kind: 'xp', tier: 1, x: 0, y: 0, vx: 0, vy: 0, value: 1, t: 0 });
     for (let i = 0; i < 600; i++) this.particles.push({ active: false, x: 0, y: 0, vx: 0, vy: 0, life: 0, maxLife: 1, size: 2, color: '#fff', grav: 0 });
     for (let i = 0; i < 96; i++) this.impacts.push({ active: false, x: 0, y: 0, life: 0, maxLife: 0.2, angle: 0, strength: 1, color: '#fff', kind: 'contact' });
     for (let i = 0; i < 120; i++) this.dmgNums.push({ active: false, x: 0, y: 0, value: '', life: 0, crit: false });
-    for (let i = 0; i < 16; i++) this.telegraphs.push({ active: false, x: 0, y: 0, r: 0, t: 0, max: 1, kind: 'flare', dmg: 0, dir: 0 });
+    for (let i = 0; i < 24; i++) this.telegraphs.push({ active: false, x: 0, y: 0, r: 0, t: 0, max: 1, kind: 'flare', dmg: 0, dir: 0, summon: 0 });
     for (let i = 0; i < 16; i++) this.rings.push({ active: false, x: 0, y: 0, r: 0, maxR: 100, life: 0, color: '#fff' });
     for (let i = 0; i < 24; i++) this.pressures.push({ active: false, x: 0, y: 0, r: 0, maxR: 100, dmg: 0, knock: 0, hitSet: [] });
-    for (let i = 0; i < 32; i++) this.reticles.push({ active: false, x: 0, y: 0, t: 0, max: 1 });
-    for (let i = 0; i < 64; i++) this.corpses.push({ active: false, x: 0, y: 0, enemyId: 'invader', boss: '', elite: false, face: 1, t: 0, max: 0.55 });
+    for (let i = 0; i < 32; i++) this.reticles.push({ active: false, x: 0, y: 0, t: 0, max: 1, targetIdx: -1 });
+    for (let i = 0; i < 64; i++) this.corpses.push({ active: false, x: 0, y: 0, enemyId: 'invader', variant: 0, boss: '', elite: false, face: 1, t: 0, max: 0.55 });
     this.refreshGuards();
   }
 
@@ -575,18 +656,71 @@ export class Sim {
     return { x: 40, y: 40 };
   }
 
+  private directorCounts(): DirectorCounts {
+    const counts: DirectorCounts = { ranged: 0, drones: 0, bulls: 0, summoners: 0 };
+    for (const enemy of this.enemies) {
+      if (!enemy.active || enemy.boss) continue;
+      this.noteDirectorSpawn(counts, enemy.def);
+    }
+    return counts;
+  }
+
+  private noteDirectorSpawn(counts: DirectorCounts, def: EnemyDef): void {
+    if (RANGED_BEHAVIORS.has(def.behavior)) counts.ranged++;
+    if (def.id === 'drone') counts.drones++;
+    if (def.id === 'bull') counts.bulls++;
+    if (def.behavior === 'summoner') counts.summoners++;
+  }
+
+  private canDirectorSpawn(def: EnemyDef, counts: DirectorCounts): boolean {
+    if (RANGED_BEHAVIORS.has(def.behavior) && counts.ranged >= RANGED_MAX_ALIVE) return false;
+    if (def.id === 'drone' && counts.drones >= DRONE_MAX_ALIVE) return false;
+    if (def.id === 'bull' && counts.bulls >= BULL_MAX_ALIVE) return false;
+    if (def.behavior === 'summoner' && counts.summoners >= SUMMONER_MAX_ALIVE) return false;
+    return true;
+  }
+
+  /** Allocation-free weighted director pick with time-based roster phases. */
+  private pickDirectorEnemy(counts: DirectorCounts): EnemyDef | null {
+    let total = 0;
+    for (const def of ENEMY_ROSTER) {
+      if (this.canDirectorSpawn(def, counts)) total += enemySpawnWeight(def, this.time);
+    }
+    if (total <= 0) return null;
+    let roll = this.rng.next() * total;
+    for (const def of ENEMY_ROSTER) {
+      if (!this.canDirectorSpawn(def, counts)) continue;
+      roll -= enemySpawnWeight(def, this.time);
+      if (roll <= 0) return def;
+    }
+    return null;
+  }
+
   private spawnEnemy(def: EnemyDef, x: number, y: number, elite: boolean): Enemy | null {
     const e = this.alloc(this.enemies);
     if (!e) return null;
-    const mult = hpScale(this.time);
+    const pressure = this.threatPressure;
+    const mult = hpScale(this.time, pressure);
     e.active = true;
     e.def = def;
+    if (def.id === 'invader') {
+      e.variant = (this.invaderVariantCursor % 3) as 0 | 1 | 2;
+      this.invaderVariantCursor++;
+    } else {
+      e.variant = 0;
+    }
     e.x = x;
     e.y = y;
-    e.maxHp = def.hp * mult * (elite ? 6 : 1);
+    const variantHp = e.variant === 1 ? 1.12 : 1;
+    e.maxHp = def.hp * mult * (elite ? 8 : 1) * variantHp;
     e.hp = e.maxHp;
-    e.speed = def.speed * ENEMY_PACE_MULT * this.rng.range(0.9, 1.1) * (1 + Math.min(0.25, this.time / 2400));
-    e.damage = def.damage * (elite ? 1.5 : 1);
+    e.barHp = e.maxHp;
+    e.barHitT = 0;
+    const variantSpeed = e.variant === 2 ? 1.12 : 1;
+    e.speed = def.speed * ENEMY_PACE_MULT * enemySpeedScale(this.time, pressure) * variantSpeed * this.rng.range(0.9, 1.1);
+    const damageScale = enemyDamageScale(this.time, pressure);
+    const variantDamage = e.variant === 1 ? 1.08 : 1;
+    e.damage = def.damage * damageScale * variantDamage * (elite ? 1.5 : 1);
     e.radius = def.radius * (elite ? 1.25 : 1);
     e.xp = elite ? def.xp * 4 : def.xp;
     e.elite = elite;
@@ -595,6 +729,11 @@ export class Sim {
     e.ky = 0;
     e.flash = 0;
     e.hurtT = 0;
+    e.hurtDx = 0;
+    e.hurtDy = 0;
+    e.hurtStrength = 0;
+    e.orbitHitT = 0;
+    e.attackAnimT = 0;
     e.attackCd = 0;
     e.orbitCd = 0;
     e.dashMark = -1;
@@ -610,38 +749,10 @@ export class Sim {
     e.boostT = 0;
     e.casting = '';
     e.telegraph = 0;
+    e.chargeDx = 0;
+    e.chargeDy = 0;
+    e.chargeHit = false;
     return e;
-  }
-
-  /** Named formation waves make the roster legible: a quiet kickoff is
-   *  followed by a coherent push from one stand. Every unlocked role appears
-   *  before weighted filler, so special enemies cannot disappear in the mix. */
-  private spawnWave(): void {
-    this.waveIndex++;
-    const phase = Math.min(5, 1 + Math.floor(this.time / 110));
-    const count = Math.min(24, 6 + phase * 2 + Math.floor(this.time / 90));
-    const unlocked = Object.values(ENEMIES).filter((def) => def.unlockAt <= this.time);
-    const edge = this.rng.int(0, 3);
-    const dir = (edge / 4) * TAU;
-    const dx = Math.cos(dir);
-    const dy = Math.sin(dir);
-    const spread = Math.min(560, count * 54);
-    for (let i = 0; i < count; i++) {
-      const def = i < unlocked.length
-        ? unlocked[(i + this.waveIndex - 1) % unlocked.length]
-        : weightedPick(this.rng, unlocked);
-      if (!def) break;
-      const u = (i + 0.5) / count;
-      const jitter = this.rng.range(-18, 18);
-      const offset = (u - 0.5) * spread + jitter;
-      const x = clamp(this.player.x + dx * 360 - dy * offset, 40, ARENA_W - 40);
-      const y = clamp(this.player.y + dy * 360 + dx * offset, 40, ARENA_H - 40);
-      this.spawnEnemy(def, x, y, false);
-    }
-    const names = ['Warm-Up Press', 'Terrace Surge', 'Counter Rush', 'Full Press', 'Last Stand'];
-    this.events.push({ type: 'wave', number: this.waveIndex, name: names[phase - 1] });
-    const spacing = this.time < 120 ? 30 : this.time < 360 ? 25 : 20;
-    this.nextWaveAt = this.time + spacing;
   }
 
   private spawnBoss(which: BossId): void {
@@ -649,15 +760,22 @@ export class Sim {
     const e = this.alloc(this.enemies);
     if (!e) return;
     const pos = this.pickSpawnPos();
-    const mult = hpScale(this.time);
+    const pressure = this.threatPressure;
+    const mult = hpScale(this.time, pressure);
     e.active = true;
     e.def = { ...ENEMIES.mascot, id: 'mascot' };
+    e.variant = 0;
     e.x = pos.x;
     e.y = pos.y;
-    e.maxHp = def.hp * (which === 'captain' ? Math.max(1, mult * 0.55) : 1);
+    const tierScale = def.tier === 'major'
+      ? Math.max(1, mult * (which === 'captain' ? 0.55 : 0.35))
+      : 1;
+    e.maxHp = def.hp * tierScale;
     e.hp = e.maxHp;
-    e.speed = def.speed * ENEMY_PACE_MULT;
-    e.damage = def.damage;
+    e.barHp = e.maxHp;
+    e.barHitT = 0;
+    e.speed = def.speed * ENEMY_PACE_MULT * enemySpeedScale(this.time, pressure);
+    e.damage = def.damage * enemyDamageScale(this.time, pressure);
     e.radius = def.radius;
     e.xp = def.xp;
     e.elite = false;
@@ -666,6 +784,11 @@ export class Sim {
     e.ky = 0;
     e.flash = 0;
     e.hurtT = 0;
+    e.hurtDx = 0;
+    e.hurtDy = 0;
+    e.hurtStrength = 0;
+    e.orbitHitT = 0;
+    e.attackAnimT = 0;
     e.attackCd = 0;
     e.orbitCd = 0;
     e.dashMark = -1;
@@ -683,11 +806,41 @@ export class Sim {
     e.bossCd = 3;
     e.bossCd2 = 7;
     e.telegraph = 0;
+    e.chargeDx = 0;
+    e.chargeDy = 0;
+    e.chargeHit = false;
     this.bossAlive = e;
     this.events.push({ type: 'bossSpawn', name: def.name, title: def.title });
   }
 
   /* ---------------- pickups / drops ---------------- */
+
+  private spawnPickup(kind: Pickup['kind'], x: number, y: number, value = 1, tier: 1 | 2 | 3 = 1, speed = 60): Pickup | null {
+    const p = this.alloc(this.pickups);
+    if (!p) return null;
+    const a = this.rng.range(0, TAU);
+    p.active = true;
+    p.kind = kind;
+    p.tier = tier;
+    p.x = x;
+    p.y = y;
+    p.vx = Math.cos(a) * speed;
+    p.vy = Math.sin(a) * speed;
+    p.value = value;
+    p.t = 0;
+    return p;
+  }
+
+  /** Rare match-changing drops. Bosses and elites always leave one; ordinary
+   *  threats only occasionally surprise you. */
+  private maybeDropSpecial(e: Enemy): void {
+    if (this.bombResolving) return;
+    const chance = e.boss || e.elite ? 1 : 0.018;
+    if (!this.rng.chance(chance)) return;
+    const roll = this.rng.next();
+    const kind: Pickup['kind'] = roll < 0.45 ? 'magnet' : roll < 0.77 ? 'freeze' : 'bomb';
+    this.spawnPickup(kind, e.x, e.y, 1, e.boss === 'captain' ? 3 : e.elite || e.boss ? 2 : 1, 82);
+  }
 
   private dropLoot(e: Enemy): void {
     // XP orb(s)
@@ -727,7 +880,7 @@ export class Sim {
       p.t = 0;
     }
     // sports drink (heal) drops: tanks/elites are the comeback moments
-    const healChance = e.boss ? 0 : e.elite ? 1 : e.def.id === 'mascot' ? 0.4 : e.def.id === 'steward' ? 0.22 : 0;
+    const healChance = e.boss ? 0 : e.elite ? 0.55 : e.def.id === 'mascot' ? 0.2 : e.def.id === 'steward' ? 0.1 : 0;
     if (this.rng.chance(healChance)) {
       const p = this.alloc(this.pickups);
       if (p) {
@@ -743,20 +896,75 @@ export class Sim {
         p.t = 0;
       }
     }
+    this.maybeDropSpecial(e);
+  }
+
+  /** Pull every collectible on the pitch toward the player for a few seconds. */
+  private activateMagnet(): void {
+    this.magnetT = Math.max(this.magnetT, 3.5);
+    this.events.push({ type: 'magnet' });
+  }
+
+  /** Defeat all ordinary threats and tear a balanced chunk from bosses. */
+  private activateBomb(): void {
+    let defeated = 0;
+    this.bombResolving = true;
+    try {
+      for (let i = 0; i < this.enemies.length; i++) {
+        const e = this.enemies[i];
+        if (!e.active) continue;
+        if (e.boss) {
+          this.damageEnemy(i, Math.max(1, e.maxHp * 0.3), 0, 0, { crit: false });
+        } else {
+          defeated++;
+          this.damageEnemy(i, e.hp + 1, 0, 0, { crit: false });
+        }
+      }
+    } finally {
+      this.bombResolving = false;
+    }
+    this.burst(this.player.x, this.player.y, 48, '#ffb02e');
+    this.ring(this.player.x, this.player.y, 760, '#ff7a2e');
+    this.events.push({ type: 'bomb', x: this.player.x, y: this.player.y, defeated });
+  }
+
+  /** Pause every hostile simulation clock while the player and loot stay live. */
+  private activateFreeze(): void {
+    this.freezeT = Math.max(this.freezeT, FREEZE_DURATION);
+    this.events.push({ type: 'freeze', duration: 5.5 });
   }
 
   /* ---------------- damage ---------------- */
 
   private scratch: number[] = new Array(512);
 
-  damageEnemy(i: number, dmg: number, kx = 0, ky = 0, opts?: { stun?: number; crit?: boolean }): void {
+  damageEnemy(
+    i: number,
+    dmg: number,
+    kx = 0,
+    ky = 0,
+    opts?: { stun?: number; crit?: boolean; source?: 'orbit' },
+  ): void {
     const e = this.enemies[i];
     if (!e.active || e.hp <= 0) return;
     const crit = opts?.crit ?? this.rng.chance(0.08);
     const final = Math.round(dmg * (crit ? 1.6 : 1));
+    const hpBefore = e.hp;
     e.hp -= final;
+    e.barHp = Math.max(e.barHp, hpBefore);
+    e.barHitT = 0.32;
     e.flash = 0.12;
-    e.hurtT = 0.24;
+    const force = Math.hypot(kx, ky);
+    e.hurtT = force > 250 ? 0.32 : 0.26;
+    if (force > 0.01) {
+      e.hurtDx = kx / force;
+      e.hurtDy = ky / force;
+    } else {
+      e.hurtDx = -e.face;
+      e.hurtDy = 0;
+    }
+    e.hurtStrength = clamp(force / 360, 0.35, 1.25);
+    if (opts?.source === 'orbit') e.orbitHitT = 0.38;
     e.kx += kx;
     e.ky += ky;
     // a heavy shove launches the enemy briefly airborne: ground effects sweep
@@ -796,7 +1004,7 @@ export class Sim {
         trophy.y = e.y;
         trophy.vx = this.rng.range(-35, 35);
         trophy.vy = this.rng.range(-35, 35);
-        trophy.value = tier === 3 ? 50 : tier === 2 ? 25 : 15;
+        trophy.value = tier === 3 ? 120 : tier === 2 ? 60 : 30;
         trophy.t = 0;
       }
       // coin fountain
@@ -825,6 +1033,7 @@ export class Sim {
     c.x = e.x;
     c.y = e.y;
     c.enemyId = e.def.id;
+    c.variant = e.variant;
     c.boss = e.boss;
     c.elite = e.elite;
     c.face = e.face;
@@ -838,6 +1047,10 @@ export class Sim {
     const dmg = Math.max(1, Math.round(raw - this.armor));
     p.hp -= dmg;
     p.iframes = 0.55;
+    p.hurtT = 0.32;
+    const hitLength = Math.hypot(kx, ky);
+    p.hurtDx = hitLength > 0.01 ? kx / hitLength : -p.face;
+    p.hurtDy = hitLength > 0.01 ? ky / hitLength : 0;
     p.kx += kx;
     p.ky += ky;
     if (slowT > 0) p.slowT = Math.max(p.slowT, slowT);
@@ -936,7 +1149,16 @@ export class Sim {
     r.color = color;
   }
 
-  private telegraph(x: number, y: number, r: number, delay: number, kind: Telegraph['kind'], dmg = 0, dir = 0): void {
+  private telegraph(
+    x: number,
+    y: number,
+    r: number,
+    delay: number,
+    kind: Telegraph['kind'],
+    dmg = 0,
+    dir = 0,
+    summon: Telegraph['summon'] = 0,
+  ): void {
     const t = this.alloc(this.telegraphs);
     if (!t) return;
     t.active = true;
@@ -948,6 +1170,41 @@ export class Sim {
     t.kind = kind;
     t.dmg = dmg;
     t.dir = dir;
+    t.summon = summon;
+  }
+
+  /** Resolve a boss rally only after its pitch seal finishes. The delay is
+   *  real counterplay and also makes the generated summon animation honest. */
+  private summonBossAdds(code: Telegraph['summon'], x: number, y: number): void {
+    const roster: Array<keyof typeof ENEMIES> = code === 1
+      ? ['invader', 'invader', 'sprinter']
+      : code === 2
+        ? ['invader', 'invader', 'invader', 'invader', 'bull']
+        : code === 3
+          ? ['drone', 'sprinter', 'sprinter']
+          : [];
+    const counts = this.directorCounts();
+    let rallied = 0;
+    for (let index = 0; index < roster.length; index++) {
+      const def = ENEMIES[roster[index]];
+      if (!this.canDirectorSpawn(def, counts)) continue;
+      const angle = (index / Math.max(1, roster.length)) * TAU + this.rng.range(-0.2, 0.2);
+      const distance = code === 2 && roster[index] === 'bull' ? 185 : 112 + (index % 2) * 34;
+      const spawned = this.spawnEnemy(
+        def,
+        clamp(x + Math.cos(angle) * distance, 40, ARENA_W - 40),
+        clamp(y + Math.sin(angle) * distance, 40, ARENA_H - 40),
+        false,
+      );
+      if (spawned) {
+        this.noteDirectorSpawn(counts, def);
+        rallied++;
+      }
+    }
+    if (rallied > 0) {
+      this.burst(x, y, code === 2 ? 18 : 12, '#ff5c70');
+      this.events.push({ type: 'chant', x, y });
+    }
   }
 
   /** Bottle Lobber's throw (after the visible wind-up). */
@@ -956,6 +1213,7 @@ export class Sim {
     if (!b) return;
     const p = this.player;
     b.active = true;
+    b.kind = 'bottle';
     b.x = e.x;
     b.y = e.y;
     const lead = 0.4;
@@ -966,6 +1224,26 @@ export class Sim {
     b.vy = ((ty - e.y) / dd) * 280;
     b.dmg = e.damage;
     b.life = 2.2;
+  }
+
+  /** Shock Drone fires a fast, readable electric dart at a short player lead. */
+  private fireElectric(e: Enemy): void {
+    const b = this.alloc(this.bottles);
+    if (!b) return;
+    const p = this.player;
+    const lead = 0.18;
+    const tx = p.x + p.dashDx * (p.moving ? this.moveSpeed * lead : 0);
+    const ty = p.y + p.dashDy * (p.moving ? this.moveSpeed * lead : 0);
+    const d = Math.hypot(tx - e.x, ty - e.y) || 1;
+    b.active = true;
+    b.kind = 'electric';
+    b.x = e.x;
+    b.y = e.y;
+    b.vx = ((tx - e.x) / d) * 410;
+    b.vy = ((ty - e.y) / d) * 410;
+    b.dmg = e.damage;
+    b.life = 1.45;
+    this.events.push({ type: 'zap', x: e.x, y: e.y });
   }
 
   /* ---------------- level-ups ---------------- */
@@ -1010,6 +1288,41 @@ export class Sim {
     return picks;
   }
 
+  /** Boss loot deliberately excludes training and recovery cards. Each trophy
+   *  opens this draft twice, producing two meaningful ability upgrades. */
+  rollBossAbilities(): UpgradeOption[] {
+    const pool: UpgradeOption[] = [];
+    for (const id of Object.keys(ABILITIES) as AbilityId[]) {
+      const lvl = this.player.abilities[id] ?? 0;
+      const def = ABILITIES[id];
+      if (lvl >= def.levels.length) continue;
+      const next = lvl + 1;
+      pool.push({
+        kind: 'ability',
+        id,
+        name: next === 1 ? def.name : `${def.name} Lv${next}`,
+        desc: def.levels[lvl].desc,
+        color: def.color,
+        level: next,
+      });
+    }
+    const picks: UpgradeOption[] = [];
+    while (picks.length < 3 && pool.length > 0) {
+      const index = this.rng.int(0, pool.length - 1);
+      picks.push(pool.splice(index, 1)[0]);
+    }
+    // A completely maxed build cannot receive another legal ability level.
+    // Keep the draft valid without ever writing an out-of-range level.
+    while (picks.length < 3) {
+      picks.push({
+        kind: 'coins', id: 'coins', name: 'Legend Bonus',
+        desc: '+75 coins because every ability is already fully evolved.',
+        color: '#ffd23f', level: 0,
+      });
+    }
+    return picks;
+  }
+
   applyUpgrade(opt: UpgradeOption): void {
     const p = this.player;
     if (opt.kind === 'ability') {
@@ -1019,17 +1332,19 @@ export class Sim {
         const want = opt.level >= 4 ? 2 : 1;
         while (p.dashCds.length < want) p.dashCds.push(0);
       }
+      if (opt.level === 5) this.events.push({ type: 'maxAbility', name: ABILITIES[opt.id as AbilityId].name });
     } else if (opt.kind === 'stat') {
       const id = opt.id as StatId;
       p.stats[id] += 1;
       if (id === 'maxhp') {
         p.maxHp += 15;
         p.hp = Math.min(p.maxHp, p.hp + 15);
+        p.heartFxT = 0.9;
       }
     } else if (opt.kind === 'heal') {
       p.hp = Math.min(p.maxHp, p.hp + 30);
     } else {
-      this.coins += 25;
+      this.coins += opt.name === 'Legend Bonus' ? 75 : 25;
     }
   }
 
@@ -1048,15 +1363,19 @@ export class Sim {
 
   private refreshGuards(): void {
     const lvl = this.abilityLevel('guard');
-    const want = lvl === 0 ? 0 : (lvl >= 5 ? 3 : lvl >= 3 ? 2 : 1) + (lvl > 0 ? this.guardExtra : 0);
+    const want = lvl === 0 ? 0 : (lvl >= 5 ? 4 : lvl >= 3 ? 2 : 1) + (lvl > 0 ? this.guardExtra : 0);
     while (this.guards.length < want) {
       const a = (this.guards.length / Math.max(1, want)) * TAU;
       this.guards.push({
+        variant: (this.guards.length % 4) as 0 | 1 | 2 | 3,
         x: this.player.x + Math.cos(a) * 60,
         y: this.player.y + Math.sin(a) * 60,
         tx: 0, ty: 0, swingCd: 0, strikeT: 0, blockT: 0,
         moving: false, face: 1, animT: 0, target: -1,
       });
+    }
+    for (let i = 0; i < this.guards.length; i++) {
+      this.guards[i].variant = (i % 4) as 0 | 1 | 2 | 3;
     }
   }
 
@@ -1124,7 +1443,7 @@ export class Sim {
     const p = this.player;
     const count = [0, 1, 2, 2, 3, 4][lvl] + (this.def.id === 'messi' ? 1 : 0);
     const dmg = [0, 14, 14, 20, 20, 28][lvl] * this.damageMult;
-    const splash = lvl >= 4 ? 92 : 66;
+    const splash = 0; // ordinary footballs are precision hits, never splash damage
     const ric = lvl >= 5 ? 1 : 0;
     let launched = 0;
     for (let i = 0; i < count; i++) {
@@ -1162,24 +1481,30 @@ export class Sim {
     b.targetIdx = targetIdx;
     b.flightT = 0;
     b.maxFlightT = T;
-    this.reticle(tx, ty, T);
+    this.reticle(tx, ty, T, targetIdx);
   }
 
-  /** Landing impact: group splash + shove, then optional ricochet re-lob. */
+  /** Landing impact: a direct locked-target hit for ordinary footballs,
+   *  optional radius only for explicit special lobs, then optional ricochet. */
   private lobImpact(b: Ball): void {
     const r = b.splash;
-    const n = this.query(b.x, b.y, r + 40, this.scratch);
-    for (let i = 0; i < n; i++) {
-      const idx = this.scratch[i];
-      const e = this.enemies[idx];
-      if (!e.active) continue;
-      if (dist2(b.x, b.y, e.x, e.y) > (r + e.radius) * (r + e.radius)) continue;
-      const d = Math.hypot(e.x - b.x, e.y - b.y) || 1;
-      this.damageEnemy(idx, b.dmg, ((e.x - b.x) / d) * 200, ((e.y - b.y) / d) * 200);
+    if (r <= 0) {
+      const target = this.enemies[b.targetIdx];
+      if (target?.active) this.damageEnemy(b.targetIdx, b.dmg, 0, 0);
+    } else {
+      const n = this.query(b.x, b.y, r + 40, this.scratch);
+      for (let i = 0; i < n; i++) {
+        const idx = this.scratch[i];
+        const e = this.enemies[idx];
+        if (!e.active) continue;
+        if (dist2(b.x, b.y, e.x, e.y) > (r + e.radius) * (r + e.radius)) continue;
+        const d = Math.hypot(e.x - b.x, e.y - b.y) || 1;
+        this.damageEnemy(idx, b.dmg, ((e.x - b.x) / d) * 200, ((e.y - b.y) / d) * 200);
+      }
     }
     this.spawnImpact(b.x, b.y, 0, 0, false, 'landing', true);
     this.burst(b.x, b.y, 10, '#ffd166');
-    this.ring(b.x, b.y, r, '#ffd166');
+    this.ring(b.x, b.y, r > 0 ? r : 24, '#ffd166');
     this.events.push({ type: 'lobLand', x: b.x, y: b.y });
     if (b.ricochet > 0) {
       const ti = this.pickAerialTarget(b.x, b.y);
@@ -1235,7 +1560,7 @@ export class Sim {
     const dmg = [0, 11, 13, 16, 18, 22][lvl] * this.damageMult;
     const speed = [0, 430, 450, 470, 500, 535][lvl];
     const turn = [0, 4.2, 4.8, 5.2, 5.8, 6.4][lvl];
-    const chain = lvl >= 3 ? 1 : 0;
+    const chain = lvl >= 5 ? 2 : lvl >= 3 ? 1 : 0;
     let launched = 0;
     for (let i = 0; i < count; i++) {
       const ti = this.pickAerialTarget(this.player.x, this.player.y);
@@ -1294,8 +1619,44 @@ export class Sim {
       const dy = target.y - s.y;
       const d = Math.hypot(dx, dy) || 1;
       this.damageEnemy(targetIdx, s.dmg, (dx / d) * s.knock, (dy / d) * s.knock);
+      if (this.abilityLevel('curveball') >= 5) {
+        // Cyclone Swarm: every impact releases a compact arc burst before the
+        // ball chains onward, so the evolution changes crowd handling too.
+        const arcR = 72;
+        const n = this.query(hitX, hitY, arcR + 36, this.scratch);
+        for (let i = 0; i < n; i++) {
+          const idx = this.scratch[i];
+          const e = this.enemies[idx];
+          if (!e.active || idx === targetIdx || dist2(hitX, hitY, e.x, e.y) > (arcR + e.radius) ** 2) continue;
+          const dd = Math.hypot(e.x - hitX, e.y - hitY) || 1;
+          this.damageEnemy(idx, s.dmg * 0.35, ((e.x - hitX) / dd) * 110, ((e.y - hitY) / dd) * 110);
+        }
+        this.ring(hitX, hitY, arcR, '#47d7ff');
+      }
       this.spawnImpact(hitX, hitY, s.vx, s.vy, false, 'airburst', true);
       this.burst(hitX, hitY, 6, '#47d7ff');
+    }
+    if (s.kind === 'goldenboot' && this.abilityLevel('bootseekers') >= 5) {
+      const echoDmg = s.dmg * 0.48;
+      const echoR = s.splash * 0.82;
+      const echoKnock = s.knock * 0.62;
+      this.deferred.push({
+        t: 0.32,
+        fn: () => {
+          const n = this.query(hitX, hitY, echoR + 40, this.scratch);
+          for (let i = 0; i < n; i++) {
+            const idx = this.scratch[i];
+            const e = this.enemies[idx];
+            if (!e.active || dist2(hitX, hitY, e.x, e.y) > (echoR + e.radius) ** 2) continue;
+            const d = Math.hypot(e.x - hitX, e.y - hitY) || 1;
+            this.damageEnemy(idx, echoDmg, ((e.x - hitX) / d) * echoKnock, ((e.y - hitY) / d) * echoKnock);
+          }
+          this.ring(hitX, hitY, echoR, '#fff1a8');
+          this.spawnImpact(hitX, hitY, 0, 0, true, 'airburst', true);
+          this.burst(hitX, hitY, 10, '#fff1a8');
+          this.events.push({ type: 'seekerHit', kind: 'goldenboot', x: hitX, y: hitY });
+        },
+      });
     }
     this.events.push({ type: 'seekerHit', kind: s.kind, x: hitX, y: hitY });
 
@@ -1374,13 +1735,14 @@ export class Sim {
       const e = this.enemies[idx];
       if (!e.active) continue;
       const d2 = dist2(p.x, p.y, e.x, e.y);
-      const radius = e.airT > 0 ? airR : groundR;
+      const aerial = this.isAerialEnemy(e);
+      const radius = aerial ? airR : groundR;
       if (d2 > (radius + e.radius) * (radius + e.radius)) continue;
       const d = Math.sqrt(d2) || 1;
-      const knock = e.airT > 0 ? 220 : lvl >= 4 ? 430 : 360;
+      const knock = aerial ? 220 : lvl >= 4 ? 430 : 360;
       this.damageEnemy(
         idx,
-        e.airT > 0 ? airDmg : groundDmg,
+        aerial ? airDmg : groundDmg,
         ((e.x - p.x) / d) * knock,
         ((e.y - p.y) / d) * knock,
         { stun: lvl >= 4 ? 0.3 : 0 },
@@ -1389,9 +1751,35 @@ export class Sim {
     this.ring(p.x, p.y, groundR, '#a8ff4d');
     this.spawnImpact(p.x, p.y, 0, -1, false, 'airburst', true);
     this.events.push({ type: 'blast', x: p.x, y: p.y });
+    if (lvl >= 5) {
+      const echoX = p.x;
+      const echoY = p.y;
+      this.deferred.push({
+        t: 0.34,
+        fn: () => {
+          const echoGroundR = groundR * 0.76;
+          const echoAirR = airR * 0.9;
+          const n = this.query(echoX, echoY, echoGroundR + 45, this.scratch);
+          for (let i = 0; i < n; i++) {
+            const idx = this.scratch[i];
+            const e = this.enemies[idx];
+            if (!e.active) continue;
+            const aerial = this.isAerialEnemy(e);
+            const radius = aerial ? echoAirR : echoGroundR;
+            const d2 = dist2(echoX, echoY, e.x, e.y);
+            if (d2 > (radius + e.radius) ** 2) continue;
+            const d = Math.sqrt(d2) || 1;
+            this.damageEnemy(idx, (aerial ? airDmg : groundDmg) * 0.56, ((e.x - echoX) / d) * 300, ((e.y - echoY) / d) * 300, { stun: 0.22 });
+          }
+          this.ring(echoX, echoY, echoGroundR, '#f5ff9b');
+          this.spawnImpact(echoX, echoY, 0, -1, true, 'airburst', true);
+          this.events.push({ type: 'blast', x: echoX, y: echoY });
+        },
+      });
+    }
   }
 
-  private reticle(x: number, y: number, t: number): void {
+  private reticle(x: number, y: number, t: number, targetIdx = -1): void {
     const r = this.alloc(this.reticles);
     if (!r) return;
     r.active = true;
@@ -1399,6 +1787,7 @@ export class Sim {
     r.y = y;
     r.t = t;
     r.max = t;
+    r.targetIdx = targetIdx;
   }
 
   private fireWhistle(): void {
@@ -1418,7 +1807,7 @@ export class Sim {
     for (let i = 0; i < n; i++) {
       const idx = this.scratch[i];
       const e = this.enemies[idx];
-      if (e.airT > 0) continue; // GROUND lane: sweeps harmlessly under airborne mobs
+      if (this.isAerialEnemy(e)) continue; // GROUND lane: sweeps under aerial troops
       const d2 = dist2(x, y, e.x, e.y);
       if (d2 > (r + e.radius) * (r + e.radius)) continue;
       const d = Math.sqrt(d2) || 1;
@@ -1467,7 +1856,11 @@ export class Sim {
       return;
     }
     const p = this.player;
-    this.time += dt;
+    const worldFrozen = this.freezeT > 0;
+    this.freezeT = Math.max(0, this.freezeT - dt);
+    this.magnetT = Math.max(0, this.magnetT - dt);
+    const worldDt = worldFrozen ? 0 : dt;
+    this.time += worldDt;
     for (let i = this.deferred.length - 1; i >= 0; i--) {
       this.deferred[i].t -= dt;
       if (this.deferred[i].t <= 0) {
@@ -1478,12 +1871,15 @@ export class Sim {
 
     /* timers */
     p.iframes = Math.max(0, p.iframes - dt);
+    p.hurtT = Math.max(0, p.hurtT - dt);
+    p.heartFxT = Math.max(0, p.heartFxT - dt);
     p.strikeCd -= dt;
     p.curveballCd -= dt;
     p.bootseekersCd -= dt;
     p.whistleCd -= dt;
     p.pressureCd -= dt;
     p.blastCd -= dt;
+    p.orbitBreakCd = Math.max(0, p.orbitBreakCd - dt);
     p.kickT = Math.max(0, p.kickT - dt);
     for (let i = 0; i < p.dashCds.length; i++) p.dashCds[i] -= dt;
     if (p.pressureQueue > 0) {
@@ -1531,7 +1927,7 @@ export class Sim {
       for (let i = 0; i < n; i++) {
         const idx = this.scratch[i];
         const e = this.enemies[idx];
-        if (e.airT > 0) continue; // GROUND lane: dash sweep passes under airborne mobs
+        if (this.isAerialEnemy(e)) continue; // GROUND lane: dash sweep passes underneath
         if (dist2(p.x, p.y, e.x, e.y) < (e.radius + 42) * (e.radius + 42) && e.dashMark !== p.dashId) {
           e.dashMark = p.dashId;
           const d = Math.hypot(e.x - p.x, e.y - p.y) || 1;
@@ -1621,40 +2017,61 @@ export class Sim {
         for (let i = 0; i < n; i++) {
           const idx = this.scratch[i];
           const e = this.enemies[idx];
-          if (e.orbitCd > 0 || e.airT > 0) continue; // GROUND lane: orbit misses airborne mobs
+          if (e.orbitCd > 0 || this.isAerialEnemy(e)) continue; // GROUND lane: orbit misses aerial troops
           if (dist2(ox, oy, e.x, e.y) < (e.radius + 18) * (e.radius + 18)) {
             e.orbitCd = 0.38;
             const d = Math.hypot(e.x - p.x, e.y - p.y) || 1;
-            this.damageEnemy(idx, dmg, ((e.x - p.x) / d) * knock, ((e.y - p.y) / d) * knock);
+            this.damageEnemy(idx, dmg, ((e.x - p.x) / d) * knock, ((e.y - p.y) / d) * knock, { source: 'orbit' });
+            if (orbitLvl >= 5 && p.orbitBreakCd <= 0) {
+              const ti = this.pickAerialTarget(ox, oy);
+              const ball = ti >= 0 ? this.alloc(this.balls) : null;
+              if (ball && ti >= 0) {
+                const target = this.enemies[ti];
+                this.lob(ball, ox, oy, target.x, target.y, dmg * 1.4, 76, 0, ti);
+                p.orbitBreakCd = 1.25;
+                this.events.push({ type: 'kick' });
+              }
+            }
           }
         }
       }
     }
 
     /* spawning */
-    if (this.time >= this.nextWaveAt) this.spawnWave();
-    this.spawnAcc += dt;
-    const interval = spawnInterval(this.time);
-    if (this.time > 7 && this.spawnAcc >= interval) {
-      this.spawnAcc = 0;
-      const batch = spawnBatch(this.time);
-      const unlocked = Object.values(ENEMIES).filter((d) => d.unlockAt <= this.time);
-      for (let i = 0; i < batch; i++) {
-        const def = weightedPick(this.rng, unlocked);
-        if (!def) break;
-        const pos = this.pickSpawnPos();
-        this.spawnEnemy(def, pos.x, pos.y, false);
+    const pressure = this.threatPressure;
+    if (this.time <= 3.5) {
+      this.spawnBudget = 0;
+    } else {
+      this.spawnBudget = Math.min(MAX_SPAWNS_PER_STEP, this.spawnBudget + spawnRate(this.time, pressure) * worldDt);
+    }
+    const counts = this.directorCounts();
+    let spawnedThisStep = 0;
+    while (this.spawnBudget >= 1 && spawnedThisStep < MAX_SPAWNS_PER_STEP) {
+      const def = this.pickDirectorEnemy(counts);
+      if (!def) {
+        this.spawnBudget = Math.min(1, this.spawnBudget);
+        break;
       }
+      const pos = this.pickSpawnPos();
+      const spawned = this.spawnEnemy(def, pos.x, pos.y, false);
+      if (!spawned) {
+        // The pool is full. Do not release a stored burst when slots reopen.
+        this.spawnBudget = Math.min(1, this.spawnBudget);
+        break;
+      }
+      this.spawnBudget -= 1;
+      spawnedThisStep++;
+      this.noteDirectorSpawn(counts, def);
     }
     // elites
-    this.eliteAcc += dt;
-    if (this.time > 90 && this.eliteAcc > 40) {
+    this.eliteAcc += worldDt;
+    if (this.time >= 55 && this.eliteAcc > eliteInterval(this.time, pressure)) {
       this.eliteAcc = 0;
-      const unlocked = Object.values(ENEMIES).filter((d) => d.unlockAt <= this.time);
-      const def = weightedPick(this.rng, unlocked);
+      const def = this.pickDirectorEnemy(counts);
       if (def) {
         const pos = this.pickSpawnPos();
-        this.spawnEnemy(def, pos.x, pos.y, true);
+        const spawned = this.spawnEnemy(def, pos.x, pos.y, true);
+        if (spawned) this.noteDirectorSpawn(counts, def);
       }
     }
     // bosses: introduced progressively, never two on the pitch at once
@@ -1681,10 +2098,21 @@ export class Sim {
     for (let i = 0; i < this.enemies.length; i++) {
       const e = this.enemies[i];
       if (!e.active) continue;
+      if (worldFrozen) {
+        e.moving = false;
+        continue;
+      }
       const stepX = e.x;
       const stepY = e.y;
       e.flash = Math.max(0, e.flash - dt);
       e.hurtT = Math.max(0, e.hurtT - dt);
+      e.orbitHitT = Math.max(0, e.orbitHitT - dt);
+      e.attackAnimT = Math.max(0, e.attackAnimT - dt);
+      e.barHitT = Math.max(0, e.barHitT - dt);
+      if (e.barHitT <= 0 && e.barHp > e.hp) {
+        e.barHp += (e.hp - e.barHp) * (1 - Math.exp(-dt * 5.5));
+        if (Math.abs(e.barHp - e.hp) < 0.05) e.barHp = e.hp;
+      }
       e.attackCd = Math.max(0, e.attackCd - dt);
       e.orbitCd = Math.max(0, e.orbitCd - dt);
       e.stun = Math.max(0, e.stun - dt);
@@ -1752,21 +2180,50 @@ export class Sim {
         // ---- wind-up: visibly pull back, then strike ----
         e.windup -= dt;
         if (e.windup <= 0) {
-          e.lungeT = 0.14;
-          e.attackCd = e.def.behavior === 'chase' || e.def.behavior === 'wall' ? 0.9 : 1.4;
           if (e.casting === 'bottle') {
             e.casting = '';
+            e.lungeT = 0;
+            e.attackAnimT = 0.32;
+            e.attackCd = 1.4;
             this.throwBottle(e);
-          } else if (e.airT <= 0 && dist2(e.x, e.y, p.x, p.y) < (e.radius + 30) * (e.radius + 30)) {
-            const push = e.def.push ?? 120;
-            this.hurtPlayer(e.damage, (dx / d) * push, (dy / d) * push);
+          } else if (e.casting === 'electric') {
+            e.casting = '';
+            e.lungeT = 0;
+            e.attackAnimT = 0.3;
+            e.attackCd = 1.1;
+            this.fireElectric(e);
+          } else if (e.casting === 'charge') {
+            e.casting = '';
+            e.lungeT = 0.78;
+            e.attackAnimT = 0.78;
+            e.attackCd = 2.2;
+            e.chargeHit = false;
+            this.events.push({ type: 'bullCharge', x: e.x, y: e.y });
+          } else {
+            e.lungeT = 0.14;
+            e.attackAnimT = 0.28;
+            e.attackCd = e.def.behavior === 'chase' || e.def.behavior === 'wall' ? 0.9 : 1.4;
+            if (!this.isAerialEnemy(e) && dist2(e.x, e.y, p.x, p.y) < (e.radius + 30) * (e.radius + 30)) {
+              const push = e.def.push ?? 120;
+              this.hurtPlayer(e.damage, (dx / d) * push, (dy / d) * push);
+            }
+            this.events.push({ type: 'punch' });
           }
-          this.events.push({ type: 'punch' });
         }
       } else if (e.lungeT > 0) {
-        // ---- strike lunge: quick step in ----
-        e.x += (dx / d) * e.speed * 3.2 * dt;
-        e.y += (dy / d) * e.speed * 3.2 * dt;
+        // ---- strike lunge / direction-locked bull charge ----
+        if (e.def.behavior === 'charger') {
+          e.x += e.chargeDx * 520 * dt;
+          e.y += e.chargeDy * 520 * dt;
+          if (!e.chargeHit && dist2(e.x, e.y, p.x, p.y) < (e.radius + 28) ** 2) {
+            e.chargeHit = true;
+            this.hurtPlayer(e.damage, e.chargeDx * (e.def.push ?? 430), e.chargeDy * (e.def.push ?? 430), 0.28);
+            this.spawnImpact(p.x, p.y, e.chargeDx, e.chargeDy, false, 'contact', true);
+          }
+        } else {
+          e.x += (dx / d) * e.speed * 3.2 * dt;
+          e.y += (dy / d) * e.speed * 3.2 * dt;
+        }
       } else {
         // ---- locomotion + behavior specials ----
         const sp = e.speed * e.haste * slowMult;
@@ -1811,8 +2268,9 @@ export class Sim {
           if (beh === 'thumper') {
             e.rangedCd -= dt;
             if (e.rangedCd <= 0 && d < 280) {
-              e.rangedCd = 3.2;
-              e.telegraph = Math.max(e.telegraph, 0.85);
+            e.rangedCd = 3.2;
+            e.telegraph = Math.max(e.telegraph, 0.85);
+            e.attackAnimT = 0.85;
               this.telegraph(e.x, e.y, 210, 0.85, 'shock', e.damage, 0);
             }
           }
@@ -1833,10 +2291,12 @@ export class Sim {
           } else if (beh === 'cone' && e.rangedCd <= 0 && d < 430) {
             e.rangedCd = 3.4;
             e.telegraph = Math.max(e.telegraph, 0.6);
+            e.attackAnimT = 0.6;
             this.telegraph(e.x, e.y, 400, 0.6, 'cone', e.damage, Math.atan2(dy, dx));
           } else if (beh === 'summoner' && e.rangedCd <= 0 && d < 520) {
             e.rangedCd = 6.5;
             e.telegraph = Math.max(e.telegraph, 0.9);
+            e.attackAnimT = 0.9;
             this.telegraph(e.x, e.y, 120, 0.9, 'chant', 0, 0);
           }
         } else if (beh === 'flanker') {
@@ -1850,11 +2310,39 @@ export class Sim {
           if (e.rangedCd <= 0 && d < 300) {
             e.rangedCd = 4.2;
             e.telegraph = Math.max(e.telegraph, 0.7);
+            e.attackAnimT = 0.7;
             this.telegraph(e.x, e.y, 230, 0.7, 'flash', e.damage, 0);
+          }
+        } else if (beh === 'charger') {
+          // Bulls stalk just outside melee range, then lock a readable charge.
+          e.x += ((dx / d) * sp * 0.72 + sx) * dt;
+          e.y += ((dy / d) * sp * 0.72 + sy) * dt;
+          e.rangedCd -= dt;
+          if (e.rangedCd <= 0 && d > 120 && d < 620) {
+            e.rangedCd = 4.6;
+            e.chargeDx = dx / d;
+            e.chargeDy = dy / d;
+            e.casting = 'charge';
+            e.windup = 0.72;
+            e.telegraph = 0.72;
+          }
+        } else if (beh === 'aerial') {
+          // Drones orbit at close-mid range and fire predicted electric darts.
+          const want = 255;
+          const tang = Math.atan2(dy, dx) + Math.PI / 2;
+          const radial = d > want + 45 ? 1 : d < want - 55 ? -0.85 : 0;
+          e.x += ((dx / d) * sp * radial + Math.cos(tang) * sp * 0.52 + sx) * dt;
+          e.y += ((dy / d) * sp * radial + Math.sin(tang) * sp * 0.52 + sy) * dt;
+          e.rangedCd -= dt;
+          if (e.rangedCd <= 0 && d < 470) {
+            e.rangedCd = 2.75;
+            e.casting = 'electric';
+            e.windup = 0.46;
+            e.telegraph = 0.46;
           }
         }
         // every grounded enemy swings when the player is in reach
-        if (e.airT <= 0 && e.attackCd <= 0 && e.casting === '' && dist2(e.x, e.y, p.x, p.y) < (e.radius + 20) * (e.radius + 20)) {
+        if (!this.isAerialEnemy(e) && e.attackCd <= 0 && e.casting === '' && dist2(e.x, e.y, p.x, p.y) < (e.radius + 20) * (e.radius + 20)) {
           e.windup = 0.34; // readable pull-back before the hit lands
         }
       }
@@ -1865,6 +2353,25 @@ export class Sim {
     for (const b of this.balls) {
       if (!b.active) continue;
       b.flightT += dt;
+      let locked: Enemy | undefined = b.targetIdx >= 0 ? this.enemies[b.targetIdx] : undefined;
+      if (b.targetIdx >= 0 && !locked?.active) {
+        const previousTarget = b.targetIdx;
+        const nextTarget = this.pickAerialTarget(b.x, b.y);
+        b.targetIdx = nextTarget;
+        locked = nextTarget >= 0 ? this.enemies[nextTarget] : undefined;
+        for (const rc of this.reticles) {
+          if (rc.active && rc.targetIdx === previousTarget) rc.targetIdx = nextTarget;
+        }
+      }
+      if (locked?.active) {
+        // True target lock: both the projected landing point and horizontal
+        // velocity track the living enemy until touchdown.
+        b.tx = locked.x;
+        b.ty = locked.y;
+        const remaining = Math.max(0.05, b.maxFlightT - b.flightT);
+        b.vx = (b.tx - b.x) / remaining;
+        b.vy = (b.ty - b.y) / remaining;
+      }
       b.x += b.vx * dt;
       b.y += b.vy * dt;
       b.z += b.vz * dt;
@@ -1927,7 +2434,7 @@ export class Sim {
       for (let i = 0; i < n; i++) {
         const idx = this.scratch[i];
         const e = this.enemies[idx];
-        if (!e.active || e.airT > 0 || pr.hitSet.includes(idx)) continue;
+        if (!e.active || this.isAerialEnemy(e) || pr.hitSet.includes(idx)) continue;
         if (dist2(pr.x, pr.y, e.x, e.y) > (pr.r + e.radius) * (pr.r + e.radius)) continue;
         pr.hitSet.push(idx);
         const d = Math.hypot(e.x - pr.x, e.y - pr.y) || 1;
@@ -1939,18 +2446,21 @@ export class Sim {
     /* bottles */
     for (const b of this.bottles) {
       if (!b.active) continue;
+      if (worldFrozen) continue;
       b.life -= dt;
       b.x += b.vx * dt;
       b.y += b.vy * dt;
       if (b.life <= 0) {
         b.active = false;
+        if (b.kind === 'electric') this.burst(b.x, b.y, 5, '#70e7ff');
         continue;
       }
       // guards body-block
       let blocked = false;
       if (this.abilityLevel('guard') >= 4) {
         for (const g of this.guards) {
-          if (dist2(b.x, b.y, g.x, g.y) < 26 * 26) {
+          const interceptR = g.variant === 2 ? 36 : g.variant === 3 ? 24 : 28;
+          if (dist2(b.x, b.y, g.x, g.y) < interceptR * interceptR) {
             blocked = true;
             g.blockT = 0.3;
             g.face = b.x > g.x ? 1 : -1;
@@ -1960,12 +2470,18 @@ export class Sim {
       }
       if (blocked) {
         b.active = false;
-        this.burst(b.x, b.y, 4, '#a7e8bd');
+        this.burst(b.x, b.y, b.kind === 'electric' ? 8 : 4, b.kind === 'electric' ? '#70e7ff' : '#a7e8bd');
         continue;
       }
       if (dist2(b.x, b.y, p.x, p.y) < 20 * 20) {
         b.active = false;
-        this.hurtPlayer(b.dmg);
+        if (b.kind === 'electric') {
+          this.hurtPlayer(b.dmg, 0, 0, 0.48);
+          this.spawnImpact(p.x, p.y, b.vx, b.vy, false, 'airburst', false);
+          this.burst(p.x, p.y, 8, '#70e7ff');
+        } else {
+          this.hurtPlayer(b.dmg);
+        }
       }
     }
 
@@ -1976,6 +2492,10 @@ export class Sim {
       const swingCd = guardLvl >= 5 ? 0.55 : 0.8;
       const knock = guardLvl >= 4 ? 260 : 90;
       this.guards.forEach((g, gi) => {
+        const variantDmg = g.variant === 0 ? 0.9 : g.variant === 2 ? 1.42 : g.variant === 3 ? 0.78 : 1;
+        const variantCd = g.variant === 0 ? 0.82 : g.variant === 2 ? 1.16 : g.variant === 3 ? 0.68 : 1;
+        const variantKnock = g.variant === 0 ? 0.82 : g.variant === 2 ? 1.35 : g.variant === 3 ? 0.72 : 1;
+        const chaseSpeed = g.variant === 0 ? 330 : g.variant === 2 ? 245 : g.variant === 3 ? 360 : 300;
         const stepX = g.x;
         const stepY = g.y;
         g.swingCd = Math.max(0, g.swingCd - dt);
@@ -1996,11 +2516,28 @@ export class Sim {
           tx = e.x;
           ty = e.y;
           const dd = Math.hypot(e.x - g.x, e.y - g.y);
-          if (e.airT <= 0 && dd < e.radius + 24 && g.swingCd <= 0) {
-            g.swingCd = swingCd;
+          if (!this.isAerialEnemy(e) && dd < e.radius + 24 && g.swingCd <= 0) {
+            g.swingCd = swingCd * variantCd;
             g.strikeT = 0.24;
             const d2 = dd || 1;
-            this.damageEnemy(ti, dmg, ((e.x - g.x) / d2) * knock, ((e.y - g.y) / d2) * knock);
+            this.damageEnemy(
+              ti,
+              dmg * variantDmg,
+              ((e.x - g.x) / d2) * knock * variantKnock,
+              ((e.y - g.y) / d2) * knock * variantKnock,
+            );
+            if (guardLvl >= 5) {
+              // Lockdown: the max-level punch cleaves the grounded pack in a
+              // short cone-like radius and briefly interrupts follow-up hits.
+              for (let ci = 0; ci < this.enemies.length; ci++) {
+                const cleave = this.enemies[ci];
+                if (ci === ti || !cleave.active || this.isAerialEnemy(cleave)) continue;
+                if (dist2(e.x, e.y, cleave.x, cleave.y) > (82 + cleave.radius) ** 2) continue;
+                const cd = Math.hypot(cleave.x - g.x, cleave.y - g.y) || 1;
+                this.damageEnemy(ci, dmg * 0.42, ((cleave.x - g.x) / cd) * 180, ((cleave.y - g.y) / cd) * 180, { stun: 0.2 });
+              }
+              this.ring(e.x, e.y, 82, '#7ce7ff');
+            }
             this.events.push({ type: 'punch' });
             g.face = e.x > g.x ? 1 : -1;
           }
@@ -2009,7 +2546,7 @@ export class Sim {
         const dy = ty - g.y;
         const d = Math.hypot(dx, dy);
         if (d > 6) {
-          const sp = Math.min(300, d * 6);
+          const sp = Math.min(chaseSpeed, d * 6);
           g.x += (dx / d) * sp * dt;
           g.y += (dy / d) * sp * dt;
           if (ti < 0) g.face = dx > 0 ? 1 : -1;
@@ -2021,6 +2558,7 @@ export class Sim {
     /* boss telegraphs & zones */
     for (const t of this.telegraphs) {
       if (!t.active) continue;
+      if (worldFrozen) continue;
       t.t -= dt;
       if (t.t <= 0) {
         t.active = false;
@@ -2083,11 +2621,14 @@ export class Sim {
               false,
             );
           }
+        } else if (t.kind === 'summon') {
+          this.summonBossAdds(t.summon, t.x, t.y);
         }
       }
     }
     for (let i = this.flareZones.length - 1; i >= 0; i--) {
       const z = this.flareZones[i];
+      if (worldFrozen) continue;
       z.t -= dt;
       z.tick -= dt;
       if (z.tick <= 0) {
@@ -2097,6 +2638,7 @@ export class Sim {
       if (z.t <= 0) this.flareZones.splice(i, 1);
     }
     for (let i = this.slowZones.length - 1; i >= 0; i--) {
+      if (worldFrozen) continue;
       this.slowZones[i].t -= dt;
       if (this.slowZones[i].t <= 0) this.slowZones.splice(i, 1);
     }
@@ -2111,7 +2653,12 @@ export class Sim {
       pk.vx *= Math.pow(0.01, dt);
       pk.vy *= Math.pow(0.01, dt);
       const d2 = dist2(pk.x, pk.y, p.x, p.y);
-      if (d2 < pr * pr) {
+      if (this.magnetT > 0) {
+        const d = Math.sqrt(d2) || 1;
+        const pull = 1650 + Math.min(650, d * 0.7);
+        pk.vx += ((p.x - pk.x) / d) * pull * dt * 4;
+        pk.vy += ((p.y - pk.y) / d) * pull * dt * 4;
+      } else if (d2 < pr * pr) {
         const d = Math.sqrt(d2) || 1;
         const pull = pk.kind === 'coin' || pk.kind === 'trophy' ? 500 : 420;
         pk.vx += ((p.x - pk.x) / d) * pull * dt * 4;
@@ -2134,11 +2681,18 @@ export class Sim {
           this.burst(p.x, p.y, 10, '#37d67a');
         } else if (pk.kind === 'trophy') {
           this.coins += pk.value;
-          this.events.push({ type: 'trophy', coins: pk.value, tier: pk.tier });
+          this.pendingBossAbilities += 2;
+          this.events.push({ type: 'trophy', coins: pk.value, tier: pk.tier, abilityPicks: 2 });
           this.confetti(p.x, p.y, 28 + pk.tier * 8);
-        } else {
+        } else if (pk.kind === 'coin') {
           this.coins += pk.value;
           this.events.push({ type: 'coin' });
+        } else if (pk.kind === 'magnet') {
+          this.activateMagnet();
+        } else if (pk.kind === 'bomb') {
+          this.activateBomb();
+        } else if (pk.kind === 'freeze') {
+          this.activateFreeze();
         }
       }
     }
@@ -2154,25 +2708,31 @@ export class Sim {
   }
 
   /** Shared boss melee: wind-up swing when the player is in reach. */
-  private bossMelee(e: Enemy, dx: number, dy: number, d: number, dt: number): void {
+  private bossMelee(e: Enemy, nx: number, ny: number, d: number, dt: number): void {
     const p = this.player;
+    const major = !!e.boss && BOSSES[e.boss].tier === 'major';
     if (e.windup > 0) {
       e.windup -= dt;
       if (e.windup <= 0) {
         e.lungeT = 0.16;
-        e.attackCd = 1.1;
+        e.attackCd = major ? 0.78 : 1.05;
         if (e.airT <= 0 && dist2(e.x, e.y, p.x, p.y) < (e.radius + 34) * (e.radius + 34)) {
-          this.hurtPlayer(e.damage, (dx / d) * 260, (dy / d) * 260);
+          const knock = major ? 360 : 260;
+          this.hurtPlayer(e.damage, nx * knock, ny * knock);
         }
         this.events.push({ type: 'punch' });
       }
     } else if (e.lungeT > 0) {
       e.lungeT -= dt;
-      e.x += (dx / d) * e.speed * 2.8 * dt;
-      e.y += (dy / d) * e.speed * 2.8 * dt;
+      e.x += nx * e.speed * (major ? 3.35 : 2.8) * dt;
+      e.y += ny * e.speed * (major ? 3.35 : 2.8) * dt;
     } else if (e.attackCd <= 0 && d < e.radius + 26) {
-      e.windup = 0.42;
+      e.windup = major ? 0.32 : 0.42;
     }
+  }
+
+  private bossCooldown(base: number): number {
+    return base / (1 + difficultyProgress(this.time) * 0.18 + this.threatPressure * 0.22);
   }
 
   private updateOfficial(e: Enemy, nx: number, ny: number, dt: number): void {
@@ -2185,21 +2745,20 @@ export class Sim {
     e.bossCd2 -= dt;
     e.rangedCd -= dt;
     if (e.bossCd <= 0) {
-      e.bossCd = 6;
+      e.bossCd = this.bossCooldown(5);
       // whistle shockwave, telegraphed around the official
-      e.telegraph = Math.max(e.telegraph, 0.9);
-      this.telegraph(e.x, e.y, 230, 0.9, 'shock', 18, 0);
+      e.telegraph = Math.max(e.telegraph, 0.8);
+      this.telegraph(e.x, e.y, 255, 0.8, 'shock', 22, 0);
     }
     if (e.bossCd2 <= 0) {
-      e.bossCd2 = 9;
-      // book the crowd: summon 4 invaders
-      for (let i = 0; i < 4; i++) {
-        const a = this.rng.range(0, TAU);
-        this.spawnEnemy(ENEMIES.invader, clamp(e.x + Math.cos(a) * 120, 40, ARENA_W - 40), clamp(e.y + Math.sin(a) * 120, 40, ARENA_H - 40), false);
-      }
+      e.bossCd2 = this.bossCooldown(7.5);
+      // Book the crowd: the seal gives the player 0.9s before the formation
+      // and its charger materialize around the official.
+      e.telegraph = Math.max(e.telegraph, 0.9);
+      this.telegraph(e.x, e.y, 215, 0.9, 'summon', 0, 0, 2);
     }
     if (e.rangedCd <= 0) {
-      e.rangedCd = 12;
+      e.rangedCd = this.bossCooldown(9);
       // red card: telegraphed marker on the player, brief slow on verdict
       e.telegraph = Math.max(e.telegraph, 1.0);
       this.telegraph(this.player.x, this.player.y, 150, 1.0, 'flash', 10, 0);
@@ -2214,23 +2773,29 @@ export class Sim {
     this.bossMelee(e, nx, ny, Math.hypot(this.player.x - e.x, this.player.y - e.y) || 1, dt);
     e.bossCd -= dt;
     e.bossCd2 -= dt;
+    e.rangedCd -= dt;
     if (e.bossCd <= 0) {
-      e.bossCd = 5.5;
-      // flare barrage: 3 flares aimed around player
-      e.telegraph = Math.max(e.telegraph, 1.1);
+      e.bossCd = this.bossCooldown(4.4);
+      // Final-boss crossfire: five readable landings plus an aerial escort.
+      e.telegraph = Math.max(e.telegraph, 0.95);
       const p = this.player;
-      for (let i = 0; i < 3; i++) {
-        const tx = clamp(p.x + this.rng.range(-140, 140), 60, ARENA_W - 60);
-        const ty = clamp(p.y + this.rng.range(-140, 140), 60, ARENA_H - 60);
-        this.telegraph(tx, ty, 90, 1.1 + i * 0.25, 'flare');
+      for (let i = 0; i < 5; i++) {
+        const tx = clamp(p.x + this.rng.range(-190, 190), 60, ARENA_W - 60);
+        const ty = clamp(p.y + this.rng.range(-190, 190), 60, ARENA_H - 60);
+        this.telegraph(tx, ty, 96, 0.95 + i * 0.18, 'flare');
       }
     }
     if (e.bossCd2 <= 0) {
-      e.bossCd2 = 8;
+      e.bossCd2 = this.bossCooldown(6.8);
       // charge: burst of speed via knockback-like impulse toward player
-      e.kx += nx * 700;
-      e.ky += ny * 700;
+      e.kx += nx * 880;
+      e.ky += ny * 880;
       this.events.push({ type: 'dash' });
+    }
+    if (e.rangedCd <= 0) {
+      e.rangedCd = this.bossCooldown(8.6);
+      e.telegraph = Math.max(e.telegraph, 0.82);
+      this.telegraph(e.x, e.y, 205, 0.82, 'summon', 0, 0, 3);
     }
   }
 
@@ -2244,23 +2809,18 @@ export class Sim {
     e.bossCd2 -= dt;
     e.rangedCd -= dt;
     if (e.bossCd <= 0) {
-      e.bossCd = 3.4;
+      e.bossCd = this.bossCooldown(3.4);
       // drum shockwave, telegraphed around the drummer
       e.telegraph = Math.max(e.telegraph, 1.0);
       this.telegraph(e.x, e.y, 225, 1.0, 'shock', 16, 0);
     }
     if (e.bossCd2 <= 0) {
-      e.bossCd2 = 8.5;
-      // rally the drumline: 2 invaders + 1 sprinter join in
-      for (let i = 0; i < 2; i++) {
-        const a = this.rng.range(0, TAU);
-        this.spawnEnemy(ENEMIES.invader, clamp(e.x + Math.cos(a) * 130, 40, ARENA_W - 40), clamp(e.y + Math.sin(a) * 130, 40, ARENA_H - 40), false);
-      }
-      const a = this.rng.range(0, TAU);
-      this.spawnEnemy(ENEMIES.sprinter, clamp(e.x + Math.cos(a) * 160, 40, ARENA_W - 40), clamp(e.y + Math.sin(a) * 160, 40, ARENA_H - 40), false);
+      e.bossCd2 = this.bossCooldown(8.5);
+      e.telegraph = Math.max(e.telegraph, 0.82);
+      this.telegraph(e.x, e.y, 185, 0.82, 'summon', 0, 0, 1);
     }
     if (e.rangedCd <= 0) {
-      e.rangedCd = 11;
+      e.rangedCd = this.bossCooldown(11);
       // beat surge: every nearby fan charges faster for 2s
       for (const o of this.enemies) {
         if (o.active && !o.boss && dist2(e.x, e.y, o.x, o.y) < 520 * 520) o.boostT = 2;
@@ -2301,6 +2861,11 @@ export class Sim {
     }
     for (const rc of this.reticles) {
       if (!rc.active) continue;
+      const target = this.enemies[rc.targetIdx];
+      if (rc.targetIdx >= 0 && target?.active) {
+        rc.x = target.x;
+        rc.y = target.y;
+      }
       rc.t -= dt;
       if (rc.t <= 0) rc.active = false;
     }
@@ -2322,8 +2887,29 @@ export class Sim {
     this.spawnEnemy(ENEMIES[id], x, y, elite);
   }
 
+  /** Debug/testing: stage a real boss without skipping the simulation clock. */
+  debugSpawnBoss(id: BossId): void {
+    this.spawnBoss(id);
+  }
+
+  /** Debug/testing: keep staged guards animated without deleting the lineup. */
+  debugSetGuardDamageMultiplier(value: number): void {
+    this.guardDmgMult = Math.max(0, value);
+  }
+
   /** Debug/testing: grant XP through the real level-up path. */
   debugGiveXp(n: number): void {
     this.gainXp(n);
+  }
+
+  /** Deterministic browser/e2e damage hook that still exercises real feedback. */
+  debugHurt(n: number): void {
+    this.player.iframes = 0;
+    this.hurtPlayer(n, 180, 0);
+  }
+
+  /** Debug/testing: stage any real pickup without bypassing collection logic. */
+  debugDropPickup(kind: Pickup['kind'], x: number, y: number): void {
+    this.spawnPickup(kind, x, y, 1, 1, 0);
   }
 }

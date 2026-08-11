@@ -21,6 +21,7 @@ const FRAMES = 4;
 export interface Atlas {
   canvas: HTMLCanvasElement;
   flash: HTMLCanvasElement; // white silhouette for hit feedback
+  frost: HTMLCanvasElement; // pose-fitted frozen material, precomputed per atlas
   fw: number;
   fh: number;
   frames: number;
@@ -35,6 +36,86 @@ function makeCanvas(w: number, h: number): HTMLCanvasElement {
   c.width = w;
   c.height = h;
   return c;
+}
+
+/** Build the frozen state from the actual pixels of every pose. The material
+ * is clipped to each frame's silhouette, so a bull, drone and human never
+ * share the same generic ice shell. This is generated once when an atlas is
+ * loaded; dense freeze moments add only one drawImage per enemy. */
+function buildFrostAtlas(source: HTMLCanvasElement, fw: number, fh: number, frames: number): HTMLCanvasElement {
+  const frost = makeCanvas(source.width, source.height);
+  const out = frost.getContext('2d')!;
+
+  for (let frame = 0; frame < frames; frame++) {
+    const cell = makeCanvas(fw, fh);
+    const ctx = cell.getContext('2d')!;
+    ctx.drawImage(source, frame * fw, 0, fw, fh, 0, 0, fw, fh);
+
+    const pixels = ctx.getImageData(0, 0, fw, fh).data;
+    let left = fw;
+    let top = fh;
+    let right = 0;
+    let bottom = 0;
+    for (let y = 0; y < fh; y++) {
+      for (let x = 0; x < fw; x++) {
+        if (pixels[(y * fw + x) * 4 + 3] <= 12) continue;
+        left = Math.min(left, x);
+        right = Math.max(right, x);
+        top = Math.min(top, y);
+        bottom = Math.max(bottom, y);
+      }
+    }
+    if (right <= left || bottom <= top) continue;
+
+    ctx.globalCompositeOperation = 'source-in';
+    const ice = ctx.createLinearGradient(left, top, right, bottom);
+    ice.addColorStop(0, 'rgba(245,255,255,0.92)');
+    ice.addColorStop(0.42, 'rgba(169,239,255,0.76)');
+    ice.addColorStop(1, 'rgba(77,174,225,0.84)');
+    ctx.fillStyle = ice;
+    ctx.fillRect(0, 0, fw, fh);
+
+    // Branching crystals are drawn source-atop, which automatically fits
+    // every line to this exact pose rather than spilling into transparent air.
+    ctx.globalCompositeOperation = 'source-atop';
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    const w = right - left;
+    const h = bottom - top;
+    const roots = [
+      [left + w * 0.18, bottom - h * 0.08, left + w * 0.48, top + h * 0.43, left + w * 0.72, top + h * 0.18],
+      [right - w * 0.12, bottom - h * 0.2, left + w * 0.58, top + h * 0.58, left + w * 0.36, top + h * 0.24],
+    ];
+    for (let branch = 0; branch < roots.length; branch++) {
+      const [x0, y0, x1, y1, x2, y2] = roots[branch];
+      ctx.strokeStyle = branch === 0 ? 'rgba(247,255,255,1)' : 'rgba(21,177,231,1)';
+      ctx.lineWidth = Math.max(2, fw / 48);
+      ctx.beginPath();
+      ctx.moveTo(x0, y0);
+      ctx.lineTo(x1, y1);
+      ctx.lineTo(x2, y2);
+      ctx.stroke();
+      const mx = (x0 + x1) / 2;
+      const my = (y0 + y1) / 2;
+      ctx.beginPath();
+      ctx.moveTo(mx, my);
+      ctx.lineTo(mx + (branch ? -1 : 1) * w * 0.17, my - h * 0.1);
+      ctx.moveTo(x1, y1);
+      ctx.lineTo(x1 + (branch ? 1 : -1) * w * 0.14, y1 - h * 0.13);
+      ctx.stroke();
+    }
+    ctx.fillStyle = 'rgba(247,255,255,0.9)';
+    for (let crystal = 0; crystal < 5; crystal++) {
+      const cx = left + w * (0.18 + crystal * 0.155);
+      const cy = top + h * (0.2 + ((crystal * 3 + frame) % 5) * 0.14);
+      ctx.beginPath();
+      ctx.arc(cx, cy, Math.max(1, fw / 92), 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    out.drawImage(cell, frame * fw, 0);
+  }
+  return frost;
 }
 
 function buildAtlas(key: string, paint: (ctx: CanvasRenderingContext2D, frame: number) => void): Atlas {
@@ -54,7 +135,8 @@ function buildAtlas(key: string, paint: (ctx: CanvasRenderingContext2D, frame: n
   fctx.globalCompositeOperation = 'source-in';
   fctx.fillStyle = '#ffffff';
   fctx.fillRect(0, 0, flash.width, flash.height);
-  const atlas = { canvas, flash, fw: FW, fh: FH, frames: FRAMES, feetY: FH - 7, flippable: true };
+  const frost = buildFrostAtlas(canvas, FW, FH, FRAMES);
+  const atlas = { canvas, flash, frost, fw: FW, fh: FH, frames: FRAMES, feetY: FH - 7, flippable: true };
   cache.set(key, atlas);
   return atlas;
 }
@@ -70,8 +152,9 @@ const stripCache = new Map<string, Atlas | null>(); // null = unavailable -> pro
 const stripPending = new Map<string, Promise<Atlas | null>>();
 
 /**
- * Loads a generated 1x4 run-cycle strip (1024x320, RGBA) into an Atlas with
- * a white flash variant. `tint` optionally recolors the torso zone (skins).
+ * Loads a generated strip (4 semantic frames or a 6-frame locomotion cycle)
+ * into an Atlas with a white flash variant. `tint` optionally recolors the
+ * torso zone (skins).
  * Returns null when the file is missing/unreadable so callers fall back to
  * the procedural atlas.
  */
@@ -84,12 +167,13 @@ export function loadStripAtlas(id: string, url: string, tint?: string): Promise<
   const p = new Promise<Atlas | null>((resolve) => {
     const img = new Image();
     img.onload = () => {
-      if (img.width !== STRIP_FW * 4 || img.height !== STRIP_FH) {
+      const frameCount = img.width / STRIP_FW;
+      if (img.height !== STRIP_FH || !Number.isInteger(frameCount) || frameCount < 4 || frameCount > 8) {
         stripCache.set(key, null);
         resolve(null);
         return;
       }
-      const canvas = makeCanvas(STRIP_FW * 4, STRIP_FH);
+      const canvas = makeCanvas(img.width, STRIP_FH);
       const ctx = canvas.getContext('2d')!;
       ctx.drawImage(img, 0, 0);
       if (tint) {
@@ -97,19 +181,20 @@ export function loadStripAtlas(id: string, url: string, tint?: string): Promise<
         ctx.globalCompositeOperation = 'hue';
         ctx.globalAlpha = 0.92;
         ctx.fillStyle = tint;
-        for (let f = 0; f < 4; f++) ctx.fillRect(f * STRIP_FW + 62, 96, 132, 96);
+        for (let f = 0; f < frameCount; f++) ctx.fillRect(f * STRIP_FW + 62, 96, 132, 96);
         ctx.globalAlpha = 1;
         ctx.globalCompositeOperation = 'source-over';
       }
-      const flash = makeCanvas(STRIP_FW * 4, STRIP_FH);
+      const flash = makeCanvas(img.width, STRIP_FH);
       const fctx = flash.getContext('2d')!;
       fctx.drawImage(canvas, 0, 0);
       fctx.globalCompositeOperation = 'source-in';
       fctx.fillStyle = '#ffffff';
       fctx.fillRect(0, 0, flash.width, flash.height);
+      const frost = buildFrostAtlas(canvas, STRIP_FW, STRIP_FH, frameCount);
       // front-facing strips with printed shirt numbers are never mirrored:
       // a flipped "19" reads garbled. Direction feel comes from the run cycle.
-      const atlas: Atlas = { canvas, flash, fw: STRIP_FW, fh: STRIP_FH, frames: 4, feetY: STRIP_FEET, flippable: false };
+      const atlas: Atlas = { canvas, flash, frost, fw: STRIP_FW, fh: STRIP_FH, frames: frameCount, feetY: STRIP_FEET, flippable: false };
       stripCache.set(key, atlas);
       resolve(atlas);
     };
@@ -132,6 +217,7 @@ export function getStripAtlas(id: string, tint?: string): Atlas | null {
 export function primePlayerStrips(playerIds: string[]): void {
   for (const id of playerIds) {
     void loadStripAtlas(id, `art/players/${id}.png`);
+    void loadStripAtlas(`${id}-run`, `art/players/${id}-run.png`);
     void loadStripAtlas(`${id}-idle`, `art/players/${id}-idle.png`);
     void loadStripAtlas(`${id}-kick`, `art/players/${id}-kick.png`);
   }
@@ -867,6 +953,12 @@ export function enemyAtlas(id: Exclude<EnemyId, 'official' | 'captain' | 'drumbo
         break;
       case 'chant':
         drawFigure(ctx, { skin: '#e8b88a', hair: '#3c2c1e', hairStyle: 'cap', capColor: '#c8102e', shirt: '#c8102e', shorts: '#23202a', socks: '#23202a', trim: '#f5f7fa', scarf: '#e8e0d0', megaphone: '#f5f7fa' }, f);
+        break;
+      case 'bull':
+        drawFigure(ctx, { skin: '#4a3b36', hair: '#171315', hairStyle: 'mane', shirt: '#3a3030', shorts: '#261f21', socks: '#261f21', trim: '#d64535', bulk: 1.65 }, f);
+        break;
+      case 'drone':
+        drawFigure(ctx, { skin: '#55758a', hair: '#172635', hairStyle: 'hood', shirt: '#172635', shorts: '#172635', socks: '#172635', trim: '#53dcff', sunglasses: true, bulk: 0.72 }, f);
         break;
     }
   });

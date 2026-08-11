@@ -15,7 +15,7 @@ function step(sim: Sim, frames: number, ax = 0, ay = 0): void {
   for (let i = 0; i < frames; i++) sim.update(1 / 60, ax, ay);
 }
 
-/** Remove the constructor's opening wave so staged enemies are the only ones. */
+/** Remove ambient spawns so staged enemies are the only ones. */
 function clearField(sim: Sim): void {
   sim.enemies.forEach((e) => (e.active = false));
 }
@@ -167,6 +167,25 @@ describe('attack lanes', () => {
     expect(sim.impacts.some((impact) => impact.active && impact.kind === 'airburst')).toBe(true);
   });
 
+  it('permanent aerial drones ignore ground rings but take hybrid close-blast damage', () => {
+    const sim = makeSim(3);
+    clearField(sim);
+    sim.player.abilities = { pressure: 1 };
+    const pos = far(sim, 92);
+    sim.debugSpawn('drone', pos.x, pos.y);
+    const drone = sim.enemies.find((e) => e.active)!;
+    drone.speed = 0;
+    drone.hp = drone.maxHp = 500;
+    sim.player.pressureCd = 0;
+    step(sim, 45);
+    expect(drone.hp).toBe(500);
+
+    sim.player.abilities = { blast: 1 };
+    sim.player.blastCd = 0;
+    step(sim, 1);
+    expect(drone.hp).toBeLessThan(500);
+  });
+
   it('AERIAL lobs connect with airborne enemies (no permanent immunities)', () => {
     const sim = makeSim(0); // Messi starts with strike
     clearField(sim);
@@ -196,9 +215,10 @@ describe('attack lanes', () => {
     expect(e.airT).toBe(0);
   });
 
-  it('aerial lobs land a group splash (both nearby enemies take damage)', () => {
-    const sim = makeSim(0);
+  it('ordinary Precision Strike footballs damage only their locked target', () => {
+    const sim = makeSim(2);
     clearField(sim);
+    sim.player.abilities = { strike: 1 };
     sim.debugSpawn('lobber', far(sim, 360).x, sim.player.y);
     sim.debugSpawn('lobber', far(sim, 400).x, sim.player.y + 40);
     const pair = sim.enemies.filter((e) => e.active);
@@ -209,8 +229,8 @@ describe('attack lanes', () => {
     }
     sim.player.strikeCd = 0;
     step(sim, 100);
-    // at least one landing splashed both members of the pair
+    // One ball lands between a tight pair, but the untargeted neighbour is safe.
     const hurt = pair.filter((e) => e.hp < 400).length;
-    expect(hurt).toBeGreaterThan(0);
+    expect(hurt).toBe(1);
   });
 });

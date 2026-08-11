@@ -1,5 +1,5 @@
 /**
- * All game data: players, abilities, enemies, waves, meta-progression, skins.
+ * All game data: players, abilities, enemies, continuous pressure, meta-progression, skins.
  * Numbers are tuned for a 10-minute run (match clock maps 600s -> 90').
  */
 
@@ -28,9 +28,11 @@ export type AbilityId =
   | 'strike' | 'curveball' | 'bootseekers'
   | 'orbit' | 'whistle' | 'dash' | 'guard' | 'pressure' | 'blast';
 
-/** The pace pass deliberately gives the player a small reaction advantage. */
-export const PLAYER_PACE_MULT = 1.3;
-export const ENEMY_PACE_MULT = 1.25;
+/** Permanent base pace: responsive enough to thread late-game gaps while
+ *  enemies retain pressure through density, charges and ranged attacks. */
+export const PLAYER_PACE_MULT = 1.6;
+export const ENEMY_PACE_MULT = 1.42;
+export const FREEZE_DURATION = 5.5;
 
 /** Attack-lane semantics: every offensive ability plays differently by lane. */
 export type Lane = 'ground' | 'aerial' | 'hybrid';
@@ -68,11 +70,11 @@ export const ABILITIES: Record<AbilityId, AbilityDef> = {
     delivery: 'lob',
     force: 'none',
     levels: [
-      { desc: 'AERIAL · Lob 1 ball at a distant threat (ranged first). 14 damage splash on landing.' },
+      { desc: 'AERIAL · Lob 1 ball at a distant threat (ranged first). 14 direct damage on impact.' },
       { desc: '+1 ball (2 total). Volleys spread across living targets.' },
       { desc: '20 damage, faster kicking.' },
-      { desc: '+1 ball (3 total), wider landing splash.' },
-      { desc: '4 balls, 28 damage, balls ricochet on to a second target.' },
+      { desc: '+1 ball (3 total), tighter target distribution.' },
+      { desc: 'MAX · Hat-Trick Relay: 4 balls, 28 damage, every landing ricochets to a second target.' },
     ],
   },
   curveball: {
@@ -90,7 +92,7 @@ export const ABILITIES: Record<AbilityId, AbilityDef> = {
       { desc: '4 curveballs, 13 damage, tighter turns and smarter target spread.' },
       { desc: '16 damage; each ball chains once into another living threat.' },
       { desc: '5 faster curveballs, 18 damage, every 2.7s.' },
-      { desc: 'Golden curve: 7 balls, 22 damage, one chain each, every 2.35s.' },
+      { desc: 'MAX · Cyclone Swarm: 7 balls, 22 damage, two chains each and a damaging arc-burst on every hit.' },
     ],
   },
   bootseekers: {
@@ -108,7 +110,7 @@ export const ABILITIES: Record<AbilityId, AbilityDef> = {
       { desc: 'Launch 2 boots. Splash grows and secondary targets take 55% damage.' },
       { desc: '38 damage, wider blast, stronger knockback and quicker tracking.' },
       { desc: 'Launch 3 boots every 3.6s; 42 damage and heavy back-line disruption.' },
-      { desc: 'Finals volley: 4 boots, 55 damage, huge airbursts every 3.1s.' },
+      { desc: 'MAX · Finals Volley: 4 boots, 55 damage; every impact triggers a delayed golden aftershock.' },
     ],
   },
   orbit: {
@@ -126,7 +128,7 @@ export const ABILITIES: Record<AbilityId, AbilityDef> = {
       { desc: '+1 orbiting ball (3 total).' },
       { desc: 'Wider orbit, 14 damage.' },
       { desc: '+1 orbiting ball (4 total), faster spin.' },
-      { desc: '5 balls, huge orbit, 20 damage, hits knock enemies back.' },
+      { desc: 'MAX · Breakaway Orbit: 5 balls, huge knockback; a contact ball periodically launches as an aerial counter.' },
     ],
   },
   whistle: {
@@ -144,7 +146,7 @@ export const ABILITIES: Record<AbilityId, AbilityDef> = {
       { desc: 'Bigger shockwave radius.' },
       { desc: '22 damage, blows every 3.0s.' },
       { desc: 'Huge radius, heavy knockback, brief stun.' },
-      { desc: 'Every 2.2s: double pulse, 32 damage.' },
+      { desc: 'MAX · Echo Whistle: every 2.2s a 32-damage blast is followed by a second stunning pulse.' },
     ],
   },
   dash: {
@@ -162,7 +164,7 @@ export const ABILITIES: Record<AbilityId, AbilityDef> = {
       { desc: '30 damage, longer dash.' },
       { desc: 'Every 4s.' },
       { desc: 'Two dash charges.' },
-      { desc: 'Every 3s, 45 damage, dash leaves a slowing nutmeg trail.' },
+      { desc: 'MAX · Phantom Run: every 3s, 45 damage, dash leaves a persistent slowing nutmeg trail.' },
     ],
   },
   guard: {
@@ -180,7 +182,7 @@ export const ABILITIES: Record<AbilityId, AbilityDef> = {
       { desc: 'Bodyguard hits harder: 18 damage.' },
       { desc: '+1 bodyguard (2 total).' },
       { desc: 'Guards knock enemies back and body-block bottles.' },
-      { desc: '+1 bodyguard (3 total), 30 damage, faster swings.' },
+      { desc: 'MAX · Lockdown Unit: 4 specialist guards, 30 damage, faster swings and every tackle cleaves nearby ground threats.' },
     ],
   },
   pressure: {
@@ -198,7 +200,7 @@ export const ABILITIES: Record<AbilityId, AbilityDef> = {
       { desc: '18 damage, wider ring.' },
       { desc: 'Two staggered pulses per cast.' },
       { desc: '24 damage, huge ring, heavier shove.' },
-      { desc: 'Vortex: drags the crowd in, then detonates a 26-damage triple pulse.' },
+      { desc: 'MAX · Terrace Vortex: drags the crowd inward, then detonates a 26-damage triple pulse.' },
     ],
   },
   blast: {
@@ -216,7 +218,7 @@ export const ABILITIES: Record<AbilityId, AbilityDef> = {
       { desc: 'Wider layers. Ground 24 damage, airburst 18.' },
       { desc: 'Airburst expands and hits for 25; ground boom hits for 27.' },
       { desc: 'Every 3.8s: 35 ground damage, 30 air damage, heavy shove.' },
-      { desc: 'Perfect touch: huge 46-damage ground blast and 42-damage overhead detonation every 3.2s.' },
+      { desc: 'MAX · Perfect Touch: huge dual-layer blast followed by a delayed second overhead-and-ground detonation.' },
     ],
   },
 };
@@ -302,7 +304,7 @@ export const PLAYERS: PlayerDef[] = [
 
 export type EnemyId =
   | 'invader' | 'sprinter' | 'lobber' | 'flare' | 'flag' | 'foam' | 'drummer'
-  | 'vuvuzela' | 'steward' | 'mascot' | 'banner' | 'paparazzo' | 'chant'
+  | 'vuvuzela' | 'steward' | 'mascot' | 'banner' | 'paparazzo' | 'chant' | 'bull' | 'drone'
   | 'official' | 'captain' | 'drumboss';
 
 export type EnemyBehavior =
@@ -314,7 +316,9 @@ export type EnemyBehavior =
   | 'cone' // keeps distance, vuvuzela blast shoves the player back
   | 'wall' // slow moving barricade, body-blocks lanes
   | 'flanker' // fast circler with a telegraphed blinding flash
-  | 'summoner'; // chant that rallies fresh invaders onto the pitch
+  | 'summoner' // chant that rallies fresh invaders onto the pitch
+  | 'charger' // telegraphed, direction-locked bull charge
+  | 'aerial'; // hovering ranged troop; ground lanes pass underneath
 
 export interface EnemyDef {
   id: EnemyId;
@@ -388,12 +392,22 @@ export const ENEMIES: Record<Exclude<EnemyId, 'official' | 'captain' | 'drumboss
     id: 'chant', name: 'Chant Leader', hp: 70, speed: 48, damage: 10, xp: 7,
     radius: 17, unlockAt: 460, weight: 14, coinChance: 0.4, behavior: 'summoner', scale: 1.05,
   },
+  bull: {
+    id: 'bull', name: 'Terrace Bull', hp: 190, speed: 62, damage: 24, xp: 11,
+    radius: 28, unlockAt: 210, weight: 12, coinChance: 0.58, behavior: 'charger', scale: 1.48, push: 430,
+  },
+  drone: {
+    id: 'drone', name: 'Shock Drone', hp: 72, speed: 72, damage: 11, xp: 8,
+    radius: 20, unlockAt: 145, weight: 16, coinChance: 0.42, behavior: 'aerial', scale: 1.12,
+  },
 };
 
 export type BossId = 'drumboss' | 'official' | 'captain';
+export type BossTier = 'minor' | 'major';
 
 export interface BossDef {
   id: BossId;
+  tier: BossTier;
   name: string;
   title: string;
   hp: number;
@@ -407,16 +421,16 @@ export interface BossDef {
 
 export const BOSSES: Record<BossId, BossDef> = {
   drumboss: {
-    id: 'drumboss', name: 'The Riot Drummer', title: 'FIRST-QUARTER BOSS', hp: 900, speed: 55,
-    damage: 20, xp: 40, radius: 28, coins: 60, scale: 1.55,
+    id: 'drumboss', tier: 'minor', name: 'The Riot Drummer', title: 'MINOR BOSS · 4:00', hp: 2200, speed: 57,
+    damage: 26, xp: 80, radius: 38, coins: 120, scale: 2.08,
   },
   official: {
-    id: 'official', name: 'The Crooked Official', title: 'HALF-TIME BOSS', hp: 1400, speed: 62,
-    damage: 22, xp: 60, radius: 26, coins: 80, scale: 1.5,
+    id: 'official', tier: 'major', name: 'The Crooked Official', title: 'MINIBOSS · 7:00', hp: 4800, speed: 64,
+    damage: 31, xp: 135, radius: 48, coins: 220, scale: 2.5,
   },
   captain: {
-    id: 'captain', name: 'The Ultra Captain', title: 'FINAL BOSS', hp: 3200, speed: 70,
-    damage: 28, xp: 150, radius: 30, coins: 200, scale: 1.7,
+    id: 'captain', tier: 'major', name: 'The Ultra Captain', title: 'MAJOR BOSS · 9:00', hp: 6200, speed: 72,
+    damage: 40, xp: 240, radius: 58, coins: 420, scale: 3,
   },
 };
 
@@ -425,26 +439,134 @@ export const BOSSES: Record<BossId, BossDef> = {
 /* ------------------------------------------------------------------ */
 
 export const RUN_LENGTH = 600; // seconds; maps to 90' on the match clock
-export const BOSS0_AT = 150;
-export const BOSS1_AT = 300;
+export const BOSS0_AT = 240;
+export const BOSS1_AT = 420;
 export const BOSS2_AT = 540;
 
-/** Enemy hp multiplier over run time (seconds). */
-export function hpScale(t: number): number {
-  const m = t / 60;
-  return 1 + m * 0.27 + m * m * 0.02;
+export interface CurvePoint {
+  second: number;
+  value: number;
 }
 
-/** Spawn interval seconds, shrinking over the run. */
-export function spawnInterval(t: number): number {
-  const u = Math.min(1, t / RUN_LENGTH);
-  return 1.25 - u * 0.87; // 1.25s -> 0.38s
+/** Browser-safe version of the reference director. The supplied checkpoints
+ *  are exact, including the inferred 30/s full-time value. Entity pools and
+ *  per-step budgets remain the safety valve rather than flattening the curve. */
+export const SPAWN_RATE_POINTS: readonly CurvePoint[] = [
+  { second: 0, value: 0.6 },
+  { second: 120, value: 1.9 },
+  { second: 300, value: 6.5 },
+  { second: 450, value: 14 },
+  { second: 600, value: 30 },
+];
+
+export const HP_SCALE_POINTS: readonly CurvePoint[] = [
+  { second: 0, value: 0.82 },
+  { second: 120, value: 0.95 },
+  { second: 300, value: 3.2 },
+  { second: 450, value: 5.8 },
+  { second: 600, value: 9.2 },
+];
+
+export const DAMAGE_SCALE_POINTS: readonly CurvePoint[] = [
+  { second: 0, value: 0.76 },
+  { second: 120, value: 0.9 },
+  { second: 300, value: 1.25 },
+  { second: 450, value: 1.7 },
+  { second: 600, value: 2.3 },
+];
+
+export const SPEED_SCALE_POINTS: readonly CurvePoint[] = [
+  { second: 0, value: 1 },
+  { second: 120, value: 1.05 },
+  { second: 300, value: 1.16 },
+  { second: 450, value: 1.25 },
+  { second: 600, value: 1.35 },
+];
+
+function smoothstep01(value: number): number {
+  const x = Math.max(0, Math.min(1, value));
+  return x * x * (3 - 2 * x);
 }
 
-/** Enemies per spawn tick. */
-export function spawnBatch(t: number): number {
-  const u = Math.min(1, t / RUN_LENGTH);
-  return 1 + Math.floor(u * 5.2); // 1 -> 6
+function sampleCurve(points: readonly CurvePoint[], second: number): number {
+  const t = Math.max(0, second);
+  if (t <= points[0].second) return points[0].value;
+  for (let i = 1; i < points.length; i++) {
+    const next = points[i];
+    if (t > next.second) continue;
+    const previous = points[i - 1];
+    const span = Math.max(0.001, next.second - previous.second);
+    const blend = smoothstep01((t - previous.second) / span);
+    return previous.value + (next.value - previous.value) * blend;
+  }
+  return points[points.length - 1].value;
+}
+
+function endlessMinutes(t: number): number {
+  return Math.max(0, (t - RUN_LENGTH) / 60);
+}
+
+/** Normalized live build strength. It uses ranks rather than DPS so the
+ *  curve remains deterministic and cannot oscillate during a fight. */
+export function powerPressure(abilityRanks: number, statRanks: number): number {
+  return Math.max(0, Math.min(1, (Math.max(0, abilityRanks - 1) + statRanks * 0.55) / 26));
+}
+
+/** Convex run progress keeps the opening readable, then steepens once a build
+ *  has enough upgrades to clear dense groups. */
+export function difficultyProgress(t: number): number {
+  const u = Math.max(0, Math.min(1, t / RUN_LENGTH));
+  return 0.18 * u + 0.82 * Math.pow(u, 2.25);
+}
+
+/** Enemy hp multiplier over run time and current build strength. Pressure is
+ *  intentionally modest: the clock remains the primary source of difficulty. */
+export function hpScale(t: number, pressure = 0): number {
+  const endless = 1 + endlessMinutes(t) * 0.1;
+  return sampleCurve(HP_SCALE_POINTS, t) * endless * (1 + Math.max(0, Math.min(1, pressure)) * 0.18);
+}
+
+/** Continuous enemies-per-second director curve. After full time the base
+ *  grows linearly by 10% per minute, with the reference endless +0.8/s ramp. */
+export function spawnRate(t: number, pressure = 0): number {
+  const minutes = endlessMinutes(t);
+  const base = sampleCurve(SPAWN_RATE_POINTS, t) * (1 + minutes * 0.1) + minutes * 0.8;
+  return base * (1 + Math.max(0, Math.min(1, pressure)) * 0.18);
+}
+
+/** Compatibility helper for tooling that reasons in spawn intervals. */
+export function spawnInterval(t: number, pressure = 0): number {
+  return 1 / spawnRate(t, pressure);
+}
+
+/** Contact damage starts forgiving and catches up to high-output builds. */
+export function enemyDamageScale(t: number, pressure = 0): number {
+  const endless = 1 + endlessMinutes(t) * 0.1;
+  return sampleCurve(DAMAGE_SCALE_POINTS, t) * endless * (1 + Math.max(0, Math.min(1, pressure)) * 0.08);
+}
+
+/** Movement pressure rises more gently than health/density to preserve dodges. */
+export function enemySpeedScale(t: number, pressure = 0): number {
+  const endless = Math.min(1.55, sampleCurve(SPEED_SCALE_POINTS, t) * (1 + endlessMinutes(t) * 0.05));
+  return endless * (1 + Math.max(0, Math.min(1, pressure)) * 0.03);
+}
+
+/** Seconds between elite spawns. */
+export function eliteInterval(t: number, _pressure = 0): number {
+  return Math.max(22, 52 - (Math.max(0, t) / 60) * 3);
+}
+
+/** Time-sensitive roster weight. New archetypes fade in rather than appearing
+ *  as a hard wave, while old fodder remains present in smaller numbers. */
+export function enemySpawnWeight(def: EnemyDef, t: number): number {
+  if (t < def.unlockAt) return 0;
+  const age = Math.max(0, t - def.unlockAt);
+  const unlockRamp = 0.2 + smoothstep01(age / 20) * 0.8;
+  const fade = age <= 180 ? 1 : Math.max(0.38, 1 - ((age - 180) / 420) * 0.62);
+  const specialistFloor = ['ranged', 'support', 'wall', 'flanker', 'summoner', 'charger', 'aerial'].includes(def.behavior)
+    ? 0.65
+    : 0.38;
+  return def.weight * unlockRamp * Math.max(specialistFloor, fade);
 }
 
 /** XP needed to go from `level` to `level + 1`. */

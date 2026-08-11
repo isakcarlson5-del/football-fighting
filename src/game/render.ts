@@ -20,29 +20,32 @@ import {
   xpSprite,
   type Atlas,
 } from '../core/sprites';
-import { BOSSES, ENEMIES, SKINS, type BossId, type EnemyDef, type PlayerDef } from './data';
+import { BOSSES, ENEMIES, FREEZE_DURATION, SKINS, type BossId, type EnemyDef, type PlayerDef } from './data';
 import { ARENA_H, ARENA_W, KICK_DURATION, type Enemy, type Guard, type Sim } from './sim';
 import type { Save } from './meta';
 
 const TILT = 0.62;
 const MARGIN = 340; // stands width around pitch (world units) — procedural fallback only
-const ENTITY_SCALE = 1.85;
-/** Grass rect inside the arena plate image (source px, 1536x1024).
- *  Measured from the delivered art (soft painterly edges) and inset a few px
- *  so the mapped arena edges always land on real grass, never on the track. */
-const PLATE_GRASS = { x: 124, y: 157, w: 1287, h: 769 };
+const PLAYER_ENTITY_SCALE = 1.68;
+const ENEMY_ENTITY_SCALE = 1.52;
+const ALLY_ENTITY_SCALE = 1.56;
+/** Conservative grass rect inside the sharp arena plate (source px,
+ *  1536x1024). The painted field is slightly trapezoidal, so this inset keeps
+ *  all four playable corners on turf while the surrounding stadium remains
+ *  available to the camera. */
+const PLATE_GRASS = { x: 124, y: 150, w: 1288, h: 790 };
 /** Camera never gets closer than this to the painted world's outer edge. */
 const EDGE_PAD = 6;
 type SpriteBitmap = HTMLCanvasElement | HTMLImageElement;
 
 /** Generated enemy strips use semantic poses: idle, move, attack/cast, hurt. */
 export function enemyPoseFrame(
-  e: Pick<Enemy, 'hurtT' | 'stun' | 'windup' | 'lungeT' | 'telegraph' | 'casting' | 'moving' | 'airT'>,
+  e: Pick<Enemy, 'hurtT' | 'stun' | 'windup' | 'lungeT' | 'attackAnimT' | 'telegraph' | 'casting' | 'moving' | 'airT'>,
   frames: number,
 ): number {
   if (frames < 4) return Math.max(0, frames - 1);
   if (e.hurtT > 0 || e.stun > 0) return 3;
-  if (e.windup > 0 || e.lungeT > 0 || e.telegraph > 0 || e.casting !== '') return 2;
+  if (e.windup > 0 || e.lungeT > 0 || e.attackAnimT > 0 || e.telegraph > 0 || e.casting !== '') return 2;
   if (e.moving || e.airT > 0) return 1;
   return 0;
 }
@@ -59,6 +62,37 @@ export function guardPoseFrame(
   return 0;
 }
 
+export interface EnemyHealthBarStyle {
+  ratio: number;
+  width: number;
+  height: number;
+  accent: string;
+  numeric: boolean;
+}
+
+/** Shared health-bar metrics keep every archetype readable without letting
+ *  100+ simultaneous bars dominate the pitch. */
+export function enemyHealthBarStyle(
+  e: Pick<Enemy, 'hp' | 'maxHp' | 'radius' | 'elite' | 'boss'>,
+): EnemyHealthBarStyle {
+  const ratio = clamp(e.maxHp > 0 ? e.hp / e.maxHp : 0, 0, 1);
+  const boss = !!e.boss;
+  const width = boss
+    ? clamp(52 + e.radius * 2.1, 128, 166)
+    : clamp((24 + e.radius * 1.5) * (e.elite ? 1.16 : 1), 42, e.elite ? 84 : 70);
+  return {
+    ratio,
+    width,
+    height: boss
+      ? clamp(8 + (e.radius - 38) * 0.2, 8, 11)
+      : e.elite
+        ? clamp(5 + e.radius * 0.16, 7, 9)
+        : clamp(3.4 + e.radius * 0.16, 5, 8.2),
+    accent: boss ? '#ff4d66' : e.elite ? '#ffd23f' : '#b7cbd6',
+    numeric: boss || e.elite,
+  };
+}
+
 export class Renderer {
   private canvas: HTMLCanvasElement;
   private ctx: CanvasRenderingContext2D;
@@ -69,17 +103,35 @@ export class Renderer {
   private scale = 1;
   private shake = 0;
   private ball: HTMLCanvasElement;
+  private matchBallSpr: SpriteBitmap;
   private curveballSpr: SpriteBitmap;
   private goldenBootSpr: SpriteBitmap;
   private xpSpr: SpriteBitmap[];
   private coinSpr: SpriteBitmap;
   private healSpr: SpriteBitmap;
   private trophySpr: SpriteBitmap;
+  private magnetSpr: SpriteBitmap;
+  private bombSpr: SpriteBitmap;
+  private freezeSpr: SpriteBitmap;
+  private orbitImpactSpr: HTMLImageElement | null = null;
+  private orbitSkidSpr: HTMLImageElement | null = null;
+  private contactHitSpr: HTMLImageElement | null = null;
+  private playerHurtSpr: HTMLImageElement | null = null;
+  private knockoutSpr: HTMLImageElement | null = null;
+  private guardSlamSpr: HTMLImageElement | null = null;
+  private curveTrailSpr: HTMLImageElement | null = null;
+  private goldenBootTrailSpr: HTMLImageElement | null = null;
+  private bossWarningSpr: HTMLImageElement | null = null;
+  private bullChargeLaneSpr: HTMLImageElement | null = null;
+  private aerialTargetSpr: HTMLImageElement | null = null;
+  private captainsHeartSpr: HTMLImageElement | null = null;
+  private droneShotSpr: HTMLImageElement | null = null;
   private bottleSpr: HTMLCanvasElement;
   private atlasCache = new Map<string, Atlas>();
   private crowdSeed: number[] = [];
   private flashWarn = 0;
   private flashWhiteT = 0;
+  private lossStartedAt = -1;
 
   camX = ARENA_W / 2;
   camY = ARENA_H / 2;
@@ -89,12 +141,16 @@ export class Renderer {
     this.ctx = canvas.getContext('2d', { alpha: false })!;
     this.pitch = this.buildPitch();
     this.ball = ballSprite(22);
+    this.matchBallSpr = this.ball;
     this.curveballSpr = this.ball;
     this.goldenBootSpr = this.ball;
     this.xpSpr = [xpSprite(1), xpSprite(2), xpSprite(3)];
     this.coinSpr = coinSprite();
     this.healSpr = drinkSprite();
     this.trophySpr = trophySprite();
+    this.magnetSpr = coinSprite();
+    this.bombSpr = ballSprite(28);
+    this.freezeSpr = xpSprite(1);
     this.bottleSpr = bottleSprite();
     ['xp-1', 'xp-2', 'xp-3'].forEach((id, i) => {
       this.loadPickupSprite(`art/pickups/${id}.png`, (img) => {
@@ -110,13 +166,71 @@ export class Renderer {
     this.loadPickupSprite('art/pickups/trophy.png', (img) => {
       this.trophySpr = img;
     });
-    this.loadPickupSprite('art/projectiles/curveball.png', (img) => {
+    this.loadPickupSprite('art/pickups/magnet.png', (img) => {
+      this.magnetSpr = img;
+    });
+    this.loadPickupSprite('art/pickups/bomb.png', (img) => {
+      this.bombSpr = img;
+    });
+    this.loadPickupSprite('art/pickups/freeze.png', (img) => {
+      this.freezeSpr = img;
+    });
+    this.loadPickupSprite('art/projectiles/curveball-v2.png', (img) => {
       this.curveballSpr = img;
     });
-    this.loadPickupSprite('art/projectiles/golden-boot.png', (img) => {
+    this.loadPickupSprite('art/projectiles/golden-boot-v2.png', (img) => {
       this.goldenBootSpr = img;
     });
+    this.loadPickupSprite('art/projectiles/match-ball.png', (img) => {
+      this.matchBallSpr = img;
+    });
+    this.loadPickupSprite('art/vfx/orbit-impact-v2.png', (img) => {
+      this.orbitImpactSpr = img;
+    });
+    this.loadPickupSprite('art/vfx/orbit-skid-v2.png', (img) => {
+      this.orbitSkidSpr = img;
+    });
+    this.loadPickupSprite('art/vfx/contact-hit-strip.png', (img) => {
+      this.contactHitSpr = img;
+    });
+    this.loadPickupSprite('art/vfx/player-hurt-strip.png', (img) => {
+      this.playerHurtSpr = img;
+    });
+    this.loadPickupSprite('art/vfx/knockout-strip.png', (img) => {
+      this.knockoutSpr = img;
+    });
+    this.loadPickupSprite('art/vfx/guard-slam-strip.png', (img) => {
+      this.guardSlamSpr = img;
+    });
+    this.loadPickupSprite('art/vfx/curveball-trail-strip.png', (img) => {
+      this.curveTrailSpr = img;
+    });
+    this.loadPickupSprite('art/vfx/golden-boot-trail-strip.png', (img) => {
+      this.goldenBootTrailSpr = img;
+    });
+    this.loadPickupSprite('art/vfx/boss-warning-strip.png', (img) => {
+      this.bossWarningSpr = img;
+    });
+    this.loadPickupSprite('art/vfx/bull-charge-lane-strip.png', (img) => {
+      this.bullChargeLaneSpr = img;
+    });
+    this.loadPickupSprite('art/vfx/aerial-target-strip.png', (img) => {
+      this.aerialTargetSpr = img;
+    });
+    this.loadPickupSprite('art/vfx/captains-heart-strip.png', (img) => {
+      this.captainsHeartSpr = img;
+    });
+    this.loadPickupSprite('art/vfx/drone-shot-strip.png', (img) => {
+      this.droneShotSpr = img;
+    });
+    void loadStripAtlas('ally-bodyguard-rookie', 'art/allies/bodyguard-rookie.png');
+    void loadStripAtlas('ally-bodyguard-rookie-run', 'art/allies/bodyguard-rookie-run.png');
     void loadStripAtlas('ally-bodyguard', 'art/allies/bodyguard.png');
+    void loadStripAtlas('ally-bodyguard-run', 'art/allies/bodyguard-run.png');
+    void loadStripAtlas('ally-bodyguard-heavy', 'art/allies/bodyguard-heavy.png');
+    void loadStripAtlas('ally-bodyguard-heavy-run', 'art/allies/bodyguard-heavy-run.png');
+    void loadStripAtlas('ally-bodyguard-scout', 'art/allies/bodyguard-scout.png');
+    void loadStripAtlas('ally-bodyguard-scout-run', 'art/allies/bodyguard-scout-run.png');
     for (let i = 0; i < 400; i++) this.crowdSeed.push(Math.random());
   }
 
@@ -127,6 +241,226 @@ export class Renderer {
     img.src = url;
   }
 
+  /** Draws one cell from a six-frame generated VFX strip. Keeping VFX in one
+   *  fixed atlas avoids per-hit allocations and remains safe in dense runs. */
+  private drawVfxFrame(
+    ctx: CanvasRenderingContext2D,
+    sprite: HTMLImageElement | null,
+    frame: number,
+    x: number,
+    y: number,
+    size: number,
+    rotation = 0,
+    alpha = 1,
+    additive = false,
+    anchorX = 0.5,
+  ): boolean {
+    if (!sprite || !sprite.complete || sprite.naturalWidth <= 0) return false;
+    const frames = 6;
+    const fw = sprite.naturalWidth / frames;
+    const sourceFrame = clamp(Math.floor(frame), 0, frames - 1);
+    ctx.save();
+    ctx.globalAlpha = clamp(alpha, 0, 1);
+    if (additive) ctx.globalCompositeOperation = 'lighter';
+    ctx.translate(x, y);
+    ctx.rotate(rotation);
+    ctx.drawImage(
+      sprite,
+      sourceFrame * fw,
+      0,
+      fw,
+      sprite.naturalHeight,
+      -size * anchorX,
+      -size / 2,
+      size,
+      size,
+    );
+    ctx.restore();
+    return true;
+  }
+
+  /** Rectangular six-frame VFX for directional lanes and beams. Unlike the
+   * square helper this preserves a long charge silhouette without stretching
+   * its thickness to match the travel distance. */
+  private drawVfxFrameRect(
+    ctx: CanvasRenderingContext2D,
+    sprite: HTMLImageElement | null,
+    frame: number,
+    x: number,
+    y: number,
+    width: number,
+    height: number,
+    rotation = 0,
+    alpha = 1,
+    additive = false,
+  ): boolean {
+    if (!sprite || !sprite.complete || sprite.naturalWidth <= 0) return false;
+    const frames = 6;
+    const fw = sprite.naturalWidth / frames;
+    const sourceFrame = clamp(Math.floor(frame), 0, frames - 1);
+    ctx.save();
+    ctx.globalAlpha = clamp(alpha, 0, 1);
+    if (additive) ctx.globalCompositeOperation = 'lighter';
+    ctx.translate(x, y);
+    ctx.rotate(rotation);
+    ctx.drawImage(sprite, sourceFrame * fw, 0, fw, sprite.naturalHeight, -width / 2, -height / 2, width, height);
+    ctx.restore();
+    return true;
+  }
+
+  /** Ground decals share world perspective instead of looking like upright UI. */
+  private drawGroundVfxFrame(
+    ctx: CanvasRenderingContext2D,
+    sprite: HTMLImageElement | null,
+    frame: number,
+    x: number,
+    y: number,
+    diameter: number,
+    alpha = 1,
+  ): boolean {
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.scale(1, TILT);
+    const drawn = this.drawVfxFrame(ctx, sprite, frame, 0, 0, diameter, 0, alpha, false);
+    ctx.restore();
+    return drawn;
+  }
+
+  /** Compact stadium-scoreboard health bar. It uses only pooled canvas work,
+   *  so large late-game crowds remain mobile-safe. */
+  private drawEnemyHealthBar(ctx: CanvasRenderingContext2D, e: Enemy, x: number, y: number, time: number): void {
+    const style = enemyHealthBarStyle(e);
+    const { ratio, width: w, height: h } = style;
+    if (x + w / 2 < -12 || x - w / 2 > this.canvas.width + 12 || y < -30 || y > this.canvas.height + 12) return;
+
+    const left = Math.round(x - w / 2);
+    const top = Math.round(y);
+    const low = ratio <= 0.25;
+    const hit = e.flash > 0 || e.hurtT > 0;
+    const fill = ratio > 0.58 ? '#45dc86' : ratio > 0.28 ? '#ffc247' : '#ff4d61';
+    const pulse = low ? 0.72 + Math.sin(time * 11 + e.x * 0.01) * 0.2 : 0.88;
+
+    ctx.save();
+    ctx.globalAlpha = e.boss || e.elite || ratio < 0.999 ? 1 : 0.84;
+    if (e.boss || e.elite) {
+      ctx.shadowColor = e.boss ? 'rgba(255,45,76,0.48)' : 'rgba(255,210,63,0.42)';
+      ctx.shadowBlur = e.boss ? 9 : 6;
+    }
+
+    // Metal outer casing and inset dark track.
+    ctx.fillStyle = 'rgba(5,10,14,0.9)';
+    ctx.beginPath();
+    ctx.roundRect(left - 3, top - 3, w + 6, h + 6, h / 2 + 3);
+    ctx.fill();
+    ctx.shadowBlur = 0;
+    ctx.strokeStyle = hit ? '#ffffff' : style.accent;
+    ctx.lineWidth = hit ? 2 : e.boss || e.elite ? 1.6 : 1.15;
+    ctx.stroke();
+
+    ctx.fillStyle = 'rgba(20,28,34,0.96)';
+    ctx.beginPath();
+    ctx.roundRect(left, top, w, h, h / 2);
+    ctx.fill();
+
+    // A pale delayed chip shows exactly how much the latest hit removed before
+    // easing down to the real value. This makes burst damage legible in crowds.
+    const trailRatio = clamp(e.maxHp > 0 ? e.barHp / e.maxHp : ratio, ratio, 1);
+    const trailW = w * trailRatio;
+    if (trailW > w * ratio + 0.5) {
+      ctx.fillStyle = e.boss ? '#ffd0d7' : e.elite ? '#fff0a8' : '#dcecf2';
+      ctx.globalAlpha = 0.88;
+      ctx.beginPath();
+      ctx.roundRect(left, top, trailW, h, Math.min(h / 2, trailW / 2));
+      ctx.fill();
+      ctx.globalAlpha = e.boss || e.elite || ratio < 0.999 ? 1 : 0.84;
+    }
+
+    const fillW = Math.max(ratio > 0 ? 2 : 0, w * ratio);
+    if (fillW > 0) {
+      ctx.globalAlpha *= pulse;
+      ctx.fillStyle = fill;
+      ctx.beginPath();
+      ctx.roundRect(left, top, fillW, h, Math.min(h / 2, fillW / 2));
+      ctx.fill();
+      // Highlight strip makes the bar feel like a physical enamel scoreboard.
+      ctx.globalAlpha *= 0.72;
+      ctx.fillStyle = 'rgba(255,255,255,0.48)';
+      ctx.beginPath();
+      ctx.roundRect(left + 1, top + 1, Math.max(0, fillW - 2), Math.max(1, h * 0.28), h / 4);
+      ctx.fill();
+    }
+
+    ctx.globalAlpha = e.boss || e.elite || ratio < 0.999 ? 0.48 : 0.32;
+    ctx.strokeStyle = '#071015';
+    ctx.lineWidth = 1;
+    for (let segment = 1; segment < 4; segment++) {
+      const sx = left + (w * segment) / 4;
+      ctx.beginPath();
+      ctx.moveTo(sx, top + 1);
+      ctx.lineTo(sx, top + h - 1);
+      ctx.stroke();
+    }
+
+    // Status pips: purple = stunned, cyan = slowed, blue chevron = airborne.
+    const statuses: Array<{ color: string; kind: 'dot' | 'air' }> = [];
+    if (e.stun > 0) statuses.push({ color: '#c78cff', kind: 'dot' });
+    if (e.slow > 0) statuses.push({ color: '#5cecff', kind: 'dot' });
+    if (e.airT > 0 || e.def.behavior === 'aerial') statuses.push({ color: '#7ca8ff', kind: 'air' });
+    statuses.forEach((status, index) => {
+      const sx = left + w + 8 + index * 9;
+      const sy = top + h / 2;
+      ctx.globalAlpha = 0.95;
+      ctx.fillStyle = status.color;
+      ctx.strokeStyle = '#061016';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      if (status.kind === 'air') {
+        ctx.moveTo(sx, sy - 4);
+        ctx.lineTo(sx + 4, sy + 3);
+        ctx.lineTo(sx - 4, sy + 3);
+        ctx.closePath();
+      } else {
+        ctx.arc(sx, sy, 3.5, 0, TAU);
+      }
+      ctx.fill();
+      ctx.stroke();
+    });
+
+    // Tiny rotated crest anchors the bar to the game's football presentation.
+    ctx.globalAlpha = 1;
+    ctx.translate(left - 5, top + h / 2);
+    ctx.rotate(Math.PI / 4);
+    ctx.fillStyle = style.accent;
+    ctx.fillRect(-3.5, -3.5, 7, 7);
+    ctx.fillStyle = '#111a20';
+    ctx.fillRect(-1.5, -1.5, 3, 3);
+    ctx.rotate(-Math.PI / 4);
+    ctx.translate(-(left - 5), -(top + h / 2));
+
+    if (style.numeric) {
+      ctx.font = `800 ${e.boss ? 10 : 8}px "Space Grotesk", system-ui, sans-serif`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'bottom';
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = 'rgba(4,8,12,0.9)';
+      const label = `${Math.ceil(Math.max(0, e.hp)).toLocaleString()} HP`;
+      ctx.strokeText(label, x, top - 4);
+      ctx.fillStyle = e.boss ? '#fff2f4' : '#fff1b3';
+      ctx.fillText(label, x, top - 4);
+    }
+    ctx.restore();
+  }
+
+  /** Draws the generated four-frame match ball strip, with a procedural
+   * fallback while the asset is loading. */
+  private drawMatchBall(ctx: CanvasRenderingContext2D, x: number, y: number, size: number, frame: number): void {
+    const spr = this.matchBallSpr;
+    const frames = spr.width >= spr.height * 3.2 ? 4 : 1;
+    const fw = spr.width / frames;
+    const f = frames === 1 ? 0 : Math.floor(frame) % frames;
+    ctx.drawImage(spr, f * fw, 0, fw, spr.height, x - size / 2, y - size / 2, size, size);
+  }
+
   /** Swap in the AI arena plate and rebuild the prerendered world canvas. */
   setArenaImage(img: HTMLImageElement): void {
     this.plate = img;
@@ -134,12 +468,35 @@ export class Renderer {
   }
 
   /** Enemy visuals: generated 2.5D strip when available, else the procedural atlas. */
-  private enemyAtlasFor(e: { def: EnemyDef; boss: '' | BossId }): Atlas {
-    const id = e.boss ? `boss-${e.boss}` : e.def.id;
+  private enemyAtlasFor(e: { def: EnemyDef; boss: '' | BossId; variant: 0 | 1 | 2 }): Atlas {
+    const id = e.boss
+      ? `boss-${e.boss}`
+      : e.def.id === 'invader' && e.variant === 1 ? 'invader-ultra'
+        : e.def.id === 'invader' && e.variant === 2 ? 'invader-away'
+          : e.def.id;
     const strip = getStripAtlas(id);
     if (strip) return strip;
     void loadStripAtlas(id, `art/enemies/${id}.png`);
     return e.boss ? bossAtlas(e.boss) : enemyAtlas(e.def.id as Parameters<typeof enemyAtlas>[0]);
+  }
+
+  /** Dedicated six-frame locomotion art. Semantic idle/attack/hurt strips are
+   * kept separate so an enemy never appears to run while standing still. */
+  private enemyRunAtlasFor(e: { def: EnemyDef; boss: '' | BossId; variant: 0 | 1 | 2 }): Atlas | null {
+    // The drone is a hovering machine, not a footstep character. Holding its
+    // clean thrust pose and animating roll/height continuously avoids the
+    // clipped, off-centre cells in the generated locomotion strip.
+    if (e.def.behavior === 'aerial') return null;
+    const id = e.boss
+      ? `boss-${e.boss}`
+      : e.def.id === 'invader' && e.variant === 1 ? 'invader-ultra'
+        : e.def.id === 'invader' && e.variant === 2 ? 'invader-away'
+          : e.def.id;
+    const runId = `${id}-run`;
+    const strip = getStripAtlas(runId);
+    if (strip) return strip;
+    void loadStripAtlas(runId, `art/enemies/${id}-run.png`);
+    return null;
   }
 
   /** White blinding flash (paparazzo). */
@@ -152,7 +509,7 @@ export class Renderer {
   }
 
   warnFlash(): void {
-    this.flashWarn = 0.25;
+    this.flashWarn = 0.42;
   }
 
   /* ------------------------------------------------------------------ */
@@ -447,6 +804,11 @@ export class Renderer {
       // trigger a lazy load; until idle art exists, hold a neutral frame
       void loadStripAtlas(`${def.id}-idle`, `art/players/${def.id}-idle.png`, tint);
     }
+    if (running) {
+      const runStrip = getStripAtlas(`${def.id}-run`, tint);
+      if (runStrip) return { atlas: runStrip, kind: 'run' };
+      void loadStripAtlas(`${def.id}-run`, `art/players/${def.id}-run.png`, tint);
+    }
     // prefer the generated 2.5D strip; fall back to the procedural atlas
     const strip = getStripAtlas(def.id, tint);
     if (strip) return { atlas: strip, kind: running ? 'run' : 'run-held' };
@@ -469,7 +831,7 @@ export class Renderer {
     if (W === 0 || H === 0) return;
 
     // view: fixed world-height window
-    const viewWorldH = 980;
+    const viewWorldH = 1240;
     this.scale = H / (viewWorldH * TILT);
     const scale = this.scale;
     const vw = W / scale;
@@ -531,6 +893,13 @@ export class Renderer {
         ctx.stroke();
         continue;
       }
+      if (t.kind !== 'chant') {
+        const frame = Math.min(5, Math.floor(u * 6));
+        const diameter = t.r * (t.kind === 'summon' ? 2.18 : 2.06);
+        if (this.drawGroundVfxFrame(ctx, this.bossWarningSpr, frame, tx, ty, diameter, 0.72 + u * 0.28)) {
+          continue;
+        }
+      }
       const col =
         t.kind === 'shock' ? '232,40,63'
         : t.kind === 'flash' ? '245,247,250'
@@ -573,30 +942,43 @@ export class Renderer {
     // pickups
     for (const pk of sim.pickups) {
       if (!pk.active) continue;
-      const bobY = Math.sin(pk.t * 5 + pk.x) * 3;
-      const img = pk.kind === 'coin' ? this.coinSpr : pk.kind === 'heal' ? this.healSpr : pk.kind === 'trophy' ? this.trophySpr : this.xpSpr[pk.tier - 1];
-      const baseSize = pk.kind === 'trophy' ? 52 : pk.kind === 'heal' ? 42 : pk.kind === 'coin' ? 30 : pk.tier === 3 ? 38 : pk.tier === 2 ? 32 : 27;
-      const drawSize = baseSize * (1 + Math.sin(pk.t * 4.5) * 0.035);
-      // glow
-      ctx.fillStyle = pk.kind === 'coin' ? 'rgba(255,210,63,0.28)' : pk.kind === 'heal' ? 'rgba(55,214,122,0.28)' : pk.kind === 'trophy' ? 'rgba(255,243,196,0.34)' : pk.tier === 3 ? 'rgba(255,142,240,0.26)' : 'rgba(142,208,255,0.24)';
-      ctx.beginPath();
-      ctx.ellipse(toSX(pk.x), toSY(pk.y) + 3, drawSize * 0.55, drawSize * 0.24, 0, 0, TAU);
-      ctx.fill();
-      ctx.drawImage(img, toSX(pk.x) - drawSize / 2, toSY(pk.y) - drawSize / 2 + bobY, drawSize, drawSize);
+      const img = pk.kind === 'coin' ? this.coinSpr
+        : pk.kind === 'heal' ? this.healSpr
+          : pk.kind === 'trophy' ? this.trophySpr
+            : pk.kind === 'magnet' ? this.magnetSpr
+              : pk.kind === 'bomb' ? this.bombSpr
+                : pk.kind === 'freeze' ? this.freezeSpr
+                  : this.xpSpr[pk.tier - 1];
+      const baseSize = pk.kind === 'trophy' ? 52
+        : pk.kind === 'magnet' ? 52
+          : pk.kind === 'bomb' ? 50
+            : pk.kind === 'freeze' ? 50
+              : pk.kind === 'heal' ? 42
+                : pk.kind === 'coin' ? 30
+                  : pk.tier === 3 ? 38 : pk.tier === 2 ? 32 : 27;
+      // Pickups are physical objects resting on the turf. Keep the world point
+      // as the sprite's bottom contact instead of centering/bobbing it above
+      // the grass; all identity and rarity lighting lives in the asset itself.
+      const groundX = toSX(pk.x);
+      const groundY = toSY(pk.y) + 4;
+      ctx.drawImage(img, groundX - baseSize / 2, groundY - baseSize, baseSize, baseSize);
     }
 
     /* corpses: fallen enemies topple sideways, sink and fade (under live entities) */
     for (const c of sim.corpses) {
       if (!c.active) continue;
       const u = c.t / c.max;
-      const atlas = this.enemyAtlasFor({ def: ENEMIES[c.enemyId as keyof typeof ENEMIES] ?? ENEMIES.invader, boss: c.boss });
+      const atlas = this.enemyAtlasFor({ def: ENEMIES[c.enemyId as keyof typeof ENEMIES] ?? ENEMIES.invader, boss: c.boss, variant: c.variant });
       // Generated strips are 4x the procedural atlas resolution. Normalize by
       // source height so swapping art never changes the enemy's world size.
-      const sc = ENTITY_SCALE * (80 / atlas.fh) * (c.boss ? BOSSES[c.boss].scale : (ENEMIES[c.enemyId as keyof typeof ENEMIES]?.scale ?? 1)) * (c.elite ? 1.22 : 1);
+      const sc = ENEMY_ENTITY_SCALE * (80 / atlas.fh) * (c.boss ? BOSSES[c.boss].scale : (ENEMIES[c.enemyId as keyof typeof ENEMIES]?.scale ?? 1)) * (c.elite ? 1.22 : 1);
       const fall = Math.min(1, u * 2.4); // topple quickly, then fade
       const alpha = u < 0.5 ? 1 : Math.max(0, 1 - (u - 0.5) / 0.5);
       const x = toSX(c.x);
       const y = toSY(c.y);
+      const knockoutFrame = Math.min(5, Math.floor(clamp(u / 0.72, 0, 0.999) * 6));
+      const knockoutSize = c.boss ? 178 : c.elite ? 132 : 104;
+      this.drawVfxFrame(ctx, this.knockoutSpr, knockoutFrame, x, y - 11, knockoutSize, 0, alpha * 0.92, false);
       ctx.save();
       ctx.globalAlpha = alpha;
       ctx.translate(x, y - 3);
@@ -608,6 +990,32 @@ export class Renderer {
       ctx.restore();
     }
     ctx.globalAlpha = 1;
+
+    // Orbiting Press is intentionally a rear gameplay layer. The balls still
+    // use their true simulation positions for contact, but every live actor —
+    // especially the hero — is painted over them so they can never unnaturally
+    // cross in front of a body.
+    const orbitLvl = sim.abilityLevel('orbit');
+    if (orbitLvl > 0) {
+      const count = [0, 2, 3, 3, 4, 5][orbitLvl] + (def.id === 'yamal' ? 1 : 0);
+      const radius = [0, 90, 90, 115, 115, 140][orbitLvl];
+      for (let b = 0; b < count; b++) {
+        const a = p.orbitAngle + (b / count) * TAU;
+        const ox = toSX(p.x + Math.cos(a) * radius);
+        const oy = toSY(p.y + Math.sin(a) * radius);
+        const lift = 12 + Math.sin(time * 7 + b * 1.7) * 3;
+        ctx.fillStyle = 'rgba(4,10,6,0.24)';
+        ctx.beginPath();
+        ctx.ellipse(ox, oy + 2, 8, 3.4, 0, 0, TAU);
+        ctx.fill();
+        ctx.save();
+        ctx.translate(ox, oy - lift);
+        const orbitFrame = Math.floor(time * 14 + b * 1.7);
+        ctx.rotate(Math.sin(time * 5 + b) * 0.12);
+        this.drawMatchBall(ctx, 0, 0, 28, orbitFrame);
+        ctx.restore();
+      }
+    }
 
     /* depth-sorted draw list */
     interface Item {
@@ -627,157 +1035,313 @@ export class Renderer {
     for (const it of items) {
       if (it.kind === 0) {
         const e = sim.enemies[it.idx];
-        const atlas = this.enemyAtlasFor(e);
-        const sc = ENTITY_SCALE * (80 / atlas.fh) * (e.boss ? BOSSES[e.boss].scale : e.def.scale) * (e.elite ? 1.22 : 1);
+        const semanticAtlas = this.enemyAtlasFor(e);
+        const locomoting = e.moving && e.windup <= 0 && e.lungeT <= 0 && e.attackAnimT <= 0 && e.telegraph <= 0 && e.hurtT <= 0;
+        const runAtlas = locomoting ? this.enemyRunAtlasFor(e) : null;
+        const atlas = runAtlas ?? semanticAtlas;
+        const bossBreath = e.boss ? 1 + Math.sin(time * (e.boss === 'captain' ? 2.6 : 2.2) + it.idx) * 0.018 : 1;
+        // Semantic lobber frames are already height-normalized in the source
+        // strip (idle 233px, throw 232px). A previous 0.87 multiplier made the
+        // whole character shrink during its cast despite matching source art.
+        const sc = ENEMY_ENTITY_SCALE * (80 / atlas.fh) * (e.boss ? BOSSES[e.boss].scale : e.def.scale) * (e.elite ? 1.22 : 1) * bossBreath;
         const x = toSX(e.x);
         const y = toSY(e.y);
-        // airborne mobs lift off the pitch; the shadow stays on the grass
-        const lift = e.airT > 0 ? Math.sin(Math.PI * (1 - e.airT / 0.38)) * 22 : 0;
-        this.shadow(ctx, x, y, e.radius * sc * 0.8 * (1 - lift / 60));
-        if (e.elite) {
-          const pulse = 0.5 + 0.3 * Math.sin(time * 6);
-          ctx.strokeStyle = `rgba(255,210,63,${pulse})`;
-          ctx.lineWidth = 5;
-          ctx.beginPath();
-          ctx.ellipse(x, y, e.radius * sc * 0.8, e.radius * sc * 0.8 * TILT, 0, 0, TAU);
-          ctx.stroke();
-          ctx.strokeStyle = `rgba(255,240,180,${pulse * 0.5})`;
-          ctx.lineWidth = 10;
-          ctx.beginPath();
-          ctx.ellipse(x, y, e.radius * sc * 0.95, e.radius * sc * 0.95 * TILT, 0, 0, TAU);
-          ctx.stroke();
+        // Permanent aerial troops hover; temporarily launched mobs follow an arc.
+        const lift = e.def.behavior === 'aerial'
+          ? 38 + Math.sin(e.animT * 7.5) * 4
+          : e.airT > 0 ? Math.sin(Math.PI * (1 - e.airT / 0.38)) * 22 : 0;
+        const hitAngle = Math.atan2(e.hurtDy * TILT, e.hurtDx || e.face);
+        if (e.orbitHitT > 0 && this.orbitSkidSpr) {
+          const u = clamp(1 - e.orbitHitT / 0.38, 0, 1);
+          const skidSize = clamp(78 + e.radius * 1.35, 92, e.boss ? 154 : 124);
+          ctx.save();
+          ctx.globalAlpha = Math.sin(Math.PI * clamp(u * 1.1, 0, 1)) * 0.86;
+          ctx.translate(x - e.hurtDx * 12, y - e.hurtDy * 12 * TILT - 1);
+          ctx.rotate(hitAngle);
+          ctx.scale(0.72 + u * 0.38, 0.72 + u * 0.18);
+          ctx.drawImage(this.orbitSkidSpr, -skidSize * 0.82, -skidSize / 2, skidSize, skidSize);
+          ctx.restore();
         }
+        // Characters are grounded by their delivered feet baseline. Extra
+        // drop shadows and elite foot-rings made the cutouts appear to hover.
         if (e.telegraph > 0) {
-          ctx.strokeStyle = 'rgba(232,40,63,0.8)';
-          ctx.lineWidth = 3;
+          const pulse = 0.55 + Math.sin(time * 18) * 0.25;
+          if (e.def.behavior === 'charger') {
+            const ex = toSX(e.x + e.chargeDx * 520);
+            const ey = toSY(e.y + e.chargeDy * 520);
+            const laneDx = ex - x;
+            const laneDy = ey - y;
+            const laneLength = Math.hypot(laneDx, laneDy);
+            const laneFrame = Math.min(5, Math.floor(clamp(1 - e.telegraph / 0.72, 0, 0.999) * 6));
+            this.drawVfxFrameRect(
+              ctx,
+              this.bullChargeLaneSpr,
+              laneFrame,
+              x + laneDx / 2,
+              y + laneDy / 2,
+              laneLength + 64,
+              92,
+              Math.atan2(laneDy, laneDx),
+              0.68 + pulse * 0.25,
+              false,
+            );
+          } else if (e.def.behavior === 'aerial' && p) {
+            ctx.strokeStyle = `rgba(112,231,255,${pulse})`;
+            ctx.lineWidth = 2.5;
+            ctx.setLineDash([7, 7]);
+            ctx.beginPath();
+            ctx.moveTo(x, y - lift);
+            ctx.lineTo(toSX(p.x), toSY(p.y) - 12);
+            ctx.stroke();
+            ctx.setLineDash([]);
+          }
+        }
+        if (e.windup > 0 && e.telegraph <= 0 && e.casting === '' && e.def.behavior !== 'aerial') {
+          // Every melee swing exposes a short red contact wedge. It reads as
+          // intent at crowd scale without turning the pitch into warning spam.
+          const pulse = 0.58 + Math.sin(time * 24) * 0.18;
+          ctx.strokeStyle = `rgba(255,61,85,${pulse})`;
+          ctx.lineWidth = 4;
+          ctx.lineCap = 'round';
           ctx.beginPath();
-          ctx.ellipse(x, y, 230, 230 * TILT, 0, 0, TAU);
+          ctx.arc(x + e.face * 20, y - 3, 25 + e.radius * 0.22, e.face > 0 ? -1.05 : Math.PI - 2.1, e.face > 0 ? 1.05 : Math.PI + 2.1);
           ctx.stroke();
         }
-        // Semantic strip poses prevent idle enemies from cycling through attack
-        // and hurt art. Locomotion stays alive through a restrained body sway.
-        const frame = enemyPoseFrame(e, atlas.frames);
+        // Six-frame locomotion plays only while the simulation reports real
+        // movement. Idle, attack and hurt remain explicit semantic poses.
+        const frame = runAtlas ? Math.floor(e.animT * (e.def.behavior === 'aerial' ? 8 : 10.5)) % runAtlas.frames : enemyPoseFrame(e, atlas.frames);
         const useFlash = e.flash > 0;
         const img = useFlash ? atlas.flash : atlas.canvas;
         const dw = atlas.fw * sc;
         const dh = atlas.fh * sc;
         ctx.save();
         ctx.translate(x, y - lift);
-        if (e.moving && e.windup <= 0 && e.lungeT <= 0 && e.telegraph <= 0) {
+        if (locomoting) {
           const gait = Math.sin(e.animT * 12);
-          ctx.translate(e.face * gait * 1.5, -Math.abs(gait) * 1.8);
+          ctx.translate(e.face * gait * 1.5, 0);
           ctx.rotate(e.face * gait * 0.018);
           ctx.scale(1 + Math.abs(gait) * 0.008, 1 - Math.abs(gait) * 0.012);
         }
         if (e.windup > 0) {
-          const w = 1 - e.windup / 0.34; // pull back harder as the strike nears
-          ctx.translate(-e.face * (3 + w * 5), w * 2);
-          ctx.rotate(-e.face * 0.08 * w);
+          const windupMax = e.def.behavior === 'charger' ? 0.72 : e.def.behavior === 'aerial' ? 0.46 : 0.34;
+          const w = clamp(1 - e.windup / windupMax, 0, 1);
+          const ease = w * w * (3 - 2 * w);
+          ctx.translate(-e.face * (3 + ease * 9), ease * 3);
+          ctx.rotate(-e.face * 0.13 * ease);
+          ctx.scale(1 - ease * 0.035, 1 + ease * 0.025);
         } else if (e.lungeT > 0) {
-          const l = e.lungeT / 0.14;
-          ctx.translate(e.face * l * 9, 0);
-          ctx.rotate(e.face * 0.05 * l);
+          if (e.def.behavior === 'charger') {
+            const charge = 0.5 + Math.sin(e.animT * 22) * 0.5;
+            ctx.translate(e.chargeDx * 7, e.chargeDy * 3);
+            ctx.rotate(e.face * 0.025 * charge);
+            ctx.scale(1.07, 0.94);
+          } else {
+            const progress = clamp(1 - e.lungeT / 0.14, 0, 1);
+            const strike = Math.sin(Math.PI * progress);
+            ctx.translate(e.face * strike * 18, -strike * 2);
+            ctx.rotate(e.face * strike * 0.1);
+            ctx.scale(1 + strike * 0.08, 1 - strike * 0.07);
+          }
         } else if (e.telegraph > 0) {
           const cast = 0.5 + 0.5 * Math.sin(e.animT * 18);
-          ctx.scale(1 + cast * 0.018, 1 - cast * 0.01);
+          ctx.translate(e.face * cast * 3, -cast * 4);
+          ctx.rotate(e.face * (cast - 0.5) * 0.045);
+          ctx.scale(1 + cast * 0.035, 1 - cast * 0.02);
+        } else if (e.attackAnimT > 0) {
+          const recover = clamp(e.attackAnimT / 0.32, 0, 1);
+          const follow = Math.sin(Math.PI * recover);
+          ctx.translate(e.face * follow * 9, -follow * 2);
+          ctx.rotate(e.face * follow * 0.07);
+          ctx.scale(1 + follow * 0.035, 1 - follow * 0.025);
+        }
+        if (e.hurtT > 0) {
+          const hurtMax = e.hurtStrength > 0.75 ? 0.32 : 0.26;
+          const elapsed = clamp(1 - e.hurtT / hurtMax, 0, 1);
+          const recoil = Math.sin(Math.PI * elapsed);
+          const kick = (8 + e.hurtStrength * 8) * recoil;
+          ctx.translate(e.hurtDx * kick, e.hurtDy * kick * TILT - recoil * (2 + e.hurtStrength * 3));
+          ctx.rotate(e.hurtDx * recoil * 0.1);
+          ctx.scale(1 + recoil * 0.07, 1 - recoil * 0.1);
+        }
+        if (e.def.behavior === 'aerial') {
+          const hover = Math.sin(e.animT * 10);
+          ctx.rotate(hover * 0.018);
+          ctx.scale(1 + Math.abs(hover) * 0.012, 1 - Math.abs(hover) * 0.008);
         }
         if (e.face < 0) ctx.scale(-1, 1);
         ctx.drawImage(img, frame * atlas.fw, 0, atlas.fw, atlas.fh, -dw / 2, -atlas.feetY * sc, dw, dh);
-        ctx.restore();
-        // boss hp bar (only while the boss is actually on screen)
-        if (e.boss && x > -80 && x < vw + 80 && y > -80 && y < vh + 80) {
-          const bw = 120;
-          ctx.fillStyle = 'rgba(10,12,20,0.7)';
-          ctx.fillRect(x - bw / 2, y - dh - 18, bw, 10);
-          ctx.fillStyle = '#e8283f';
-          ctx.fillRect(x - bw / 2 + 1.5, y - dh - 16.5, (bw - 3) * Math.max(0, e.hp / e.maxHp), 7);
+        if (sim.freezeT > 0) {
+          // The precomputed material is clipped to this atlas and exact pose;
+          // the old one-size ice shell made bulls, drones and humans identical.
+          const elapsed = Number.isFinite(sim.freezeT)
+            ? Math.max(0, FREEZE_DURATION - sim.freezeT)
+            : 0.72;
+          const flicker = 0.92 + Math.sin(elapsed * 12 + it.idx * 0.71) * 0.04;
+          ctx.globalAlpha = flicker;
+          ctx.globalCompositeOperation = 'source-over';
+          ctx.drawImage(atlas.frost, frame * atlas.fw, 0, atlas.fw, atlas.fh, -dw / 2, -atlas.feetY * sc, dw, dh);
         }
+        ctx.restore();
+        if (e.orbitHitT > 0 && this.orbitImpactSpr) {
+          const u = clamp(1 - e.orbitHitT / 0.38, 0, 1);
+          const impactSize = clamp(82 + e.radius * 1.2, 94, e.boss ? 164 : 132);
+          ctx.save();
+          ctx.globalAlpha = Math.pow(1 - u, 1.7) * 0.96;
+          ctx.globalCompositeOperation = 'lighter';
+          ctx.translate(x - e.hurtDx * 9, y - lift - Math.min(30, e.radius * sc * 0.34));
+          ctx.rotate(hitAngle);
+          ctx.scale(0.72 + u * 0.58, 0.72 + u * 0.34);
+          ctx.drawImage(this.orbitImpactSpr, -impactSize * 0.82, -impactSize / 2, impactSize, impactSize);
+          ctx.restore();
+        }
+        if (e.lungeT > 0 && e.def.behavior !== 'charger') {
+          const strikeProgress = clamp(1 - e.lungeT / 0.16, 0, 0.999);
+          this.drawVfxFrame(
+            ctx,
+            this.playerHurtSpr,
+            Math.floor(strikeProgress * 6),
+            x + e.face * 28,
+            y - lift - 26,
+            clamp(82 + e.radius, 92, 132),
+            e.face < 0 ? Math.PI : 0,
+            0.76,
+            true,
+            0.7,
+          );
+        }
+        // Every ordinary living threat carries a compact physical scoreboard
+        // bar; elites gain numeric HP and a stronger metal/glow accent.
+        // Generated plates retain transparent headroom; compensate here so
+        // the bar hugs the visible silhouette instead of floating too high.
+        const healthY = y - lift - atlas.feetY * sc + (e.boss ? 8 : e.elite ? 8 : 12);
+        // Boss HP already has a large persistent screen-space plate; omitting
+        // the duplicate billboard prevents it clipping above giant bosses.
+        if (!e.boss) this.drawEnemyHealthBar(ctx, e, x, healthY, time);
       } else if (it.kind === 1) {
         const running = p.moving || p.dashT > 0;
         const vis = this.heroVisual(def, save, running, p.kickT > 0);
-        const atlas = vis.atlas;
+        const heroSkinId = save.equippedSkin(def.id);
+        const heroSkin = heroSkinId ? SKINS.find((skin) => skin.id === heroSkinId) : undefined;
+        const semanticAtlas = p.hurtT > 0 || sim.over === 'lost'
+          ? getStripAtlas(def.id, heroSkin?.kit.shirt)
+          : null;
+        const atlas = semanticAtlas ?? vis.atlas;
         const x = toSX(p.x);
         const y = toSY(p.y);
-        this.shadow(ctx, x, y, 26);
-        // player indicator: soft team-colored underglow so the hero never
-        // disappears inside a crowd pile
-        const glow = ctx.createRadialGradient(x, y, 4, x, y, 34);
-        glow.addColorStop(0, 'rgba(128,237,153,0.4)');
-        glow.addColorStop(0.7, 'rgba(128,237,153,0.14)');
-        glow.addColorStop(1, 'rgba(128,237,153,0)');
-        ctx.fillStyle = glow;
-        ctx.beginPath();
-        ctx.ellipse(x, y + 2, 34, 15, 0, 0, TAU);
-        ctx.fill();
-        ctx.strokeStyle = 'rgba(245,247,250,0.55)';
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        ctx.ellipse(x, y + 2, 21, 9, 0, 0, TAU);
-        ctx.stroke();
+        // The delivered feet baseline is the only grounding cue. A separate
+        // contact shadow/selection ring made the player float above the plate.
         // dash trail
         if (p.dashT > 0) {
-          ctx.strokeStyle = 'rgba(128,237,153,0.5)';
+          const dashAngle = Math.atan2(p.dashDy * TILT, p.dashDx);
+          ctx.save();
+          ctx.translate(x, y - 8);
+          ctx.rotate(dashAngle);
+          const dashGlow = ctx.createLinearGradient(-86, 0, 5, 0);
+          dashGlow.addColorStop(0, 'rgba(128,237,153,0)');
+          dashGlow.addColorStop(0.68, 'rgba(128,237,153,0.32)');
+          dashGlow.addColorStop(1, 'rgba(232,255,238,0.8)');
+          ctx.strokeStyle = dashGlow;
           ctx.lineWidth = 8;
+          ctx.lineCap = 'round';
           ctx.beginPath();
-          ctx.moveTo(x, y - 20);
-          ctx.lineTo(x - p.dashDx * 60, y - p.dashDy * 60 * TILT - 20);
+          ctx.moveTo(-86, 0);
+          ctx.lineTo(2, 0);
           ctx.stroke();
+          // Alternating cleat cuts make the trail read as a football sprint,
+          // not a generic sci-fi beam.
+          for (let mark = 0; mark < 4; mark++) {
+            const mx = -18 - mark * 17;
+            const my = (mark % 2 === 0 ? -1 : 1) * 6;
+            ctx.globalAlpha = 0.78 - mark * 0.13;
+            ctx.fillStyle = '#bfffd0';
+            ctx.beginPath();
+            ctx.ellipse(mx, my, 6.5, 2.2, mark % 2 === 0 ? -0.24 : 0.24, 0, TAU);
+            ctx.fill();
+            ctx.strokeStyle = '#37d67a';
+            ctx.lineWidth = 1.5;
+            for (let cleat = -1; cleat <= 1; cleat++) {
+              ctx.beginPath();
+              ctx.moveTo(mx + cleat * 3, my - 5);
+              ctx.lineTo(mx + cleat * 3 - 4, my - 10);
+              ctx.stroke();
+            }
+          }
+          ctx.restore();
         }
         // Idle plays the dedicated neutral clip. Keep the feet planted; any
         // breathing motion belongs inside the art rather than moving the body.
-        const frame =
-          vis.kind === 'kick'
+        const frame = semanticAtlas
+          ? Math.min(3, semanticAtlas.frames - 1)
+          : vis.kind === 'kick'
             ? Math.min(atlas.frames - 1, Math.floor(clamp(1 - p.kickT / KICK_DURATION, 0, 0.999) * atlas.frames))
           : vis.kind === 'idle' ? Math.floor(time * 4.5) % atlas.frames
-          : vis.kind === 'run' ? Math.floor(p.animT * 11) % atlas.frames
+          : vis.kind === 'run' ? Math.floor(p.animT * 12.2) % atlas.frames
           : 0;
-        const bobY = vis.kind === 'run-held' ? Math.sin(time * 2.6) * 1.6 : 0;
-        const sc = ENTITY_SCALE * (80 / atlas.fh);
+        const bobY = 0;
+        const sc = PLAYER_ENTITY_SCALE * (80 / atlas.fh);
         const dw = atlas.fw * sc;
         const dh = atlas.fh * sc;
         const blink = p.iframes > 0 && Math.floor(time * 20) % 2 === 0;
         ctx.save();
         ctx.translate(x, y);
+        if (sim.over === 'lost') {
+          if (this.lossStartedAt < 0) this.lossStartedAt = time;
+          const fall = clamp((time - this.lossStartedAt) / 0.72, 0, 1);
+          const easedFall = Math.sin((fall * Math.PI) / 2);
+          ctx.translate(p.face * easedFall * 18, easedFall * 9);
+          ctx.rotate(p.face * easedFall * 1.18);
+        }
+        if (p.hurtT > 0) {
+          const recoil = Math.sin(Math.PI * clamp(p.hurtT / 0.32, 0, 1));
+          ctx.translate(p.hurtDx * recoil * 11, p.hurtDy * recoil * 11 * TILT - recoil * 3);
+          ctx.rotate(p.hurtDx * recoil * 0.07);
+          ctx.scale(1 + recoil * 0.05, 1 - recoil * 0.08);
+        }
         if (p.face < 0 && atlas.flippable) ctx.scale(-1, 1);
         if (blink) ctx.globalAlpha = 0.45;
         ctx.drawImage(atlas.canvas, frame * atlas.fw, 0, atlas.fw, atlas.fh, -dw / 2, -atlas.feetY * sc + bobY, dw, dh);
         ctx.restore();
-        // orbit balls (with ground shadows to sell height)
-        const orbitLvl = sim.abilityLevel('orbit');
-        if (orbitLvl > 0) {
-          const count = [0, 2, 3, 3, 4, 5][orbitLvl] + (def.id === 'yamal' ? 1 : 0);
-          const radius = [0, 90, 90, 115, 115, 140][orbitLvl];
-          for (let b = 0; b < count; b++) {
-            const a = p.orbitAngle + (b / count) * TAU;
-            const ox = toSX(p.x + Math.cos(a) * radius);
-            const oy = toSY(p.y + Math.sin(a) * radius);
-            const lift = 12 + Math.sin(time * 7 + b * 1.7) * 3;
-            ctx.fillStyle = 'rgba(4,10,6,0.28)';
-            ctx.beginPath();
-            ctx.ellipse(ox, oy + 2, 8, 3.4, 0, 0, TAU);
-            ctx.fill();
-            ctx.save();
-            ctx.translate(ox, oy - lift);
-            ctx.rotate(time * 7.5 + b * 0.9);
-            ctx.drawImage(this.ball, -13, -13, 26, 26);
-            ctx.restore();
-          }
+        if (p.heartFxT > 0) {
+          const age = Number.isFinite(p.heartFxT) ? clamp(1 - p.heartFxT / 0.9, 0, 0.999) : 0.72;
+          const heartFrame = Math.min(5, Math.floor(age * 6));
+          const heartAlpha = Math.min(1, p.heartFxT * 2.8);
+          this.drawVfxFrame(ctx, this.captainsHeartSpr, heartFrame, x, y - 148, 102 + age * 12, 0, heartAlpha, false);
+        }
+        if (p.hurtT > 0) {
+          const hurtProgress = clamp(1 - p.hurtT / 0.32, 0, 0.999);
+          this.drawVfxFrame(ctx, this.playerHurtSpr, Math.floor(hurtProgress * 6), x, y - 30, 118, 0, 0.96, true);
         }
       } else {
         const g = sim.guards[it.idx];
-        const atlas = getStripAtlas('ally-bodyguard') ?? guardAtlas();
-        const sc = ENTITY_SCALE * (80 / atlas.fh) * 1.05;
+        const guardIds = ['ally-bodyguard-rookie', 'ally-bodyguard', 'ally-bodyguard-heavy', 'ally-bodyguard-scout'] as const;
+        const semanticAtlas = getStripAtlas(guardIds[g.variant]) ?? guardAtlas();
+        const locomoting = g.moving && g.strikeT <= 0 && g.blockT <= 0;
+        const runAtlas = locomoting ? getStripAtlas(`${guardIds[g.variant]}-run`) : null;
+        const atlas = runAtlas ?? semanticAtlas;
+        const variantScale = g.variant === 0 ? 0.92 : g.variant === 2 ? 1.14 : g.variant === 3 ? 1.02 : 0.87;
+        const sc = ALLY_ENTITY_SCALE * (80 / atlas.fh) * variantScale;
         const x = toSX(g.x);
         const y = toSY(g.y);
-        this.shadow(ctx, x, y, 22);
-        const frame = guardPoseFrame(g, atlas.frames);
+        if (g.strikeT > 0) {
+          const strikeProgress = clamp(1 - g.strikeT / 0.24, 0, 0.999);
+          this.drawVfxFrame(
+            ctx,
+            this.guardSlamSpr,
+            Math.floor(strikeProgress * 6),
+            x + g.face * (g.variant === 2 ? 34 : 28),
+            y - 18,
+            g.variant === 2 ? 112 : 90,
+            g.face < 0 ? Math.PI : 0,
+            0.82,
+            true,
+          );
+        }
+        const frame = runAtlas
+          ? Math.floor(g.animT * (g.variant === 3 ? 11.5 : g.variant === 0 ? 11 : 10.5)) % runAtlas.frames
+          : guardPoseFrame(g, semanticAtlas.frames);
         ctx.save();
         ctx.translate(x, y);
-        if (g.moving && g.strikeT <= 0 && g.blockT <= 0) {
-          const gait = Math.sin(g.animT * 12);
-          ctx.translate(0, -Math.abs(gait) * 1.5);
-          ctx.rotate(g.face * gait * 0.018);
-        } else if (g.strikeT > 0) {
+        if (g.strikeT > 0) {
           const punch = Math.sin(Math.PI * (1 - g.strikeT / 0.24));
           ctx.translate(g.face * punch * 7, -punch);
           ctx.rotate(g.face * punch * 0.045);
@@ -804,60 +1368,71 @@ export class Renderer {
       ctx.fill();
       ctx.save();
       ctx.translate(x, y - 16 - b.z);
-      ctx.rotate(b.spin * time * 4);
+      ctx.rotate(Math.sin(b.flightT * 9) * 0.1);
       const bs = 1 + hFrac * 0.12; // slight forced perspective near the apex
-      ctx.drawImage(this.ball, -11 * bs, -11 * bs, 22 * bs, 22 * bs);
+      this.drawMatchBall(ctx, 0, 0, 24 * bs, Math.floor(b.flightT * 16 * Math.max(0.6, Math.abs(b.spin))));
       ctx.restore();
     }
-    // homing AERIAL seekers: elevated sprites, ground shadows and clean velocity trails
+    // Homing AERIAL seekers: physical airborne sprites paired with generated
+    // six-frame wakes. The wake anchor follows the projectile through turns.
     for (const s of sim.seekers) {
       if (!s.active) continue;
       const x = toSX(s.x);
       const y = toSY(s.y);
-      const lx = toSX(s.lastX);
-      const ly = toSY(s.lastY);
-      const t1x = toSX(s.trail1X);
-      const t1y = toSY(s.trail1Y);
-      const t2x = toSX(s.trail2X);
-      const t2y = toSY(s.trail2Y);
       const lift = 16 + s.z;
-      const color = s.kind === 'curveball' ? '#47d7ff' : '#ffbf36';
-      const size = s.kind === 'curveball' ? 42 : 50;
+      const size = s.kind === 'curveball' ? 40 : 48;
       const screenAngle = Math.atan2(s.vy * TILT, s.vx);
+      const age = s.maxLife - s.life;
 
       ctx.fillStyle = 'rgba(4,10,6,0.24)';
       ctx.beginPath();
       ctx.ellipse(x, y + 2, s.kind === 'curveball' ? 8 : 11, s.kind === 'curveball' ? 3.5 : 4.5, 0, 0, TAU);
       ctx.fill();
 
-      ctx.save();
-      ctx.globalCompositeOperation = 'lighter';
-      ctx.strokeStyle = color;
-      ctx.globalAlpha = s.kind === 'curveball' ? 0.72 : 0.8;
-      ctx.lineWidth = s.kind === 'curveball' ? 4 : 6;
-      ctx.lineCap = 'round';
-      ctx.beginPath();
-      ctx.moveTo(t2x, t2y - lift);
-      ctx.bezierCurveTo(t1x, t1y - lift, lx, ly - lift, x, y - lift);
-      ctx.stroke();
-      ctx.restore();
+      // A ping-pong frame order keeps the generated wake breathing without a
+      // visible jump from its dissipated final cell back to the full burst.
+      const wakeOrder = [0, 1, 2, 3, 2, 1];
+      const wakeFrame = wakeOrder[Math.floor(age * 15 + s.phase * 2) % wakeOrder.length];
+      const wakeSprite = s.kind === 'curveball' ? this.curveTrailSpr : this.goldenBootTrailSpr;
+      this.drawVfxFrame(
+        ctx,
+        wakeSprite,
+        wakeFrame,
+        x,
+        y - lift,
+        s.kind === 'curveball' ? 112 : 134,
+        screenAngle,
+        s.kind === 'curveball' ? 0.86 : 0.98,
+        true,
+        0.82,
+      );
 
+      const sprite = s.kind === 'curveball' ? this.curveballSpr : this.goldenBootSpr;
       ctx.save();
       ctx.translate(x, y - lift);
-      // Generated assets point down-left in their source plate; align the toe/
-      // comet nose with the current velocity instead of flying backwards.
-      ctx.rotate(screenAngle - (Math.PI * 3) / 4);
-      const sprite = s.kind === 'curveball' ? this.curveballSpr : this.goldenBootSpr;
-      ctx.drawImage(sprite, -size / 2, -size / 2, size, size);
+      const pulse = 1 + Math.sin(age * 14 + s.phase) * (s.kind === 'curveball' ? 0.035 : 0.025);
+      ctx.rotate(s.kind === 'curveball'
+        ? age * 13 + s.phase
+        : screenAngle + Math.PI / 4 + Math.sin(age * 17 + s.phase) * 0.06);
+      ctx.drawImage(sprite, -size * pulse / 2, -size * pulse / 2, size * pulse, size * pulse);
       ctx.restore();
     }
     // bottles
     for (const b of sim.bottles) {
       if (!b.active) continue;
+      const bx = toSX(b.x);
+      const by = toSY(b.y) - (b.kind === 'electric' ? 28 : 12);
       ctx.save();
-      ctx.translate(toSX(b.x), toSY(b.y) - 12);
-      ctx.rotate(time * 9);
-      ctx.drawImage(this.bottleSpr, -6, -10, 12, 20);
+      ctx.translate(bx, by);
+      if (b.kind === 'electric') {
+        const a = Math.atan2(b.vy * TILT, b.vx);
+        const age = Math.max(0, 1.45 - b.life);
+        const shotFrame = age < 0.08 ? 0 : 1 + (Math.floor(time * 22 + age * 9) % 4);
+        this.drawVfxFrame(ctx, this.droneShotSpr, shotFrame, 0, 0, 72, a, 0.98, true, 0.44);
+      } else {
+        ctx.rotate(time * 9);
+        ctx.drawImage(this.bottleSpr, -6, -10, 12, 20);
+      }
       ctx.restore();
     }
 
@@ -865,12 +1440,61 @@ export class Renderer {
     for (const r of sim.rings) {
       if (!r.active) continue;
       const a = clamp(r.life / 0.45, 0, 1);
-      ctx.globalAlpha = r.color === '#f5f7fa' ? a * 0.9 : a;
+      if (r.color === '#7ce7ff' && this.guardSlamSpr) {
+        const slamProgress = clamp(1 - r.life / 0.45, 0, 0.999);
+        this.drawVfxFrame(
+          ctx,
+          this.guardSlamSpr,
+          Math.floor(slamProgress * 6),
+          toSX(r.x),
+          toSY(r.y) - 12,
+          Math.max(116, r.maxR * 1.72),
+          0,
+          Math.min(1, a * 1.35),
+          true,
+        );
+        continue;
+      }
+      const whistle = r.color === '#f5f7fa';
+      const pitchBlast = r.color === '#a8ff4d' || r.color === '#f5ff9b';
+      ctx.globalAlpha = whistle ? a * 0.9 : a;
       ctx.strokeStyle = r.color;
       ctx.lineWidth = 5 * a + 1;
       ctx.beginPath();
       ctx.ellipse(toSX(r.x), toSY(r.y), r.r, r.r * TILT, 0, 0, TAU);
       ctx.stroke();
+      if (whistle) {
+        // Short tangential sound dashes keep Captain's Whistle visually
+        // separate from damage blasts while staying readable in a crowd.
+        ctx.strokeStyle = `rgba(225,248,255,${a * 0.82})`;
+        ctx.lineWidth = 3;
+        ctx.lineCap = 'round';
+        for (let dash = 0; dash < 12; dash++) {
+          const angle = (dash / 12) * TAU + time * 0.35;
+          const inner = r.r - 9;
+          const outer = r.r + 9;
+          ctx.beginPath();
+          ctx.moveTo(toSX(r.x + Math.cos(angle) * inner), toSY(r.y + Math.sin(angle) * inner));
+          ctx.lineTo(toSX(r.x + Math.cos(angle) * outer), toSY(r.y + Math.sin(angle) * outer));
+          ctx.stroke();
+        }
+      } else if (pitchBlast) {
+        // Jagged turf fissures belong to the GROUND layer; the separate cyan
+        // airburst impact above it communicates the smaller AERIAL detonation.
+        ctx.strokeStyle = `rgba(214,255,140,${a * 0.72})`;
+        ctx.lineWidth = 2.5;
+        for (let crack = 0; crack < 8; crack++) {
+          const angle = (crack / 8) * TAU + 0.22;
+          const inner = Math.max(12, r.r * 0.34);
+          const mid = r.r * 0.61;
+          const outer = r.r * 0.88;
+          ctx.beginPath();
+          ctx.moveTo(toSX(r.x + Math.cos(angle) * inner), toSY(r.y + Math.sin(angle) * inner));
+          ctx.lineTo(toSX(r.x + Math.cos(angle + 0.08) * mid), toSY(r.y + Math.sin(angle + 0.08) * mid));
+          ctx.lineTo(toSX(r.x + Math.cos(angle - 0.035) * outer), toSY(r.y + Math.sin(angle - 0.035) * outer));
+          ctx.stroke();
+        }
+      }
     }
     ctx.globalAlpha = 1;
 
@@ -893,26 +1517,53 @@ export class Renderer {
       ctx.beginPath();
       ctx.ellipse(toSX(pr.x), toSY(pr.y), Math.max(1, pr.r - 7), (pr.r - 7) * TILT, 0, 0, TAU);
       ctx.stroke();
+      // Pitch-facing chevrons point with the shove front. At max level their
+      // reversed inner row also exposes the brief vortex pull before release.
+      const maxPressure = sim.abilityLevel('pressure') >= 5;
+      const arrows = pr.r > 42 ? 8 : 4;
+      ctx.lineWidth = 2;
+      for (let arrow = 0; arrow < arrows; arrow++) {
+        const angle = (arrow / arrows) * TAU + time * 0.18;
+        const ax = toSX(pr.x + Math.cos(angle) * pr.r);
+        const ay = toSY(pr.y + Math.sin(angle) * pr.r);
+        const screenAngle = Math.atan2(Math.sin(angle) * TILT, Math.cos(angle));
+        ctx.save();
+        ctx.translate(ax, ay);
+        ctx.rotate(screenAngle);
+        ctx.strokeStyle = `rgba(229,255,238,${a * 0.78})`;
+        ctx.beginPath();
+        ctx.moveTo(-7, -5);
+        ctx.lineTo(1, 0);
+        ctx.lineTo(-7, 5);
+        ctx.stroke();
+        if (maxPressure) {
+          ctx.strokeStyle = `rgba(128,237,153,${a * 0.5})`;
+          ctx.beginPath();
+          ctx.moveTo(-15, -4);
+          ctx.lineTo(-21, 0);
+          ctx.lineTo(-15, 4);
+          ctx.stroke();
+        }
+        ctx.restore();
+      }
     }
 
     // landing reticles for incoming aerial lobs
     for (const rc of sim.reticles) {
       if (!rc.active) continue;
       const u = clamp(rc.t / rc.max, 0, 1); // 1 -> 0 as the ball descends
-      const rr = 16 + 34 * u;
       const x = toSX(rc.x);
       const y = toSY(rc.y);
-      ctx.strokeStyle = `rgba(255,209,102,${0.3 + (1 - u) * 0.6})`;
-      ctx.lineWidth = 2.5;
-      ctx.setLineDash([7, 6]);
-      ctx.beginPath();
-      ctx.ellipse(x, y, rr, rr * TILT, 0, 0, TAU);
-      ctx.stroke();
-      ctx.setLineDash([]);
-      ctx.fillStyle = `rgba(255,209,102,${0.35 + (1 - u) * 0.5})`;
-      ctx.beginPath();
-      ctx.ellipse(x, y, 3.5, 2, 0, 0, TAU);
-      ctx.fill();
+      const targetFrame = Math.min(5, Math.floor((1 - u) * 6));
+      this.drawGroundVfxFrame(
+        ctx,
+        this.aerialTargetSpr,
+        targetFrame,
+        x,
+        y,
+        76 + u * 58,
+        0.58 + (1 - u) * 0.42,
+      );
     }
 
     // particles
@@ -925,8 +1576,8 @@ export class Renderer {
     }
     ctx.globalAlpha = 1;
 
-    // Directional contact flashes. A bright core pins the exact collision
-    // point while short tapered rays communicate the incoming force.
+    // Generated directional contact, aerial and landing bursts. The source
+    // strips carry the exact impact silhouette; no procedural ray scaffolding.
     for (const impact of sim.impacts) {
       if (!impact.active) continue;
       const remaining = clamp(impact.life / impact.maxLife, 0, 1);
@@ -934,57 +1585,35 @@ export class Renderer {
       const x = toSX(impact.x);
       const groundY = toSY(impact.y);
       const angle = Math.atan2(Math.sin(impact.angle) * TILT, Math.cos(impact.angle));
-      const alpha = Math.min(1, remaining * 1.8);
-      const size = (12 + age * 15) * impact.strength;
-      ctx.save();
-      ctx.globalAlpha = alpha;
-      if (impact.kind === 'landing') {
-        ctx.fillStyle = `rgba(255,209,102,${0.16 * remaining})`;
-        ctx.strokeStyle = `rgba(255,226,146,${0.9 * remaining})`;
-        ctx.lineWidth = 3;
-        ctx.beginPath();
-        ctx.ellipse(x, groundY, size * 1.5, size * 0.62, 0, 0, TAU);
-        ctx.fill();
-        ctx.stroke();
-      } else if (impact.kind === 'airburst') {
-        const airY = groundY - 78;
-        const glow = ctx.createRadialGradient(x, airY, 2, x, airY, size * 1.35);
-        glow.addColorStop(0, `rgba(255,255,255,${0.55 * remaining})`);
-        glow.addColorStop(0.35, `rgba(112,231,255,${0.28 * remaining})`);
-        glow.addColorStop(1, 'rgba(112,231,255,0)');
-        ctx.fillStyle = glow;
-        ctx.beginPath();
-        ctx.arc(x, airY, size * 1.35, 0, TAU);
-        ctx.fill();
-        ctx.strokeStyle = `rgba(174,244,255,${0.85 * remaining})`;
-        ctx.lineWidth = 2.5;
-        ctx.beginPath();
-        ctx.arc(x, airY, size * (0.7 + age * 0.45), 0, TAU);
-        ctx.stroke();
-      }
-      ctx.translate(x, groundY - (impact.kind === 'landing' ? 8 : impact.kind === 'airburst' ? 78 : 22));
-      ctx.rotate(angle);
-      ctx.strokeStyle = impact.color;
-      ctx.lineCap = 'round';
-      ctx.lineWidth = 3.2 * impact.strength * remaining + 1;
-      const rayCount = impact.strength > 1.25 ? 7 : impact.strength > 1 ? 5 : 3;
-      for (let i = 0; i < rayCount; i++) {
-        const rayAngle = (i / rayCount) * TAU;
-        const directionalBias = 0.72 + Math.max(0, Math.cos(rayAngle)) * 0.38;
-        const inner = 3 + (i % 2) * 1.2;
-        const outer = size * directionalBias * (0.8 + (i % 2) * 0.2);
-        ctx.beginPath();
-        ctx.moveTo(Math.cos(rayAngle) * inner, Math.sin(rayAngle) * inner);
-        ctx.lineTo(Math.cos(rayAngle) * outer, Math.sin(rayAngle) * outer);
-        ctx.stroke();
-      }
-      ctx.fillStyle = '#ffffff';
-      ctx.beginPath();
-      ctx.arc(0, 0, Math.max(2, 5 * remaining * impact.strength), 0, TAU);
-      ctx.fill();
-      ctx.restore();
+      const frame = Math.min(5, Math.floor(clamp(age, 0, 0.999) * 6));
+      const landing = impact.kind === 'landing';
+      const airburst = impact.kind === 'airburst';
+      const sprite = landing ? this.knockoutSpr : this.contactHitSpr;
+      const impactY = groundY - (landing ? 10 : airburst ? 78 : 24);
+      const size = (landing ? 108 : airburst ? 98 : 76) * impact.strength;
+      this.drawVfxFrame(ctx, sprite, frame, x, impactY, size, landing ? 0 : angle, Math.min(1, remaining * 1.8), true);
     }
     ctx.globalAlpha = 1;
+
+    // The final player knockout is also a generated sequence. It has enough
+    // time to complete before the result screen replaces the live pitch.
+    if (sim.over === 'lost') {
+      if (this.lossStartedAt < 0) this.lossStartedAt = time;
+      const lossProgress = clamp((time - this.lossStartedAt) / 1.05, 0, 0.999);
+      this.drawVfxFrame(
+        ctx,
+        this.knockoutSpr,
+        Math.floor(lossProgress * 6),
+        toSX(sim.player.x),
+        toSY(sim.player.y) - 16,
+        164,
+        0,
+        1 - lossProgress * 0.18,
+        false,
+      );
+    } else {
+      this.lossStartedAt = -1;
+    }
 
     // damage numbers
     ctx.textAlign = 'center';
@@ -1010,10 +1639,29 @@ export class Renderer {
     ctx.fillStyle = vg;
     ctx.fillRect(0, 0, vw, vh);
 
+    // Stoppage-Time Freeze keeps the field readable while clearly freezing
+    // the hostile layer. A cool rim and scan sheen avoid a flat blue overlay.
+    if (sim.freezeT > 0) {
+      ctx.fillStyle = `rgba(82,210,255,${0.055 + 0.018 * Math.sin(time * 8)})`;
+      ctx.fillRect(0, 0, vw, vh);
+      const iceRim = ctx.createRadialGradient(vw / 2, vh / 2, vh * 0.3, vw / 2, vh / 2, vh * 0.82);
+      iceRim.addColorStop(0, 'rgba(124,236,255,0)');
+      iceRim.addColorStop(1, 'rgba(124,236,255,0.34)');
+      ctx.fillStyle = iceRim;
+      ctx.fillRect(0, 0, vw, vh);
+    }
+
     // hurt flash
     if (this.flashWarn > 0) {
       this.flashWarn -= 1 / 60;
-      ctx.fillStyle = `rgba(232,40,63,${Math.max(0, this.flashWarn) * 0.9})`;
+      const hurtStrength = clamp(this.flashWarn / 0.42, 0, 1);
+      ctx.fillStyle = `rgba(178,0,28,${hurtStrength * 0.2})`;
+      ctx.fillRect(0, 0, vw, vh);
+      const redVignette = ctx.createRadialGradient(vw / 2, vh / 2, vh * 0.18, vw / 2, vh / 2, vh * 0.76);
+      redVignette.addColorStop(0, 'rgba(205,0,32,0)');
+      redVignette.addColorStop(0.58, `rgba(205,0,32,${hurtStrength * 0.12})`);
+      redVignette.addColorStop(1, `rgba(205,0,32,${hurtStrength * 0.72})`);
+      ctx.fillStyle = redVignette;
       ctx.fillRect(0, 0, vw, vh);
     }
     // paparazzo white flash
@@ -1031,22 +1679,6 @@ export class Renderer {
     }
 
     ctx.setTransform(1, 0, 0, 1, 0, 0);
-  }
-
-  private shadow(ctx: CanvasRenderingContext2D, x: number, y: number, r: number): void {
-    // soft cast shadow, offset down-right (key light from top-left)
-    const g = ctx.createRadialGradient(x + r * 0.35, y + 4, r * 0.1, x + r * 0.35, y + 4, r * 1.55);
-    g.addColorStop(0, 'rgba(6,12,8,0.34)');
-    g.addColorStop(1, 'rgba(6,12,8,0)');
-    ctx.fillStyle = g;
-    ctx.beginPath();
-    ctx.ellipse(x + r * 0.35, y + 4, r * 1.55, r * 0.62, 0, 0, TAU);
-    ctx.fill();
-    // tight contact shadow
-    ctx.fillStyle = 'rgba(4,10,6,0.42)';
-    ctx.beginPath();
-    ctx.ellipse(x, y + 2, r * 0.72, r * 0.3, 0, 0, TAU);
-    ctx.fill();
   }
 
   private drawCrowd(

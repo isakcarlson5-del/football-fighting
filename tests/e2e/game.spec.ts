@@ -96,6 +96,23 @@ test('all ability draft cards load their generated lane artwork', async ({ page 
   }
 });
 
+test('every training and fallback draft card loads its unique generated artwork', async ({ page }) => {
+  await page.click('[data-act="play"]');
+  await page.click('[data-act="start"]');
+  for (const ids of [
+    ['power', 'speed', 'maxhp'],
+    ['regen', 'magnet', 'armor'],
+    ['heal', 'coins', 'maxhp'],
+  ] as const) {
+    await page.evaluate((cardIds) => window.__FF.showTrainingCards([...cardIds]), ids);
+    const art = page.locator('.upgrade-card .ability-art');
+    await expect(art).toHaveCount(3);
+    await expect.poll(async () => art.evaluateAll((images) => images.every((img) => (img as HTMLImageElement).complete && (img as HTMLImageElement).naturalWidth > 0))).toBe(true);
+    const sources = await art.evaluateAll((images) => images.map((img) => (img as HTMLImageElement).getAttribute('src')));
+    expect(sources).toEqual(ids.map((id) => `art/cards/${id}.webp`));
+  }
+});
+
 test('ability draft starts at the title and remains scrollable on mobile', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.click('[data-act="play"]');
@@ -129,12 +146,12 @@ test('surviving to full time shows the victory screen', async ({ page }) => {
   await expect(page.locator('.screen-title')).toContainText('Full Time');
 });
 
-test('boss spawns at half time with nameplate', async ({ page }) => {
+test('miniboss spawns at seven minutes with nameplate', async ({ page }) => {
   await page.click('[data-act="play"]');
   await page.click('[data-act="start"]');
   await page.waitForTimeout(300);
   await page.evaluate(() => {
-    // Bosses are serialized; stage half-time as if the first-quarter boss was
+    // Bosses are serialized; stage 7:00 as if the four-minute boss was
     // already defeated so this test specifically verifies the official.
     window.__FF.getSim().boss0Spawned = true;
     window.__FF.skipToBoss(1);
@@ -195,6 +212,19 @@ test('pause overlay opens and resumes', async ({ page }) => {
   expect(await page.evaluate(() => window.__FF.getState().run)).toBe('playing');
 });
 
+test('boss trophy loot pauses for two consecutive ability picks', async ({ page }) => {
+  await page.goto('/?debug=1&stage=boss-loot');
+  await expect(page.getByRole('heading', { name: 'Boss Loot' })).toBeVisible();
+  await expect(page.getByText('Choose an ability · 2 picks remaining')).toBeVisible();
+  await expect(page.locator('#levelup-screen .upgrade-card')).toHaveCount(3);
+  await page.locator('#levelup-screen .upgrade-card').first().click();
+  await expect(page.getByText('Choose an ability · 1 pick remaining')).toBeVisible();
+  await expect(page.locator('#levelup-screen .upgrade-card')).toHaveCount(3);
+  await page.locator('#levelup-screen .upgrade-card').first().click();
+  await expect(page.locator('#levelup-screen')).toHaveCount(0);
+  expect(await page.evaluate(() => window.__FF.getState().run)).toBe('playing');
+});
+
 test('performance: stable fps with a heavy late-game horde', async ({ page }) => {
   await page.click('[data-act="play"]');
   await page.click('[data-act="start"]');
@@ -209,12 +239,77 @@ test('performance: stable fps with a heavy late-game horde', async ({ page }) =>
     };
     sim.player.maxHp = 5000;
     sim.player.hp = 5000;
+    // This is a render-load fixture, not a pacing assertion. The production
+    // director now introduces threats continuously one at a time, so stage a
+    // real dense horde explicitly before measuring sustained FPS.
+    const ids = ['invader', 'sprinter', 'lobber', 'flag', 'steward', 'drone'];
+    for (let i = 0; i < 120; i++) {
+      const angle = (i / 120) * Math.PI * 2;
+      const radius = 300 + (i % 5) * 55;
+      ff.debugSpawn(ids[i % ids.length], Math.cos(angle) * radius, Math.sin(angle) * radius);
+    }
   });
-  await page.waitForTimeout(9000); // let the horde build
+  await page.waitForTimeout(5000); // exercise max abilities against the staged horde
   const { fps, enemies } = await page.evaluate(() => ({
     fps: window.__FF.getFps(),
     enemies: window.__FF.getSim()!.enemies.filter((e: { active: boolean }) => e.active).length,
   }));
   expect(enemies).toBeGreaterThan(60);
   expect(fps).toBeGreaterThan(45);
+});
+
+test('sustained live play never crashes or returns to the menu', async ({ page }) => {
+  const errors = await collectErrors(page);
+  await page.click('[data-act="play"]');
+  await page.click('[data-act="start"]');
+  await page.waitForTimeout(300);
+  await page.evaluate(() => {
+    const ff = window.__FF;
+    const sim = ff.getSim()!;
+    ff.setTime(360);
+    sim.player.maxHp = 1_000_000;
+    sim.player.hp = 1_000_000;
+    sim.player.xpNext = 1_000_000_000;
+    sim.player.abilities = {
+      strike: 5, curveball: 5, bootseekers: 5,
+      orbit: 5, whistle: 5, dash: 5, guard: 5,
+      pressure: 5, blast: 5,
+    };
+    const ids = ['invader', 'sprinter', 'lobber', 'flare', 'flag', 'steward', 'drone', 'bull'];
+    for (let i = 0; i < 96; i++) {
+      const angle = (i / 96) * Math.PI * 2;
+      const radius = 260 + (i % 6) * 58;
+      ff.debugSpawn(ids[i % ids.length], Math.cos(angle) * radius, Math.sin(angle) * radius, i % 19 === 0);
+    }
+  });
+
+  // Exercise real input, renderer, director, bosses, projectiles and VFX long
+  // enough to catch the former unexplained run-to-menu/reset failure.
+  await page.keyboard.down('KeyD');
+  await page.waitForTimeout(5000);
+  await page.keyboard.up('KeyD');
+  await page.keyboard.down('KeyS');
+  await page.waitForTimeout(5000);
+  await page.keyboard.up('KeyS');
+  await page.keyboard.down('KeyA');
+  await page.waitForTimeout(5000);
+  await page.keyboard.up('KeyA');
+  await page.keyboard.down('KeyW');
+  await page.waitForTimeout(5000);
+  await page.keyboard.up('KeyW');
+
+  const state = await page.evaluate(() => ({
+    state: window.__FF.getState(),
+    time: window.__FF.getSim()!.time,
+    hp: window.__FF.getSim()!.player.hp,
+    fps: window.__FF.getFps(),
+  }));
+  expect(state.state).toEqual({ app: 'run', run: 'playing' });
+  // Browser scheduling can lose a few fixed steps when this runs last in the
+  // full suite; fifteen simulated seconds still proves sustained live play.
+  expect(state.time).toBeGreaterThan(375);
+  expect(state.hp).toBeGreaterThan(0);
+  expect(state.fps).toBeGreaterThan(35);
+  await expect(page.locator('#game')).toBeVisible();
+  expect(errors).toEqual([]);
 });

@@ -128,6 +128,23 @@ export class AudioEngine {
     this.tone({ freq: 990, dur: 0.06, type: 'square', gain: 0.12 });
     this.tone({ freq: 1320, dur: 0.1, type: 'square', gain: 0.12, when: this.now() + 0.05 });
   }
+  magnet(): void {
+    const t = this.now();
+    this.tone({ freq: 240, freqEnd: 920, dur: 0.42, type: 'sine', gain: 0.24, when: t });
+    this.tone({ freq: 480, freqEnd: 1480, dur: 0.34, type: 'triangle', gain: 0.12, when: t + 0.06 });
+    this.noise({ dur: 0.36, gain: 0.08, freq: 1100, sweepTo: 3200, q: 1.7, when: t });
+  }
+  arenaBomb(): void {
+    const t = this.now();
+    this.tone({ freq: 92, freqEnd: 28, dur: 0.72, type: 'sine', gain: 0.56, when: t });
+    this.noise({ dur: 0.62, gain: 0.42, freq: 520, sweepTo: 70, q: 0.65, when: t });
+    this.tone({ freq: 620, freqEnd: 120, dur: 0.2, type: 'sawtooth', gain: 0.15, when: t + 0.02 });
+  }
+  timeFreeze(): void {
+    const t = this.now();
+    [1320, 990, 740, 554].forEach((f, i) => this.tone({ freq: f, freqEnd: f * 0.72, dur: 0.18, type: 'sine', gain: 0.13, when: t + i * 0.045 }));
+    this.noise({ dur: 0.5, gain: 0.1, freq: 3600, sweepTo: 900, q: 2, when: t });
+  }
   whistle(): void {
     const t = this.now();
     this.tone({ freq: 2200, freqEnd: 2600, dur: 0.28, type: 'square', gain: 0.22, when: t });
@@ -193,6 +210,18 @@ export class AudioEngine {
   chant(): void {
     this.noise({ dur: 0.7, gain: 0.16, freq: 500, sweepTo: 900, q: 0.5 });
     this.tone({ freq: 196, dur: 0.5, type: 'triangle', gain: 0.12 });
+  }
+  /** Shock Drone discharge: a short electrical crack with a descending core. */
+  zap(): void {
+    const t = this.now();
+    this.noise({ dur: 0.11, gain: 0.2, freq: 3400, sweepTo: 900, q: 2.1, when: t });
+    this.tone({ freq: 1320, freqEnd: 360, dur: 0.14, type: 'square', gain: 0.13, when: t });
+  }
+  /** Heavy hoof launch without reusing the lighter player dash sound. */
+  bullCharge(): void {
+    const t = this.now();
+    this.tone({ freq: 78, freqEnd: 36, dur: 0.28, type: 'triangle', gain: 0.46, when: t });
+    this.noise({ dur: 0.3, gain: 0.22, freq: 260, sweepTo: 90, q: 0.7, when: t });
   }
   bossHorn(): void {
     const t = this.now();

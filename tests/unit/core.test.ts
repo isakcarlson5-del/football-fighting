@@ -11,10 +11,16 @@ import {
   PLAYER_PACE_MULT,
   PLAYERS,
   SKINS,
+  difficultyProgress,
+  eliteInterval,
+  enemyDamageScale,
+  enemySpawnWeight,
+  enemySpeedScale,
   hpScale,
   metaCost,
-  spawnBatch,
+  powerPressure,
   spawnInterval,
+  spawnRate,
   xpForLevel,
 } from '../../src/game/data';
 import { Save } from '../../src/game/meta';
@@ -88,17 +94,56 @@ describe('data integrity', () => {
 
 describe('pacing curves', () => {
   it('accelerates the match while preserving a small player reaction advantage', () => {
-    expect(PLAYER_PACE_MULT).toBe(1.3);
-    expect(ENEMY_PACE_MULT).toBe(1.25);
+    expect(PLAYER_PACE_MULT).toBe(1.6);
+    expect(ENEMY_PACE_MULT).toBe(1.42);
     expect(PLAYER_PACE_MULT).toBeGreaterThan(ENEMY_PACE_MULT);
   });
   it('xp requirement grows monotonically', () => {
     for (let l = 1; l < 40; l++) expect(xpForLevel(l + 1)).toBeGreaterThan(xpForLevel(l));
   });
-  it('difficulty scales up over the run', () => {
-    expect(hpScale(300)).toBeGreaterThan(hpScale(60));
-    expect(spawnInterval(300)).toBeLessThan(spawnInterval(30));
-    expect(spawnBatch(590)).toBeGreaterThan(spawnBatch(30));
+  it('matches the reference pacing checkpoints with smooth browser-safe ramps', () => {
+    expect(spawnRate(0)).toBeCloseTo(0.6, 6);
+    expect(spawnRate(120)).toBeCloseTo(1.9, 6);
+    expect(spawnRate(300)).toBeCloseTo(6.5, 6);
+    expect(spawnRate(450)).toBeCloseTo(14, 6);
+    expect(spawnRate(600)).toBeCloseTo(30, 6);
+    expect(spawnRate(720)).toBeCloseTo(37.6, 6);
+    expect(spawnRate(119.99)).toBeLessThanOrEqual(spawnRate(120));
+    expect(spawnRate(120.01)).toBeGreaterThanOrEqual(spawnRate(120));
+    expect(spawnInterval(0)).toBeCloseTo(1 / 0.6, 6);
+  });
+  it('uses the reference HP, damage and speed endpoints without hard jumps', () => {
+    expect(hpScale(0)).toBeCloseTo(0.82, 6);
+    expect(hpScale(600)).toBeCloseTo(9.2, 6);
+    expect(enemyDamageScale(0)).toBeCloseTo(0.76, 6);
+    expect(enemyDamageScale(600)).toBeCloseTo(2.3, 6);
+    expect(enemySpeedScale(0)).toBeCloseTo(1, 6);
+    expect(enemySpeedScale(600)).toBeCloseTo(1.35, 6);
+    expect(hpScale(720)).toBeCloseTo(11.04, 6);
+    expect(enemyDamageScale(720)).toBeCloseTo(2.76, 6);
+    expect(enemySpeedScale(720)).toBeCloseTo(1.485, 6);
+    expect(enemySpeedScale(900)).toBeCloseTo(1.55, 6);
+    expect(difficultyProgress(300)).toBeLessThan(0.35);
+    expect(eliteInterval(55)).toBeCloseTo(49.25, 6);
+    expect(eliteInterval(600)).toBe(22);
+  });
+  it('live build strength increases pressure without discrete difficulty jumps', () => {
+    const low = powerPressure(3, 1);
+    const high = powerPressure(22, 8);
+    expect(high).toBeGreaterThan(low);
+    expect(hpScale(420, high)).toBeGreaterThan(hpScale(420, low));
+    expect(spawnInterval(420, high)).toBeLessThan(spawnInterval(420, low));
+    expect(spawnRate(600, 1) / spawnRate(600, 0)).toBeCloseTo(1.18, 6);
+    expect(hpScale(600, 1) / hpScale(600, 0)).toBeCloseTo(1.18, 6);
+  });
+  it('fades enemy archetypes in and keeps earlier fodder in the match', () => {
+    expect(enemySpawnWeight(ENEMIES.drone, ENEMIES.drone.unlockAt - 0.01)).toBe(0);
+    expect(enemySpawnWeight(ENEMIES.drone, ENEMIES.drone.unlockAt)).toBeGreaterThan(0);
+    expect(enemySpawnWeight(ENEMIES.drone, ENEMIES.drone.unlockAt + 20)).toBeGreaterThan(
+      enemySpawnWeight(ENEMIES.drone, ENEMIES.drone.unlockAt),
+    );
+    expect(enemySpawnWeight(ENEMIES.invader, 600)).toBeGreaterThan(0);
+    expect(enemySpawnWeight(ENEMIES.invader, 600)).toBeLessThan(enemySpawnWeight(ENEMIES.invader, 120));
   });
   it('match clock maps 600s to 90 minutes', () => {
     expect(matchClock(0)).toBe("0'");

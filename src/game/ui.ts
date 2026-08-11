@@ -50,14 +50,10 @@ function abilityCardArtUrl(id: AbilityId): string {
   return `art/abilities/${id}.webp`;
 }
 
-function statIconUrl(id: string, color: string): string {
-  const key = `stat:${id}`;
-  let u = ICON_CACHE.get(key);
-  if (!u) {
-    u = abilityIcon(id === 'maxhp' || id === 'regen' ? 'shield' : id === 'power' ? 'ball' : id === 'speed' ? 'dash' : id === 'magnet' ? 'orbit' : 'whistle', color).toDataURL();
-    ICON_CACHE.set(key, u);
-  }
-  return u;
+/** Every training/recovery choice has a full generated illustration, just
+ *  like offensive abilities. */
+function trainingCardArtUrl(id: string): string {
+  return `art/cards/${id}.webp`;
 }
 
 function portraitUrl(p: PlayerDef, kit?: { shirt: string; shorts: string; socks: string; trim: string }): string {
@@ -94,6 +90,8 @@ export class UI {
     bossPlate?: HTMLElement;
     bossName?: HTMLElement;
     bossTitle?: HTMLElement;
+    bossHpFill?: HTMLElement;
+    bossHpText?: HTMLElement;
     banner?: HTMLElement;
   } = {};
   private dockSig = '';
@@ -259,7 +257,7 @@ export class UI {
         <div class="hud-chip" id="hud-coins"><span class="lbl">Coins</span><span class="v">0</span></div>
         <div class="hud-chip" id="hud-level"><span class="lbl">Lv</span><span class="v">1</span></div>
       </div>
-      <div id="boss-plate"><div class="title"></div><div class="name"></div></div>
+      <div id="boss-plate"><div class="title"></div><div class="name"></div><div class="boss-hp"><i></i></div><div class="boss-hp-text"></div></div>
       <div id="banner"></div>
       <div id="hp-wrap">
         <div id="hp-label"><span>HP</span><span id="hp-text"></span></div>
@@ -282,6 +280,8 @@ export class UI {
       bossPlate: el.querySelector<HTMLElement>('#boss-plate')!,
       bossName: el.querySelector<HTMLElement>('#boss-plate .name')!,
       bossTitle: el.querySelector<HTMLElement>('#boss-plate .title')!,
+      bossHpFill: el.querySelector<HTMLElement>('#boss-plate .boss-hp i')!,
+      bossHpText: el.querySelector<HTMLElement>('#boss-plate .boss-hp-text')!,
       banner: el.querySelector<HTMLElement>('#banner')!,
     };
     el.querySelector('#pause-btn')!.addEventListener('click', () => this.hooks.onResume());
@@ -300,6 +300,7 @@ export class UI {
     const hpPct = Math.max(0, (p.hp / p.maxHp) * 100);
     r.hpFill!.style.width = `${hpPct}%`;
     r.hpFill!.classList.toggle('low', hpPct < 35);
+    r.hpFill!.classList.toggle('hit', p.hurtT > 0);
     r.hpText!.textContent = `${Math.ceil(p.hp)} / ${p.maxHp}`;
     // ability dock
     const sig = Object.entries(p.abilities)
@@ -320,6 +321,13 @@ export class UI {
       r.bossPlate!.style.display = 'block';
       r.bossName!.textContent = BOSSES[bossId].name;
       r.bossTitle!.textContent = BOSSES[bossId].title;
+      // Boss HUD scales with the actual encounter silhouette instead of using
+      // one oversized fixed plate for all three bosses.
+      const bossPlateWidth = 260 + (BOSSES[bossId].radius - 38) * 5;
+      r.bossPlate!.style.setProperty('--boss-plate-width', `${bossPlateWidth}px`);
+      const boss = sim.bossAlive;
+      r.bossHpFill!.style.width = `${Math.max(0, (boss.hp / boss.maxHp) * 100)}%`;
+      r.bossHpText!.textContent = `${Math.ceil(boss.hp).toLocaleString()} / ${Math.ceil(boss.maxHp).toLocaleString()} HP`;
     } else {
       r.bossPlate!.style.display = 'none';
     }
@@ -337,26 +345,34 @@ export class UI {
 
   /* ---------------- level up ---------------- */
 
-  showLevelUp(options: UpgradeOption[], onReroll: () => UpgradeOption[]): void {
+  showLevelUp(
+    options: UpgradeOption[],
+    onReroll: () => UpgradeOption[],
+    mode: 'levelup' | 'boss' = 'levelup',
+    remainingPicks = 0,
+  ): void {
     const existing = this.root.querySelector('#levelup-screen');
     existing?.remove();
     this.rerolled = false;
+    const bossLoot = mode === 'boss';
     const el = document.createElement('div');
-    el.className = 'screen';
+    el.className = bossLoot ? 'screen boss-loot' : 'screen';
     el.id = 'levelup-screen';
     const renderCards = (opts: UpgradeOption[]) => {
       const cards = opts
         .map((o, i) => {
           const isAbility = o.kind === 'ability';
-          const icon = isAbility ? abilityCardArtUrl(o.id as AbilityId) : o.kind === 'stat' ? statIconUrl(o.id, o.color) : statIconUrl('heal', o.color);
-          const artClass = isAbility ? 'ability-art' : 'stat-art';
-          const tag = o.kind === 'ability' ? (o.level === 1 ? 'New ability' : `Ability · Lv${o.level}`) : o.kind === 'stat' ? 'Training' : 'Recovery';
+          const icon = isAbility ? abilityCardArtUrl(o.id as AbilityId) : trainingCardArtUrl(o.id);
+          const artClass = 'ability-art full-card-art';
+          const tag = o.kind === 'ability'
+            ? (o.level === 5 ? 'MAX EVOLUTION' : o.level === 1 ? 'New ability' : `Ability · Lv${o.level}`)
+            : o.kind === 'stat' ? 'Training' : o.kind === 'coins' ? 'Club reward' : 'Recovery';
           // every offensive ability is lane-typed: GROUND hugs the pitch,
           // AERIAL flies over near mobs onto far high-priority threats
           const lane = o.kind === 'ability' ? ABILITIES[o.id as AbilityId].lane : null;
           const laneChip = lane ? `<span class="lane-tag lane-${lane}">${lane.toUpperCase()}</span>` : '';
           return `
-          <div class="upgrade-card" data-idx="${i}" style="--uc:${o.color}">
+          <div class="upgrade-card${o.kind === 'ability' && o.level === 5 ? ' max-evolution' : ''}" data-idx="${i}" style="--uc:${o.color}">
             <img class="uc-art ${artClass}" src="${icon}" alt="">
             <div class="uc-tag">${tag} ${laneChip}</div>
             <div class="uc-name">${o.name}</div>
@@ -375,9 +391,10 @@ export class UI {
       });
     };
     el.innerHTML = `
-      <h1 class="screen-title" style="color:var(--gold)">Level Up!</h1>
+      <h1 class="screen-title" style="color:var(--gold)">${bossLoot ? 'Boss Loot' : 'Level Up!'}</h1>
+      ${bossLoot ? `<div class="loot-subtitle">Choose an ability · ${remainingPicks} pick${remainingPicks === 1 ? '' : 's'} remaining</div>` : ''}
       <div class="levelup-cards"></div>
-      <button class="btn small secondary" data-act="reroll" style="margin-top:6px">Reroll (1x)</button>
+      <button class="btn small secondary" data-act="reroll" style="margin-top:6px">${bossLoot ? 'Reroll boss loot (1x)' : 'Reroll (1x)'}</button>
       <div class="controls-hint" style="margin-top:4px">Press <kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd> to pick</div>
     `;
     el.querySelector('[data-act="reroll"]')!.addEventListener('click', (ev) => {

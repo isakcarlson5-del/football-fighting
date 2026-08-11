@@ -1,6 +1,6 @@
 import type { Sim } from '../../src/game/sim';
 import type { Save } from '../../src/game/meta';
-import type { AbilityId } from '../../src/game/data';
+import type { AbilityId, StatId } from '../../src/game/data';
 
 declare global {
   interface Window {
@@ -17,7 +17,9 @@ declare global {
       pickUpgrade(i: number): void;
       skipToBoss(n: 1 | 2): void;
       debugSpawn(id: string, dx: number, dy: number, elite?: boolean): void;
+      debugDropPickup(kind: 'xp' | 'coin' | 'heal' | 'trophy' | 'magnet' | 'bomb' | 'freeze', dx: number, dy: number): void;
       showAbilityCards(ids: AbilityId[]): void;
+      showTrainingCards(ids: Array<StatId | 'heal' | 'coins'>): void;
     };
     __ART_READY?: boolean;
   }
