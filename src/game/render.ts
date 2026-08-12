@@ -877,6 +877,79 @@ export class Renderer {
       const y = ARENA_H / 2 + Math.sin(angle) * radius;
       paintedFibre(x, y, Math.cos(angle + 0.34) * 3.2, Math.sin(angle + 0.34) * 3.2);
     }
+    if (this.liveStadium) {
+      // Tiny olive interruptions and paint crumbs remove the last vector-clean
+      // edge from the Showpiece markings. They stay deterministic and much
+      // smaller than any collectible or combat decal.
+      const paintWear = (x: number, y: number, angle: number, index: number): void => {
+        const tangentX = Math.cos(angle);
+        const tangentY = Math.sin(angle);
+        const normalX = -tangentY;
+        const normalY = tangentX;
+        const offset = ((index * 17) % 7) - 3;
+        const length = 1.2 + ((index * 11) % 5) * 0.34;
+        ctx.strokeStyle = `rgba(75,88,35,${0.22 + (index % 3) * 0.045})`;
+        ctx.lineWidth = 0.72 + (index % 2) * 0.18;
+        ctx.beginPath();
+        ctx.moveTo(x + normalX * offset * 0.22, y + normalY * offset * 0.22);
+        ctx.lineTo(
+          x + tangentX * length + normalX * offset * 0.3,
+          y + tangentY * length + normalY * offset * 0.3,
+        );
+        ctx.stroke();
+        if (index % 4 === 0) {
+          ctx.fillStyle = 'rgba(251,249,224,0.28)';
+          ctx.fillRect(x + normalX * 2.1, y + normalY * 2.1, 1.1, 0.8);
+        }
+      };
+      for (let y = 54, i = 0; y < ARENA_H - 50; y += 37, i++) {
+        paintWear(40, y, Math.PI / 2, i);
+        paintWear(ARENA_W - 40, y + 11, Math.PI / 2, i + 29);
+        paintWear(ARENA_W / 2, y + 19, Math.PI / 2, i + 61);
+      }
+      for (let x = 55, i = 0; x < ARENA_W - 50; x += 41, i++) {
+        paintWear(x, 40, 0, i + 91);
+        paintWear(x + 17, ARENA_H - 40, 0, i + 137);
+      }
+      for (let angle = 0, i = 0; angle < TAU; angle += 0.23, i++) {
+        paintWear(
+          ARENA_W / 2 + Math.cos(angle) * 190,
+          ARENA_H / 2 + Math.sin(angle) * 190,
+          angle + Math.PI / 2,
+          i + 181,
+        );
+      }
+      const wearRect = (left: number, top: number, width: number, height: number, seed: number): void => {
+        let index = seed;
+        for (let x = left + 13; x < left + width - 10; x += 43) {
+          paintWear(x, top, 0, index++);
+          paintWear(x + 19, top + height, 0, index++);
+        }
+        for (let y = top + 13; y < top + height - 10; y += 39) {
+          paintWear(left, y, Math.PI / 2, index++);
+          paintWear(left + width, y + 17, Math.PI / 2, index++);
+        }
+      };
+      wearRect(40, boxY, boxW, boxH, 229);
+      wearRect(ARENA_W - 40 - boxW, boxY, boxW, boxH, 317);
+      wearRect(40, (ARENA_H - sixH) / 2, sixW, sixH, 409);
+      wearRect(ARENA_W - 40 - sixW, (ARENA_H - sixH) / 2, sixW, sixH, 461);
+      for (let angle = -Math.PI / 3.2, i = 0; angle <= Math.PI / 3.2; angle += 0.17, i++) {
+        paintWear(
+          40 + 230 + Math.cos(angle) * 150,
+          ARENA_H / 2 + Math.sin(angle) * 150,
+          angle + Math.PI / 2,
+          521 + i,
+        );
+        const opposite = Math.PI + angle;
+        paintWear(
+          ARENA_W - 40 - 230 + Math.cos(opposite) * 150,
+          ARENA_H / 2 + Math.sin(opposite) * 150,
+          opposite + Math.PI / 2,
+          559 + i,
+        );
+      }
+    }
     ctx.shadowColor = 'transparent';
     ctx.shadowBlur = 0;
     ctx.shadowOffsetY = 0;
@@ -892,9 +965,13 @@ export class Renderer {
       const top = ARENA_H / 2 - 130;
       const height = 260;
       ctx.save();
-      ctx.fillStyle = 'rgba(3,18,10,0.34)';
-      ctx.fillRect(left + 5, top + 7, Math.abs(backX - frontX), height);
-      ctx.fillStyle = 'rgba(235,241,238,0.10)';
+      const netDepth = Math.abs(backX - frontX);
+      const netShadow = ctx.createLinearGradient(frontX, 0, backX, 0);
+      netShadow.addColorStop(0, 'rgba(3,18,10,0.16)');
+      netShadow.addColorStop(1, 'rgba(3,18,10,0.42)');
+      ctx.fillStyle = netShadow;
+      ctx.fillRect(left + 4, top + 7, netDepth, height);
+      ctx.fillStyle = 'rgba(235,241,238,0.075)';
       ctx.fillRect(left, top, Math.abs(backX - frontX), height);
 
       ctx.strokeStyle = 'rgba(232,238,235,0.42)';
@@ -903,15 +980,43 @@ export class Renderer {
         const y = top + (height * row) / 10;
         ctx.beginPath();
         ctx.moveTo(frontX, y);
-        ctx.lineTo(backX, y);
+        ctx.quadraticCurveTo(
+          frontX + (backX - frontX) * 0.56,
+          y + Math.sin((row / 10) * Math.PI) * 3.2,
+          backX,
+          y,
+        );
         ctx.stroke();
       }
       for (let column = 0; column <= 5; column++) {
         const x = frontX + ((backX - frontX) * column) / 5;
         ctx.beginPath();
         ctx.moveTo(x, top);
-        ctx.lineTo(x, top + height);
+        ctx.quadraticCurveTo(x + dir * Math.sin((column / 5) * Math.PI) * 2.6, top + height / 2, x, top + height);
         ctx.stroke();
+      }
+
+      // Rear stanchion, diagonal braces and four dark anchor plates establish
+      // physical depth without adding a warning ring beneath the goal.
+      ctx.strokeStyle = 'rgba(216,223,220,0.72)';
+      ctx.lineWidth = 3.2;
+      ctx.beginPath();
+      ctx.moveTo(backX, top);
+      ctx.lineTo(backX, top + height);
+      ctx.moveTo(frontX, top);
+      ctx.lineTo(backX, top + 17);
+      ctx.moveTo(frontX, top + height);
+      ctx.lineTo(backX, top + height - 17);
+      ctx.stroke();
+      for (const anchorY of [top + 8, top + height - 8]) {
+        ctx.fillStyle = 'rgba(7,21,13,0.54)';
+        ctx.beginPath();
+        ctx.ellipse(backX + dir * 2.5, anchorY + 3, 5.5, 3.2, 0, 0, TAU);
+        ctx.fill();
+        ctx.fillStyle = 'rgba(220,224,211,0.62)';
+        ctx.beginPath();
+        ctx.arc(backX + dir * 2.5, anchorY + 1.5, 1.35, 0, TAU);
+        ctx.fill();
       }
 
       ctx.strokeStyle = 'rgba(16,35,27,0.48)';
@@ -922,7 +1027,7 @@ export class Renderer {
       ctx.stroke();
       ctx.strokeStyle = '#f5f7fa';
       ctx.lineWidth = 6;
-      ctx.strokeRect(left, top, Math.abs(backX - frontX), height);
+      ctx.strokeRect(left, top, netDepth, height);
       ctx.beginPath();
       ctx.moveTo(frontX, top);
       ctx.lineTo(frontX, top + height);
