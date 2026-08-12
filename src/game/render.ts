@@ -30,6 +30,12 @@ const MARGIN = 340; // stands width around pitch (world units) — procedural fa
 const PLAYER_ENTITY_SCALE = 1.68;
 const ENEMY_ENTITY_SCALE = 1.52;
 const ALLY_ENTITY_SCALE = 1.56;
+export interface ArenaGrassRect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
 /** Conservative grass rect inside the sharp arena plate (source px,
  *  1536x1024). The painted field is slightly trapezoidal, so this inset keeps
  *  all four playable corners on turf while the surrounding stadium remains
@@ -162,6 +168,7 @@ export class Renderer {
   private ctx: CanvasRenderingContext2D;
   private pitch: HTMLCanvasElement;
   private plate: HTMLImageElement | null = null;
+  private plateGrass: ArenaGrassRect = PLATE_GRASS;
   /** World rect covered by the prerendered pitch canvas (camera hard limits). */
   private bounds = { x0: -MARGIN, y0: -MARGIN, x1: ARENA_W + MARGIN, y1: ARENA_H + MARGIN };
   private scale = 1;
@@ -531,8 +538,9 @@ export class Renderer {
   }
 
   /** Swap in the AI arena plate and rebuild the prerendered world canvas. */
-  setArenaImage(img: HTMLImageElement): void {
+  setArenaImage(img: HTMLImageElement, grassRect: ArenaGrassRect = PLATE_GRASS): void {
     this.plate = img;
+    this.plateGrass = grassRect;
     this.pitch = this.buildPitch();
   }
 
@@ -625,12 +633,12 @@ export class Renderer {
     let psx = 1;
     let psy = 1;
     if (this.plate) {
-      psx = ARENA_W / PLATE_GRASS.w;
-      psy = ARENA_H / PLATE_GRASS.h;
-      ml = PLATE_GRASS.x * psx;
-      mr = (this.plate.width - PLATE_GRASS.x - PLATE_GRASS.w) * psx;
-      mt = PLATE_GRASS.y * psy;
-      mb = (this.plate.height - PLATE_GRASS.y - PLATE_GRASS.h) * psy;
+      psx = ARENA_W / this.plateGrass.w;
+      psy = ARENA_H / this.plateGrass.h;
+      ml = this.plateGrass.x * psx;
+      mr = (this.plate.width - this.plateGrass.x - this.plateGrass.w) * psx;
+      mt = this.plateGrass.y * psy;
+      mb = (this.plate.height - this.plateGrass.y - this.plateGrass.h) * psy;
     }
     this.bounds = { x0: -ml, y0: -mt, x1: ARENA_W + mr, y1: ARENA_H + mb };
     const w = ARENA_W + ml + mr;
@@ -646,7 +654,7 @@ export class Renderer {
       // AI arena plate: the measured grass rect maps exactly onto the playable
       // arena (slight non-uniform scale absorbs the plate's aspect difference);
       // the plate's own stands/track fill the surrounding margin completely.
-      ctx.drawImage(this.plate, -PLATE_GRASS.x * psx, -PLATE_GRASS.y * psy, this.plate.width * psx, this.plate.height * psy);
+      ctx.drawImage(this.plate, -this.plateGrass.x * psx, -this.plateGrass.y * psy, this.plate.width * psx, this.plate.height * psy);
     } else {
     // surround apron
     ctx.fillStyle = '#0d2818';

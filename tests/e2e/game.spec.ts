@@ -71,6 +71,28 @@ test('all 32 directional player cycles load during real movement', async ({ page
   expect(errors).toEqual([]);
 });
 
+test('all three calibrated high-resolution arena plates load and remain playable', async ({ page }) => {
+  const errors = await collectErrors(page);
+  for (const arena of ['midnight-final', 'heritage-day', 'electric-derby']) {
+    await page.goto(`/?debug=1&stage=arena-preview&move=e&arena=${arena}`);
+    await expect.poll(() => page.evaluate(
+      (arenaId) => performance
+        .getEntriesByType('resource')
+        .some((entry) => entry.name.endsWith(`/art/arena/variants/${arenaId}.webp`)),
+      arena,
+    )).toBe(true);
+    const state = await page.evaluate(() => ({
+      app: window.__FF.getState(),
+      moving: window.__FF.getSim()!.player.moving,
+      x: window.__FF.getSim()!.player.x,
+    }));
+    expect(state.app).toEqual({ app: 'run', run: 'playing' });
+    expect(state.moving).toBe(true);
+    expect(state.x).toBeGreaterThan(1300);
+  }
+  expect(errors).toEqual([]);
+});
+
 test('run starts: HUD, auto-attacks, kills and XP flow to level-up', async ({ page }) => {
   const errors = await collectErrors(page);
   await page.click('[data-act="play"]');
@@ -260,11 +282,11 @@ test('security guards split grounded targets and ignore the aerial drone', async
   await page.waitForTimeout(450);
   const targeting = await page.evaluate(() => {
     const sim = window.__FF.getSim()!;
-    const droneIdx = sim.enemies.findIndex((enemy) => enemy.active && enemy.def.id === 'drone');
+    const droneIdx = sim.enemies.findIndex((enemy: { active: boolean; def: { id: string } }) => enemy.active && enemy.def.id === 'drone');
     return {
       droneIdx,
-      targets: sim.guards.map((guard) => guard.target),
-      targetIds: sim.guards.map((guard) => sim.enemies[guard.target]?.def.id ?? ''),
+      targets: sim.guards.map((guard: { target: number }) => guard.target),
+      targetIds: sim.guards.map((guard: { target: number }) => sim.enemies[guard.target]?.def.id ?? ''),
       droneHp: sim.enemies[droneIdx].hp,
       droneMaxHp: sim.enemies[droneIdx].maxHp,
     };

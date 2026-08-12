@@ -53,6 +53,19 @@ function webpHeader(path: string): { width: number; height: number; alpha: boole
   };
 }
 
+function opaqueWebpHeader(path: string): { width: number; height: number } {
+  const bytes = readFileSync(path);
+  expect(bytes.toString('ascii', 0, 4)).toBe('RIFF');
+  expect(bytes.toString('ascii', 8, 12)).toBe('WEBP');
+  expect(bytes.toString('ascii', 12, 16)).toBe('VP8 ');
+  // Lossy VP8 stores its 14-bit frame dimensions in the frame header after
+  // the ten-byte RIFF chunk prefix and three-byte start code.
+  return {
+    width: bytes.readUInt16LE(26) & 0x3fff,
+    height: bytes.readUInt16LE(28) & 0x3fff,
+  };
+}
+
 describe('generated locomotion art', () => {
   it.each(enemyIds)('%s has a six-frame transparent enemy strip', (id) => {
     const header = pngHeader(resolve(`public/art/enemies/${id}-run.png`));
@@ -113,8 +126,10 @@ describe('generated locomotion art', () => {
     expect(statSync(path).size).toBeGreaterThan(300_000);
   });
 
-  it('ships the sharp production arena plate', () => {
-    expect(statSync(resolve('public/art/arena/gameplay-pitch-v2.webp')).size).toBeGreaterThan(300_000);
+  it.each(['midnight-final', 'heritage-day', 'electric-derby'])('%s ships as a high-resolution production arena', (id) => {
+    const path = resolve(`public/art/arena/variants/${id}.webp`);
+    expect(opaqueWebpHeader(path)).toEqual({ width: 3072, height: 2048 });
+    expect(statSync(path).size).toBeGreaterThan(1_500_000);
   });
 
   it.each(trainingCardIds)('%s has its own generated upgrade-card illustration', (id) => {

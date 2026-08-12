@@ -9,7 +9,7 @@ import { Input } from './core/input';
 import { loadStripAtlas, primePlayerStrips } from './core/sprites';
 import { ABILITIES, BOSS1_AT, BOSS2_AT, PLAYERS, META_TRACKS, STATS, metaCost, type AbilityId, type MetaTrackId, type StatId } from './game/data';
 import { Save } from './game/meta';
-import { Renderer } from './game/render';
+import { Renderer, type ArenaGrassRect } from './game/render';
 import { Sim, type UpgradeOption } from './game/sim';
 import { UI } from './game/ui';
 
@@ -60,11 +60,39 @@ const debugMove = debugMoveKey ? debugMoveVectors[debugMoveKey] : undefined;
   img.src = 'art/menu-key-art.jpg';
 }
 
-// Arena plate: swap the gameplay world's base when the generated art is ready.
+type ArenaVariantId = 'midnight-final' | 'heritage-day' | 'electric-derby';
+interface ArenaVariant {
+  id: ArenaVariantId;
+  path: string;
+  grass: ArenaGrassRect;
+}
+const arenaVariants: Record<ArenaVariantId, ArenaVariant> = {
+  'midnight-final': {
+    id: 'midnight-final',
+    path: 'art/arena/variants/midnight-final.webp',
+    grass: { x: 410, y: 300, w: 2248, h: 1462 },
+  },
+  'heritage-day': {
+    id: 'heritage-day',
+    path: 'art/arena/variants/heritage-day.webp',
+    grass: { x: 298, y: 292, w: 2470, h: 1476 },
+  },
+  'electric-derby': {
+    id: 'electric-derby',
+    path: 'art/arena/variants/electric-derby.webp',
+    grass: { x: 464, y: 368, w: 2144, h: 1314 },
+  },
+};
+const requestedArena = new URLSearchParams(location.search).get('arena') as ArenaVariantId | null;
+const arenaVariant = requestedArena && arenaVariants[requestedArena]
+  ? arenaVariants[requestedArena]
+  : arenaVariants['midnight-final'];
+
+// Arena plate: swap the gameplay world's base when the selected generated art is ready.
 {
   const img = new Image();
-  img.onload = () => renderer.setArenaImage(img);
-  img.src = 'art/arena/gameplay-pitch-v2.webp';
+  img.onload = () => renderer.setArenaImage(img, arenaVariant.grass);
+  img.src = arenaVariant.path;
 }
 
 const sfxThrottle = new Map<string, number>();
@@ -925,6 +953,17 @@ if (debugStage === 'damage') {
     stagedSim.boss0Spawned = true;
     stagedSim.boss1Spawned = true;
     stagedSim.boss2Spawned = true;
+    stagedSim.events.length = 0;
+    document.getElementById('banner')?.classList.remove('show');
+  }
+} else if (debugStage === 'arena-preview') {
+  ff.startRun('messi');
+  const stagedSim = ff.getSim();
+  if (stagedSim) {
+    stagedSim.player.abilities = {};
+    stagedSim.player.maxHp = 99_999;
+    stagedSim.player.hp = 99_999;
+    stagedSim.player.xpNext = 999_999;
     stagedSim.events.length = 0;
     document.getElementById('banner')?.classList.remove('show');
   }

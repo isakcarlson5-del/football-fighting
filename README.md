@@ -15,7 +15,7 @@ Built with TypeScript + Vite + Canvas 2D. The four player characters use
 generated 2.5D idle/run/kick sprite strips (`public/art/players/`, with a
 procedural in-code fallback). Their locomotion now adds eight authored views
 with 12 concrete frames each (384 directional player poses total). Those poses
-run at 20 fps with render-time cubic frame blending, adjacent-direction
+run at 18 fps with held-contact cubic frame blending, adjacent-direction
 prefetching and an eight-entry LRU cache; the original six-frame strips remain
 automatic loading fallbacks. The kick wind-up releases its aerial ball on the
 drawn contact frame. All 15 regular enemies use generated semantic
@@ -36,7 +36,11 @@ sparks and distinct aerial landing bursts use pooled, mobile-safe rendering
 with layered light/heavy/critical hit audio. Curveball Swarm and Golden Boot
 Seekers add damage-reserving, live-retargeting long-range projectiles with
 dedicated generated card and projectile art. Menu and arena art are generated
-and shipped as local files. Security Detail uses its
+and shipped as local files. The arena system includes three 3072x2048
+orthographic production plates: **Midnight Final** (default), **Heritage Day**
+and **Electric Derby**. Each plate has its own measured grass rectangle so the
+game's coordinate-accurate markings, goals and character feet align to the
+physical turf instead of depending on AI-drawn field geometry. Security Detail uses its
 own generated idle/move/punch/intercept bodyguard strip. Every ability draft
 card uses dedicated generated art whose composition communicates its AERIAL or
 GROUND delivery at a glance; compact procedural icons remain in the combat HUD.
@@ -60,6 +64,14 @@ future redesign needs modular field geometry.
 ```bash
 npm install        # once
 npm run dev        # dev server -> http://localhost:5173
+```
+
+Compare the three playable arena variants directly:
+
+```text
+http://localhost:5173/?arena=midnight-final
+http://localhost:5173/?arena=heritage-day
+http://localhost:5173/?arena=electric-derby
 ```
 
 ## Production build
@@ -121,10 +133,10 @@ scripts/     playtest + art generation, chroma-key normalization and runtime enc
 
 ## Verification evidence
 
-- `npm test` — 184 unit tests green (rng, data, pacing, meta/save, combat lanes,
+- `npm test` — 190 unit tests green (rng, data, pacing, meta/save, combat lanes,
   smooth frame blending, eight-way player/boss direction selection, stateful poses, generated PNG/WebP asset
   headers, Wipeout ring removal, rare pickups and simulation behaviours).
-- `npm run test:e2e` — 17 browser tests cover menu, selection, combat, level-up,
+- `npm run test:e2e` — 19 browser tests cover menu, selection, combat, level-up,
   persistence, boss loot, dense late-game performance and sustained live play
   without a crash or an unintended return to the menu. The suite exercises all
   32 player/direction combinations and verifies the requested directional WebP
@@ -134,7 +146,7 @@ scripts/     playtest + art generation, chroma-key normalization and runtime enc
 - Live playtest screenshots: `evidence/shots/` (menu/select/gameplay/level-up,
   all ability galleries, enemy lineups, semantic poses, bosses, mobile and victory).
 - In-app browser QA at 1280×720 verified all four players in all eight movement
-  directions, smooth 20 fps blended run cycles, three simultaneous directional
+  directions, smooth 18 fps held-contact blended run cycles, three simultaneous directional
   bosses, the full six-stage Matchday Wipeout sequence and zero console
   warnings/errors.
 - Sound: autoplay-safe synthesized WebAudio SFX, crowd bed and adaptive music;

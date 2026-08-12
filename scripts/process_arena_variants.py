@@ -1,0 +1,35 @@
+#!/usr/bin/env python3
+"""Build high-resolution runtime arena plates from approved AI source art."""
+
+from pathlib import Path
+
+from PIL import Image, ImageFilter
+
+
+ROOT = Path(__file__).resolve().parents[1]
+SOURCE_DIR = ROOT / "art-source" / "arena" / "variants"
+OUTPUT_DIR = ROOT / "public" / "art" / "arena" / "variants"
+TARGET_SIZE = (3072, 2048)
+VARIANTS = ("midnight-final", "heritage-day", "electric-derby")
+
+
+def build_variant(variant: str) -> None:
+    source = SOURCE_DIR / f"{variant}.png"
+    output = OUTPUT_DIR / f"{variant}.webp"
+    image = Image.open(source).convert("RGB")
+    image = image.resize(TARGET_SIZE, Image.Resampling.LANCZOS)
+    # A restrained post-scale sharpen restores grass-blade and curb definition
+    # after the 2x reconstruction without producing bright halos around seats.
+    image = image.filter(ImageFilter.UnsharpMask(radius=1.15, percent=72, threshold=3))
+    output.parent.mkdir(parents=True, exist_ok=True)
+    image.save(output, "WEBP", quality=96, method=6)
+    print(f"{variant}: {image.width}x{image.height} -> {output.relative_to(ROOT)}")
+
+
+def main() -> None:
+    for variant in VARIANTS:
+        build_variant(variant)
+
+
+if __name__ == "__main__":
+    main()
