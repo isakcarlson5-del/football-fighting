@@ -1304,6 +1304,7 @@ export class Renderer {
     // (skipped when the arena plate supplies its own crowd)
     if (!this.plate) this.drawCrowd(ctx, toSX, toSY, sx + b.x0, sy / TILT + b.y0, vw, vh / TILT, time);
     if (this.liveStadium) this.drawLiveShowpieceStadium(ctx, b, sx, sy, vw, vh, time);
+    if (this.liveStadium) this.drawTurfWindFibres(ctx, toSX, toSY, time);
 
     // ground decals: telegraphs, flare zones, slow zones
     this.updateAndDrawTurfFootprints(ctx, sim, toSX, toSY, time);
@@ -2445,6 +2446,42 @@ export class Renderer {
       ctx.lineTo(left - 24, y + 7);
       ctx.moveTo(right + 24, y + 13);
       ctx.lineTo(right + 33, y + 1);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  /** Sparse world-fixed fibres catch light as a restrained breeze crosses the
+   *  pitch. Positions are deterministic, camera-independent and allocation-free;
+   *  low alpha prevents water-like shimmer or interference with combat reads. */
+  private drawTurfWindFibres(
+    ctx: CanvasRenderingContext2D,
+    toSX: (wx: number) => number,
+    toSY: (wy: number) => number,
+    time: number,
+  ): void {
+    ctx.save();
+    ctx.lineCap = 'round';
+    ctx.lineWidth = 0.7;
+    for (let fibre = 0; fibre < 86; fibre++) {
+      const seedA = this.crowdSeed[(fibre * 4 + 17) % this.crowdSeed.length] ?? 0.5;
+      const seedB = this.crowdSeed[(fibre * 4 + 18) % this.crowdSeed.length] ?? 0.5;
+      const seedC = this.crowdSeed[(fibre * 4 + 19) % this.crowdSeed.length] ?? 0.5;
+      const worldX = 55 + seedA * (ARENA_W - 110);
+      const worldY = 55 + seedB * (ARENA_H - 110);
+      const wave = Math.sin(time * (0.42 + seedC * 0.24) + fibre * 1.791);
+      const visibility = Math.max(0, Math.abs(wave) - 0.47) / 0.53;
+      if (visibility <= 0.02) continue;
+      const x = toSX(worldX);
+      const y = toSY(worldY);
+      const lean = wave * (1.2 + seedC * 1.6);
+      const length = 2.2 + seedC * 2.4;
+      ctx.strokeStyle = wave > 0
+        ? `rgba(221,224,148,${visibility * 0.105})`
+        : `rgba(55,69,21,${visibility * 0.09})`;
+      ctx.beginPath();
+      ctx.moveTo(x, y + 1.2);
+      ctx.quadraticCurveTo(x + lean * 0.45, y - length * 0.45, x + lean, y - length);
       ctx.stroke();
     }
     ctx.restore();
