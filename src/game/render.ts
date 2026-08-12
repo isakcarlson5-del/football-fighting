@@ -1994,6 +1994,11 @@ export class Renderer {
       }
     }
 
+    // The net and anchor hardware belong to the pitch layer, but the elevated
+    // front bar must occlude actors crossing beneath it. Redrawing only that
+    // narrow bar prevents the player from looking pasted over the whole goal.
+    this.drawGoalForeground(ctx, toSX, toSY);
+
     // balls (AERIAL lobs: height via z, moving ground shadow sells the arc)
     for (const b of sim.balls) {
       if (!b.active) continue;
@@ -2787,6 +2792,40 @@ export class Renderer {
     rightShade.addColorStop(1, 'rgba(3,15,8,0)');
     ctx.fillStyle = rightShade;
     ctx.fillRect(right - 12, top + 17, 13, Math.max(0, height - 34));
+    ctx.restore();
+  }
+
+  /** Draw only the goal-mouth bars that physically sit above actors. */
+  private drawGoalForeground(
+    ctx: CanvasRenderingContext2D,
+    toSX: (wx: number) => number,
+    toSY: (wy: number) => number,
+  ): void {
+    const top = toSY(ARENA_H / 2 - 130);
+    const bottom = toSY(ARENA_H / 2 + 130);
+    ctx.save();
+    ctx.lineCap = 'round';
+    for (const gx of [40, ARENA_W - 40]) {
+      const x = toSX(gx);
+      ctx.strokeStyle = 'rgba(13,30,22,0.46)';
+      ctx.lineWidth = 8;
+      ctx.beginPath();
+      ctx.moveTo(x + 3.5, top + 3.5);
+      ctx.lineTo(x + 3.5, bottom + 3.5);
+      ctx.stroke();
+      ctx.strokeStyle = '#f5f7fa';
+      ctx.lineWidth = 6;
+      ctx.beginPath();
+      ctx.moveTo(x, top);
+      ctx.lineTo(x, bottom);
+      ctx.stroke();
+      ctx.strokeStyle = 'rgba(255,255,255,0.74)';
+      ctx.lineWidth = 1.6;
+      ctx.beginPath();
+      ctx.moveTo(x - 1.2, top + 2);
+      ctx.lineTo(x - 1.2, bottom - 2);
+      ctx.stroke();
+    }
     ctx.restore();
   }
 
