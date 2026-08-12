@@ -2448,6 +2448,80 @@ export class Renderer {
       ctx.lineTo(right + 33, y + 1);
       ctx.stroke();
     }
+
+    // Technical rubber walkway: broad slab seams, shallow caster scuffs and
+    // cable-channel covers. These marks remain dark and textless so the apron
+    // gains scale without competing with pickups or attack telegraphs.
+    ctx.strokeStyle = 'rgba(4,12,15,0.31)';
+    ctx.lineWidth = 1.2;
+    for (let slab = 0; slab <= 28; slab++) {
+      const x = worldLeft + (slab / 28) * surroundW;
+      const skipTop = x > left - 80 && x < right + 80;
+      if (!skipTop || slab % 4 === 0) {
+        ctx.beginPath();
+        ctx.moveTo(x, worldTop + 5);
+        ctx.lineTo(x + ((slab * 13) % 5) - 2, Math.max(worldTop + 8, top - 38));
+        ctx.moveTo(x + 7, Math.min(worldBottom - 8, bottom + 38));
+        ctx.lineTo(x + 7, worldBottom - 5);
+        ctx.stroke();
+      }
+    }
+    for (let slab = 0; slab <= 18; slab++) {
+      const y = worldTop + (slab / 18) * surroundH;
+      ctx.beginPath();
+      ctx.moveTo(worldLeft + 5, y);
+      ctx.lineTo(Math.max(worldLeft + 8, left - 38), y + ((slab * 11) % 5) - 2);
+      ctx.moveTo(Math.min(worldRight - 8, right + 38), y + 7);
+      ctx.lineTo(worldRight - 5, y + 7);
+      ctx.stroke();
+    }
+
+    // Paired channel lids with hinge bolts imply broadcast/power cabling.
+    const channelColor = 'rgba(131,148,150,0.19)';
+    ctx.strokeStyle = channelColor;
+    ctx.lineWidth = 1;
+    for (let segment = 0; segment < 16; segment++) {
+      const x = left + ((segment + 0.25) / 16) * pitchWidth;
+      const width = pitchWidth / 16 * 0.52;
+      for (const y of [top - 47, bottom + 47]) {
+        ctx.strokeRect(x, y - 3, width, 6);
+        ctx.fillStyle = 'rgba(205,213,204,0.24)';
+        ctx.beginPath();
+        ctx.arc(x + 3, y, 0.75, 0, TAU);
+        ctx.arc(x + width - 3, y, 0.75, 0, TAU);
+        ctx.fill();
+      }
+    }
+
+    // Sparse caster and boot scuffs use short paired arcs rather than circles,
+    // keeping them recognisably physical and never pickup-shaped.
+    ctx.strokeStyle = 'rgba(0,5,7,0.20)';
+    ctx.lineWidth = 0.9;
+    for (let mark = 0; mark < 38; mark++) {
+      const seedA = this.crowdSeed[(mark * 5 + 23) % this.crowdSeed.length] ?? 0.5;
+      const seedB = this.crowdSeed[(mark * 5 + 24) % this.crowdSeed.length] ?? 0.5;
+      const side = mark % 4;
+      let x = left + seedA * pitchWidth;
+      let y = top - 54 - seedB * Math.max(10, top - worldTop - 62);
+      if (side === 1) y = bottom + 54 + seedB * Math.max(10, worldBottom - bottom - 62);
+      if (side === 2) {
+        x = left - 54 - seedB * Math.max(10, left - worldLeft - 62);
+        y = top + seedA * pitchHeight;
+      }
+      if (side === 3) {
+        x = right + 54 + seedB * Math.max(10, worldRight - right - 62);
+        y = top + seedA * pitchHeight;
+      }
+      const rotation = mark * 0.83;
+      ctx.save();
+      ctx.translate(x, y);
+      ctx.rotate(rotation);
+      ctx.beginPath();
+      ctx.arc(0, 0, 5 + (mark % 4), -0.8, 0.75);
+      ctx.arc(3, 1.5, 5 + (mark % 3), Math.PI - 0.65, Math.PI + 0.7);
+      ctx.stroke();
+      ctx.restore();
+    }
     ctx.restore();
   }
 
