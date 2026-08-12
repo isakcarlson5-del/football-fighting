@@ -30,7 +30,11 @@ but targets the same density hierarchy as the realistic AI reference:
 - 220,000 authored turf micro-details across multiple spatial frequencies,
   plus roller nap, dew, clippings, repaired plugs, wear and broad color drift.
 - A mobile-safe live stadium layer animates restrained phone flashes and small
-  supporter flags only outside the calibrated grass rectangle.
+  supporter flags, LED chases and camera tally lights only outside the
+  calibrated grass rectangle.
+- A 24-slot fixed pool records subtle alternating cleat-compression marks after
+  meaningful player travel. Each mark fades in 2.8 seconds and stays physically
+  on the turf; it is never a selection ring or glowing movement trail.
 
 ## World Cup Modern AI
 

@@ -68,6 +68,15 @@ export interface PlayerStepCue {
   foot: -1 | 1;
 }
 
+interface TurfFootprint {
+  active: boolean;
+  x: number;
+  y: number;
+  born: number;
+  side: -1 | 1;
+  angle: number;
+}
+
 /** Smoothly blend authored poses at render rate while retaining the concrete
  *  12-frame cycle. The cubic easing prevents a visible snap at frame edges. */
 export function directionalFrameBlend(animT: number, fps: number, frames: number): DirectionalFrameBlend {
@@ -206,6 +215,14 @@ export class Renderer {
   private flashWhiteT = 0;
   private lossStartedAt = -1;
   private matchdayWipeoutStartedAt = -1;
+  private turfFootprints: TurfFootprint[] = Array.from({ length: 24 }, () => ({
+    active: false, x: 0, y: 0, born: 0, side: 1, angle: 0,
+  }));
+  private turfFootprintCursor = 0;
+  private lastTurfFootprintAt = -1e9;
+  private lastTurfFootprintX = Number.NaN;
+  private lastTurfFootprintY = Number.NaN;
+  private nextTurfFoot: -1 | 1 = -1;
 
   camX = ARENA_W / 2;
   camY = ARENA_H / 2;
@@ -1019,6 +1036,8 @@ export class Renderer {
     if (this.liveStadium) this.drawLiveShowpieceStadium(ctx, b, sx, sy, vw, vh, time);
 
     // ground decals: telegraphs, flare zones, slow zones
+    this.updateAndDrawTurfFootprints(ctx, sim, toSX, toSY, time);
+
     for (const t of sim.telegraphs) {
       if (!t.active) continue;
       const u = 1 - t.t / t.max;
@@ -2044,6 +2063,104 @@ export class Renderer {
         ctx.fill();
       }
     }
+
+    // Stadium LED chase and camera tally lights are deliberately confined to
+    // the touchline surround. The pulses are sparse, subtle and allocation-free.
+    const pulse = 0.5 + 0.5 * Math.sin(time * 2.15);
+    const boardAlpha = 0.12 + pulse * 0.14;
+    ctx.lineCap = 'round';
+    ctx.lineWidth = 2;
+    for (let i = 0; i < 18; i++) {
+      const phase = (i / 18 + time * 0.055) % 1;
+      const x = left + phase * Math.max(1, right - left);
+      ctx.strokeStyle = i % 3 === 0
+        ? `rgba(226,57,78,${boardAlpha})`
+        : i % 3 === 1
+          ? `rgba(238,189,58,${boardAlpha})`
+          : `rgba(67,147,202,${boardAlpha})`;
+      ctx.beginPath();
+      ctx.moveTo(x - 13, top - 8);
+      ctx.lineTo(x + 13, top - 8);
+      ctx.moveTo(x - 13, bottom + 8);
+      ctx.lineTo(x + 13, bottom + 8);
+      ctx.stroke();
+    }
+    for (let i = 0; i < 8; i++) {
+      const x = left + ((i + 0.5) / 8) * Math.max(1, right - left);
+      const tally = Math.max(0, Math.sin(time * 1.35 + i * 1.7) - 0.82) / 0.18;
+      if (tally <= 0) continue;
+      ctx.fillStyle = `rgba(255,52,64,${0.28 + tally * 0.58})`;
+      ctx.beginPath();
+      ctx.arc(x, top - 20, 1.4 + tally * 1.2, 0, TAU);
+      ctx.arc(x, bottom + 20, 1.4 + tally * 1.2, 0, TAU);
+      ctx.fill();
+    }
     ctx.restore();
+  }
+
+  /** Record and render restrained cleat compression in the grass.
+   *
+   * This is not a trail VFX: each mark is a tiny, fading pair of dark fibres
+   * placed only after meaningful travel. A fixed pool keeps it mobile-safe.
+   */
+  private updateAndDrawTurfFootprints(
+    ctx: CanvasRenderingContext2D,
+    sim: Sim,
+    toSX: (wx: number) => number,
+    toSY: (wy: number) => number,
+    time: number,
+  ): void {
+    const p = sim.player;
+    if (p.moving || p.dashT > 0) {
+      const travelled = Number.isFinite(this.lastTurfFootprintX)
+        ? Math.hypot(p.x - this.lastTurfFootprintX, p.y - this.lastTurfFootprintY)
+        : Number.POSITIVE_INFINITY;
+      const cadence = p.dashT > 0 ? 0.075 : 0.145;
+      if (travelled >= (p.dashT > 0 ? 21 : 16) && time - this.lastTurfFootprintAt >= cadence) {
+        const mark = this.turfFootprints[this.turfFootprintCursor];
+        const angle = Math.atan2(p.dashDy, p.dashDx);
+        const lateral = this.nextTurfFoot * 5.2;
+        mark.active = true;
+        mark.x = p.x + Math.cos(angle + Math.PI / 2) * lateral;
+        mark.y = p.y + Math.sin(angle + Math.PI / 2) * lateral;
+        mark.born = time;
+        mark.side = this.nextTurfFoot;
+        mark.angle = angle;
+        this.nextTurfFoot = this.nextTurfFoot === -1 ? 1 : -1;
+        this.turfFootprintCursor = (this.turfFootprintCursor + 1) % this.turfFootprints.length;
+        this.lastTurfFootprintAt = time;
+        this.lastTurfFootprintX = p.x;
+        this.lastTurfFootprintY = p.y;
+      }
+    }
+
+    for (const mark of this.turfFootprints) {
+      if (!mark.active) continue;
+      const age = time - mark.born;
+      if (age >= 2.8) {
+        mark.active = false;
+        continue;
+      }
+      const alpha = (1 - age / 2.8) * 0.16;
+      const x = toSX(mark.x);
+      const y = toSY(mark.y);
+      ctx.save();
+      ctx.translate(x, y);
+      ctx.rotate(Math.atan2(Math.sin(mark.angle) * TILT, Math.cos(mark.angle)));
+      ctx.scale(1, TILT);
+      ctx.fillStyle = `rgba(2,25,10,${alpha})`;
+      ctx.beginPath();
+      ctx.ellipse(0, 0, 5.2, 2.1, mark.side * 0.12, 0, TAU);
+      ctx.fill();
+      ctx.strokeStyle = `rgba(194,220,167,${alpha * 0.48})`;
+      ctx.lineWidth = 0.75;
+      for (const offset of [-2.5, 0, 2.5]) {
+        ctx.beginPath();
+        ctx.moveTo(-3.8, offset * 0.2);
+        ctx.lineTo(2.8, offset * 0.17);
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
   }
 }
