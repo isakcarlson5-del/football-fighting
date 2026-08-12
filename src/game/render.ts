@@ -823,9 +823,35 @@ export class Renderer {
     ctx.beginPath();
     ctx.arc(ARENA_W / 2, ARENA_H / 2, 190, 0, TAU);
     ctx.stroke();
-    ctx.beginPath();
-    ctx.arc(ARENA_W / 2, ARENA_H / 2, 6.5, 0, TAU);
-    ctx.fill();
+    const paintedSpot = (x: number, y: number, seed: number): void => {
+      ctx.fillStyle = 'rgba(245,247,238,0.63)';
+      ctx.beginPath();
+      for (let segment = 0; segment <= 18; segment++) {
+        const angle = (segment / 18) * TAU;
+        const radius = 5.4 + Math.sin(seed * 0.73 + segment * 2.17) * 0.75 + Math.cos(segment * 1.31) * 0.32;
+        const px = x + Math.cos(angle) * radius;
+        const py = y + Math.sin(angle) * radius;
+        if (segment === 0) ctx.moveTo(px, py);
+        else ctx.lineTo(px, py);
+      }
+      ctx.closePath();
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(255,255,244,0.29)';
+      ctx.lineWidth = 0.72;
+      for (let fibre = -3; fibre <= 3; fibre++) {
+        ctx.beginPath();
+        ctx.moveTo(x - 3.6, y + fibre * 1.15);
+        ctx.lineTo(x + 3.9, y + fibre * 0.96 + ((fibre + seed) % 2) * 0.45);
+        ctx.stroke();
+      }
+      ctx.fillStyle = 'rgba(73,87,34,0.23)';
+      for (let chip = 0; chip < 5; chip++) {
+        const angle = seed + chip * 2.31;
+        const radius = 1.5 + (chip % 3) * 1.15;
+        ctx.fillRect(x + Math.cos(angle) * radius, y + Math.sin(angle) * radius, 0.9, 0.75);
+      }
+    };
+    paintedSpot(ARENA_W / 2, ARENA_H / 2, 17);
     // penalty boxes
     const boxW = 330;
     const boxH = 820;
@@ -837,17 +863,25 @@ export class Renderer {
     ctx.strokeRect(40, (ARENA_H - sixH) / 2, sixW, sixH);
     ctx.strokeRect(ARENA_W - 40 - sixW, (ARENA_H - sixH) / 2, sixW, sixH);
     // penalty spots + arcs
-    for (const px of [40 + 230, ARENA_W - 40 - 230]) {
-      ctx.beginPath();
-      ctx.arc(px, ARENA_H / 2, 6, 0, TAU);
-      ctx.fill();
-    }
+    paintedSpot(40 + 230, ARENA_H / 2, 29);
+    paintedSpot(ARENA_W - 40 - 230, ARENA_H / 2, 41);
     ctx.beginPath();
     ctx.arc(40 + 230, ARENA_H / 2, 150, -Math.PI / 3.2, Math.PI / 3.2);
     ctx.stroke();
     ctx.beginPath();
     ctx.arc(ARENA_W - 40 - 230, ARENA_H / 2, 150, Math.PI - Math.PI / 3.2, Math.PI + Math.PI / 3.2);
     ctx.stroke();
+    // Painted corner arcs follow the same collision-accurate 40-unit radius.
+    for (const [cornerX, cornerY, startAngle, endAngle] of [
+      [40, 40, 0, Math.PI / 2],
+      [ARENA_W - 40, 40, Math.PI / 2, Math.PI],
+      [40, ARENA_H - 40, -Math.PI / 2, 0],
+      [ARENA_W - 40, ARENA_H - 40, Math.PI, Math.PI * 1.5],
+    ] as const) {
+      ctx.beginPath();
+      ctx.arc(cornerX, cornerY, 42, startAngle, endAngle);
+      ctx.stroke();
+    }
 
     // A sparse upper nap makes the white paint belong to the grass instead of
     // reading as a perfectly vector-clean HUD line. All marks are deterministic
@@ -948,6 +982,23 @@ export class Renderer {
           opposite + Math.PI / 2,
           559 + i,
         );
+      }
+      const cornerWearSpecs = [
+        [40, 40, 0, Math.PI / 2, 601],
+        [ARENA_W - 40, 40, Math.PI / 2, Math.PI, 619],
+        [40, ARENA_H - 40, -Math.PI / 2, 0, 637],
+        [ARENA_W - 40, ARENA_H - 40, Math.PI, Math.PI * 1.5, 653],
+      ] as const;
+      for (const [cornerX, cornerY, startAngle, endAngle, seed] of cornerWearSpecs) {
+        let index = seed;
+        for (let angle = startAngle; angle <= endAngle; angle += 0.19) {
+          paintWear(
+            cornerX + Math.cos(angle) * 42,
+            cornerY + Math.sin(angle) * 42,
+            angle + Math.PI / 2,
+            index++,
+          );
+        }
       }
     }
     ctx.shadowColor = 'transparent';
@@ -1076,6 +1127,17 @@ export class Renderer {
       [40, ARENA_H - 40],
       [ARENA_W - 40, ARENA_H - 40],
     ]) {
+      ctx.strokeStyle = 'rgba(48,64,20,0.21)';
+      ctx.lineWidth = 0.9;
+      for (let fibre = 0; fibre < 9; fibre++) {
+        const angle = (fibre / 9) * TAU + cx * 0.001 + cy * 0.0007;
+        const innerRadius = 3 + (fibre % 3) * 1.3;
+        const outerRadius = 9 + (fibre % 4) * 2.1;
+        ctx.beginPath();
+        ctx.moveTo(cx + Math.cos(angle) * innerRadius, cy + Math.sin(angle) * innerRadius);
+        ctx.lineTo(cx + Math.cos(angle) * outerRadius, cy + Math.sin(angle) * outerRadius);
+        ctx.stroke();
+      }
       ctx.fillStyle = 'rgba(3,18,10,0.28)';
       ctx.beginPath();
       ctx.ellipse(cx + 9, cy + 3, 18, 5, 0, 0, TAU);
