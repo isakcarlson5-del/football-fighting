@@ -831,6 +831,35 @@ export class Renderer {
     ctx.beginPath();
     ctx.arc(ARENA_W - 40 - 230, ARENA_H / 2, 150, Math.PI - Math.PI / 3.2, Math.PI + Math.PI / 3.2);
     ctx.stroke();
+
+    // A sparse upper nap makes the white paint belong to the grass instead of
+    // reading as a perfectly vector-clean HUD line. All marks are deterministic
+    // and stay sub-pixel at normal gameplay zoom.
+    const paintedFibre = (x: number, y: number, dx: number, dy: number): void => {
+      ctx.strokeStyle = 'rgba(255,255,246,0.20)';
+      ctx.lineWidth = 0.85;
+      ctx.beginPath();
+      ctx.moveTo(x, y);
+      ctx.lineTo(x + dx, y + dy);
+      ctx.stroke();
+    };
+    for (let y = 48; y < ARENA_H - 45; y += 29) {
+      const jitter = ((y * 17) % 9) - 4;
+      paintedFibre(40 + jitter * 0.18, y, jitter * 0.09, 3.8);
+      paintedFibre(ARENA_W - 40 + jitter * 0.16, y + 7, -jitter * 0.08, 3.4);
+      paintedFibre(ARENA_W / 2 + jitter * 0.12, y + 13, jitter * 0.06, 3.7);
+    }
+    for (let x = 48; x < ARENA_W - 45; x += 31) {
+      const jitter = ((x * 13) % 11) - 5;
+      paintedFibre(x, 40 + jitter * 0.12, 3.5, jitter * 0.08);
+      paintedFibre(x + 11, ARENA_H - 40 + jitter * 0.11, 3.8, -jitter * 0.07);
+    }
+    for (let angle = 0; angle < TAU; angle += 0.17) {
+      const radius = 190 + ((Math.floor(angle * 100) * 7) % 5) - 2;
+      const x = ARENA_W / 2 + Math.cos(angle) * radius;
+      const y = ARENA_H / 2 + Math.sin(angle) * radius;
+      paintedFibre(x, y, Math.cos(angle + 0.34) * 3.2, Math.sin(angle + 0.34) * 3.2);
+    }
     ctx.shadowColor = 'transparent';
     ctx.shadowBlur = 0;
     ctx.shadowOffsetY = 0;

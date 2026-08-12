@@ -498,8 +498,8 @@ def _grass_texture(style: str, seed: int) -> Image.Image:
         # Measured from the approved olive broadcast-pitch reference. The
         # red/blue balance is intentionally warmer and less neon than generic
         # game grass; 112px runtime-source bands reproduce its tighter cadence.
-        dark = (93, 108, 42)
-        light = (119, 135, 57)
+        dark = (94, 109, 43)
+        light = (118, 134, 56)
         band = 112
 
     is_showpiece = style == "showpiece"
@@ -537,7 +537,10 @@ def _grass_texture(style: str, seed: int) -> Image.Image:
 
     draw = ImageDraw.Draw(turf, "RGBA")
     # Micro-blades, clippings and roller sheen create actual ground contact detail.
-    for _ in range(75_000):
+    # Showpiece reserves part of this noise budget for the directional fibre
+    # layer below; stacking both at full density would collapse into grey mush.
+    micro_blade_count = 42_000 if is_showpiece else 75_000
+    for _ in range(micro_blade_count):
         x = rng.randrange(width)
         y = rng.randrange(height)
         length = rng.choice((1, 1, 2, 2, 3))
@@ -571,28 +574,98 @@ def _grass_texture(style: str, seed: int) -> Image.Image:
         # avoid the single-noise-layer look of a procedural texture.
         detail = Image.new("RGBA", (width, height))
         detail_draw = ImageDraw.Draw(detail, "RGBA")
-        # Fine roller nap follows the mowing direction inside every band.
-        for stripe_x in range(0, width, band):
-            direction = 1 if (stripe_x // band) % 2 == 0 else -1
-            for x in range(stripe_x + 5, min(width, stripe_x + band), 11):
+        # Individual blades are distributed on a jittered grid rather than
+        # pasted from a tile. Their lean flips with the mower band and every
+        # blade gets a tiny contact shadow plus a distinct lit edge. At runtime
+        # this survives WebP scaling as short fibres, not uniform image noise.
+        fibre_step = 8
+        for cell_y in range(0, height, fibre_step):
+            for cell_x in range(0, width, fibre_step):
+                if rng.random() > 0.78:
+                    continue
+                x = cell_x + rng.randrange(fibre_step)
+                y = cell_y + rng.randrange(fibre_step)
+                stripe_index = x // band
+                lean = 1 if stripe_index % 2 == 0 else -1
+                blade_length = rng.choice((4, 4, 5, 5, 6, 6, 7, 8))
+                bend = lean * rng.choice((0, 1, 1, 1, 2)) + rng.choice((-1, 0, 0, 0, 1))
+                blade_alpha = rng.randrange(28, 56)
                 detail_draw.line(
-                    (x, 0, x + direction * 19, height),
-                    fill=(210, 219, 142, 6),
+                    (x + 1, y + 1, x + bend + 1, y + blade_length + 1),
+                    fill=(31, 40, 10, round(blade_alpha * 0.58)),
                     width=1,
                 )
-        # Groundskeeper seams, dew flecks and clipped blade clusters.
+                detail_draw.line(
+                    (x, y, x + bend, y + blade_length),
+                    fill=(215, 220, 134, blade_alpha),
+                    width=1,
+                )
+                detail_draw.point((x, y), fill=(37, 46, 12, min(75, blade_alpha + 7)))
+                if blade_length >= 6 and rng.random() < 0.42:
+                    detail_draw.point((x + bend, y + blade_length), fill=(235, 235, 174, min(78, blade_alpha + 15)))
+
+        # Irregular two-to-four-blade tufts break the uniform cut without
+        # becoming gameplay-sized decals or repeated texture islands.
+        for _ in range(10_500):
+            x = rng.randrange(5, width - 5)
+            y = rng.randrange(5, height - 7)
+            lean = 1 if (x // band) % 2 == 0 else -1
+            base_alpha = rng.randrange(18, 38)
+            for blade in range(rng.choice((2, 2, 3, 3, 4))):
+                root_x = x + blade - 1
+                blade_length = rng.randrange(3, 8)
+                tip_x = root_x + lean * rng.choice((0, 1, 1, 2)) + rng.choice((-1, 0, 1))
+                detail_draw.line(
+                    (root_x, y, tip_x, y + blade_length),
+                    fill=(188 + rng.randrange(0, 22), 196 + rng.randrange(0, 19), 105 + rng.randrange(0, 22), base_alpha),
+                    width=1,
+                )
+
+        # Traffic zones alter individual fibres rather than painting soft
+        # brown blobs. Goal mouths and the centre lane contain flattened blades,
+        # shallow boot cuts and a few fresh upright tips at their edges.
+        traffic_zones = (
+            (width // 2, height // 2, 330, 190, 1_700),
+            (205, height // 2, 190, 300, 1_250),
+            (width - 205, height // 2, 190, 300, 1_250),
+        )
+        for cx, cy, rx, ry, count in traffic_zones:
+            for _ in range(count):
+                angle = rng.random() * TAU
+                radial = math.sqrt(rng.random())
+                x = round(cx + math.cos(angle) * rx * radial)
+                y = round(cy + math.sin(angle) * ry * radial)
+                flattened_length = rng.randrange(5, 14)
+                flattened_dir = -1 if rng.random() < 0.5 else 1
+                detail_draw.line(
+                    (x, y, x + flattened_length * flattened_dir, y + rng.choice((-2, -1, 0, 0, 1, 2))),
+                    fill=(47, 54, 14, rng.randrange(15, 35)),
+                    width=1,
+                )
+                if rng.random() < 0.42:
+                    detail_draw.point((x, y - 1), fill=(224, 220, 145, rng.randrange(16, 35)))
+            for _ in range(count // 18):
+                angle = rng.random() * TAU
+                radial = math.sqrt(rng.random())
+                x = round(cx + math.cos(angle) * rx * radial)
+                y = round(cy + math.sin(angle) * ry * radial)
+                cut_length = rng.randrange(4, 10)
+                detail_draw.line((x, y, x + cut_length, y + 2), fill=(38, 43, 11, rng.randrange(18, 38)), width=1)
+                detail_draw.line((x + 1, y - 1, x + cut_length - 1, y + 1), fill=(197, 193, 113, rng.randrange(9, 22)), width=1)
+
+        # Groundskeeper seams, dew flecks and clipped blade fragments.
         for y in range(0, height, 87):
             detail_draw.line((0, y, width, y + 9), fill=(227, 231, 170, 6), width=1)
-        for _ in range(145_000):
+        for _ in range(58_000):
             x = rng.randrange(width)
             y = rng.randrange(height)
             if rng.random() < 0.72:
-                c = (218, 226, 148, rng.randrange(6, 21))
+                c = (218, 226, 148, rng.randrange(7, 23))
             else:
-                c = (44, 57, 16, rng.randrange(7, 23))
+                c = (44, 57, 16, rng.randrange(8, 25))
             length = rng.choice((1, 1, 2, 2, 3, 4))
             detail_draw.line((x, y, x + rng.choice((-1, 0, 1)), y + length), fill=c, width=1)
-        for _ in range(3_800):
+        for _ in range(5_600):
             x = rng.randrange(width)
             y = rng.randrange(height)
             detail_draw.ellipse((x - 1, y - 1, x + 2, y + 1), fill=(231, 231, 170, rng.randrange(7, 20)))
