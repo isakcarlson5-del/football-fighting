@@ -2365,6 +2365,88 @@ export class Renderer {
       ctx.arc(x, bottom + 20, 1.4 + tally * 1.2, 0, TAU);
       ctx.fill();
     }
+
+    // Crisp construction details are rendered after the lossy arena plate so
+    // its smallest rails, drain teeth and fasteners survive runtime scaling.
+    // The even-odd clip above guarantees every stroke remains outside turf.
+    ctx.lineCap = 'butt';
+    const pitchWidth = Math.max(1, right - left);
+    const pitchHeight = Math.max(1, bottom - top);
+    ctx.strokeStyle = 'rgba(205,218,216,0.22)';
+    ctx.lineWidth = 1;
+    for (let x = left + 9; x < right - 7; x += 37) {
+      const offset = ((Math.floor(x) * 13) % 7) - 3;
+      ctx.beginPath();
+      ctx.moveTo(x, top - 25 + offset * 0.2);
+      ctx.lineTo(x, top - 7);
+      ctx.moveTo(x + 17, bottom + 7);
+      ctx.lineTo(x + 17, bottom + 25 - offset * 0.2);
+      ctx.stroke();
+    }
+    for (let y = top + 11; y < bottom - 9; y += 35) {
+      const offset = ((Math.floor(y) * 11) % 7) - 3;
+      ctx.beginPath();
+      ctx.moveTo(left - 24 + offset * 0.2, y);
+      ctx.lineTo(left - 7, y);
+      ctx.moveTo(right + 7, y + 16);
+      ctx.lineTo(right + 24 - offset * 0.2, y + 16);
+      ctx.stroke();
+    }
+
+    // Drainage slots and individual retaining bolts create a fine mechanical
+    // seam at the grass boundary without turning it into a bright outline.
+    ctx.strokeStyle = 'rgba(151,170,168,0.27)';
+    ctx.lineWidth = 0.8;
+    for (let x = left + 5, index = 0; x < right - 4; x += 14, index++) {
+      const depth = 3 + (index % 3);
+      ctx.beginPath();
+      ctx.moveTo(x, top - 2);
+      ctx.lineTo(x + 1.5, top - depth);
+      ctx.moveTo(x + 6, bottom + 2);
+      ctx.lineTo(x + 7.5, bottom + depth);
+      ctx.stroke();
+      if (index % 4 === 0) {
+        ctx.fillStyle = 'rgba(226,230,218,0.30)';
+        ctx.beginPath();
+        ctx.arc(x + 3, top - 7, 0.85, 0, TAU);
+        ctx.arc(x + 9, bottom + 7, 0.85, 0, TAU);
+        ctx.fill();
+      }
+    }
+    for (let y = top + 5, index = 0; y < bottom - 4; y += 14, index++) {
+      const depth = 3 + (index % 3);
+      ctx.beginPath();
+      ctx.moveTo(left - 2, y);
+      ctx.lineTo(left - depth, y + 1.5);
+      ctx.moveTo(right + 2, y + 6);
+      ctx.lineTo(right + depth, y + 7.5);
+      ctx.stroke();
+    }
+
+    // Short diagonal glass catches appear only on a subset of panels and use
+    // fixed geometry, avoiding a synthetic continuous shine.
+    ctx.strokeStyle = 'rgba(221,240,239,0.13)';
+    ctx.lineWidth = 1.1;
+    for (let panel = 0; panel < 22; panel++) {
+      const x = left + ((panel + 0.35) / 22) * pitchWidth;
+      if (panel % 3 !== 1) continue;
+      ctx.beginPath();
+      ctx.moveTo(x - 6, top - 33);
+      ctx.lineTo(x + 7, top - 24);
+      ctx.moveTo(x + 13, bottom + 24);
+      ctx.lineTo(x + 1, bottom + 33);
+      ctx.stroke();
+    }
+    for (let panel = 0; panel < 12; panel++) {
+      const y = top + ((panel + 0.4) / 12) * pitchHeight;
+      if (panel % 3 !== 0) continue;
+      ctx.beginPath();
+      ctx.moveTo(left - 33, y - 6);
+      ctx.lineTo(left - 24, y + 7);
+      ctx.moveTo(right + 24, y + 13);
+      ctx.lineTo(right + 33, y + 1);
+      ctx.stroke();
+    }
     ctx.restore();
   }
 
