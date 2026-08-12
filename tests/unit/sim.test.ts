@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { Sim } from '../../src/game/sim';
 import { BOSS0_AT, BOSS1_AT, BOSSES, ENEMIES, PLAYERS, RUN_LENGTH } from '../../src/game/data';
 import { Save } from '../../src/game/meta';
-import { directionalFrameBlend, enemyHealthBarStyle, enemyPoseFrame, guardPoseFrame, movementDirection, playerStepCue } from '../../src/game/render';
+import { dampedTurfDisplacement, directionalFrameBlend, enemyHealthBarStyle, enemyPoseFrame, guardPoseFrame, movementDirection, playerStepCue } from '../../src/game/render';
 
 function freshSave(): Save {
   return new Save(null);
@@ -39,6 +39,15 @@ describe('sim core loop', () => {
     expect(directionalFrameBlend(Number.NaN, 20, 12)).toEqual({ frame: 0, nextFrame: 1, mix: 0 });
     expect(directionalFrameBlend(0.005, 20, 12).mix).toBe(0);
     expect(directionalFrameBlend(0.045, 20, 12).mix).toBe(1);
+  });
+
+  it('keeps damped turf clipping travel monotonic until it settles', () => {
+    const samples = [0, 0.08, 0.16, 0.24, 0.4, 0.72].map((age) => dampedTurfDisplacement(age));
+    expect(samples[0]).toBe(0);
+    for (let index = 1; index < samples.length; index++) {
+      expect(samples[index]).toBeGreaterThan(samples[index - 1]);
+    }
+    expect(dampedTurfDisplacement(10)).toBeCloseTo(1 / 4.7, 6);
   });
 
   it('exposes alternating concrete foot plants during the run cycle', () => {

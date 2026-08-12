@@ -90,6 +90,14 @@ interface TurfClipping {
   shade: number;
 }
 
+/** Integrated exponential drag for turf clippings. Exported so monotonic
+ * world-space motion remains covered independently of canvas rendering. */
+export function dampedTurfDisplacement(age: number, dragRate = 4.7): number {
+  const safeAge = Math.max(0, Number.isFinite(age) ? age : 0);
+  const safeDrag = Math.max(0.001, Number.isFinite(dragRate) ? dragRate : 4.7);
+  return (1 - Math.exp(-safeAge * safeDrag)) / safeDrag;
+}
+
 /** Smoothly blend authored poses at render rate while retaining the concrete
  *  12-frame cycle. The cubic easing prevents a visible snap at frame edges. */
 export function directionalFrameBlend(animT: number, fps: number, frames: number): DirectionalFrameBlend {
@@ -2724,9 +2732,11 @@ export class Renderer {
         clipping.active = false;
         continue;
       }
-      const drag = Math.exp(-age * 4.7);
-      const x = toSX(clipping.x + clipping.vx * age * drag);
-      const y = toSY(clipping.y + clipping.vy * age * drag);
+      // Integral of exponentially damped velocity: displacement increases
+      // monotonically and asymptotically settles instead of sliding backwards.
+      const displacement = dampedTurfDisplacement(age);
+      const x = toSX(clipping.x + clipping.vx * displacement);
+      const y = toSY(clipping.y + clipping.vy * displacement);
       const lift = Math.sin(clamp(age / lifetime, 0, 1) * Math.PI) * Math.min(4.5, clipping.length * 0.7);
       const alpha = (1 - age / lifetime) * 0.34;
       ctx.save();
