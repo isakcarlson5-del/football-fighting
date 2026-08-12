@@ -2305,6 +2305,8 @@ export class Renderer {
     const worldRight = surroundW - sx;
     const worldTop = -sy;
     const worldBottom = surroundH - sy;
+    const pitchWidth = Math.max(1, right - left);
+    const pitchHeight = Math.max(1, bottom - top);
     for (let i = 0; i < 92; i++) {
       const seedA = this.crowdSeed[(i * 2) % this.crowdSeed.length] ?? 0.5;
       const seedB = this.crowdSeed[(i * 2 + 1) % this.crowdSeed.length] ?? 0.5;
@@ -2411,12 +2413,59 @@ export class Renderer {
       ctx.fill();
     }
 
+    // Warm aisle markers give the dark lower bowl readable depth at gameplay
+    // scale. Each short dash follows a fixed access path away from the pitch;
+    // there are no travelling lights or random flashes that could read as
+    // pickups, projectiles or combat telegraphs.
+    const aisleAlpha = 0.16 + (0.5 + 0.5 * Math.sin(time * 0.42)) * 0.025;
+    const aisleTopDepth = Math.max(0, top - worldTop - 36);
+    const aisleBottomDepth = Math.max(0, worldBottom - bottom - 36);
+    ctx.lineCap = 'round';
+    for (let aisle = 0; aisle < 6; aisle++) {
+      const anchorX = left + ((aisle + 0.5) / 6) * pitchWidth;
+      const lean = (aisle - 2.5) * 1.8;
+      for (let step = 0; step < 7; step++) {
+        const depthT = (step + 0.7) / 7;
+        const topY = top - 25 - depthT * aisleTopDepth;
+        const bottomY = bottom + 25 + depthT * aisleBottomDepth;
+        const x = anchorX + lean * depthT;
+        const markerAlpha = aisleAlpha * (0.72 + depthT * 0.28);
+        ctx.strokeStyle = `rgba(255,210,113,${markerAlpha})`;
+        ctx.lineWidth = 1.35;
+        ctx.beginPath();
+        ctx.moveTo(x - 2.4, topY);
+        ctx.lineTo(x + 2.4, topY);
+        ctx.moveTo(x - 2.4, bottomY);
+        ctx.lineTo(x + 2.4, bottomY);
+        ctx.stroke();
+      }
+    }
+    const aisleLeftDepth = Math.max(0, left - worldLeft - 36);
+    const aisleRightDepth = Math.max(0, worldRight - right - 36);
+    for (let aisle = 0; aisle < 4; aisle++) {
+      const anchorY = top + ((aisle + 0.5) / 4) * pitchHeight;
+      const lean = (aisle - 1.5) * 1.6;
+      for (let step = 0; step < 6; step++) {
+        const depthT = (step + 0.7) / 6;
+        const leftX = left - 25 - depthT * aisleLeftDepth;
+        const rightX = right + 25 + depthT * aisleRightDepth;
+        const y = anchorY + lean * depthT;
+        const markerAlpha = aisleAlpha * (0.72 + depthT * 0.28);
+        ctx.strokeStyle = `rgba(255,210,113,${markerAlpha})`;
+        ctx.lineWidth = 1.35;
+        ctx.beginPath();
+        ctx.moveTo(leftX, y - 2.4);
+        ctx.lineTo(leftX, y + 2.4);
+        ctx.moveTo(rightX, y - 2.4);
+        ctx.lineTo(rightX, y + 2.4);
+        ctx.stroke();
+      }
+    }
+
     // Crisp construction details are rendered after the lossy arena plate so
     // its smallest rails, drain teeth and fasteners survive runtime scaling.
     // The even-odd clip above guarantees every stroke remains outside turf.
     ctx.lineCap = 'butt';
-    const pitchWidth = Math.max(1, right - left);
-    const pitchHeight = Math.max(1, bottom - top);
     ctx.strokeStyle = 'rgba(205,218,216,0.22)';
     ctx.lineWidth = 1;
     for (let x = left + 9; x < right - 7; x += 37) {
