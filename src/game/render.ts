@@ -1255,19 +1255,21 @@ export class Renderer {
       ctx.moveTo(cx, cy);
       ctx.lineTo(cx, cy - 34);
       ctx.stroke();
-      ctx.fillStyle = '#e8283f';
-      ctx.beginPath();
-      ctx.moveTo(cx, cy - 34);
-      ctx.lineTo(cx + 22, cy - 27);
-      ctx.lineTo(cx, cy - 20);
-      ctx.closePath();
-      ctx.fill();
-      ctx.strokeStyle = 'rgba(255,244,208,0.46)';
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.moveTo(cx + 2, cy - 32);
-      ctx.lineTo(cx + 18, cy - 27);
-      ctx.stroke();
+      if (!this.liveStadium) {
+        ctx.fillStyle = '#e8283f';
+        ctx.beginPath();
+        ctx.moveTo(cx, cy - 34);
+        ctx.lineTo(cx + 22, cy - 27);
+        ctx.lineTo(cx, cy - 20);
+        ctx.closePath();
+        ctx.fill();
+        ctx.strokeStyle = 'rgba(255,244,208,0.46)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(cx + 2, cy - 32);
+        ctx.lineTo(cx + 18, cy - 27);
+        ctx.stroke();
+      }
     }
 
     return c;
@@ -1413,6 +1415,7 @@ export class Renderer {
     if (this.liveStadium) this.drawLiveShowpieceStadium(ctx, b, sx, sy, vw, vh, time);
     if (this.liveStadium) this.drawPitchEdgeOcclusion(ctx, toSX, toSY);
     if (this.liveStadium) this.drawTurfWindFibres(ctx, toSX, toSY, time);
+    if (this.liveStadium) this.drawLiveCornerFlags(ctx, toSX, toSY, time);
 
     // ground decals: telegraphs, flare zones, slow zones
     this.updateAndDrawTurfFootprints(ctx, sim, toSX, toSY, time);
@@ -2747,6 +2750,48 @@ export class Renderer {
       ctx.beginPath();
       ctx.moveTo(x, y + 1.2);
       ctx.quadraticCurveTo(x + lean * 0.45, y - length * 0.45, x + lean, y - length);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  /** Small deterministic cloth motion for the four physical corner poles. */
+  private drawLiveCornerFlags(
+    ctx: CanvasRenderingContext2D,
+    toSX: (wx: number) => number,
+    toSY: (wy: number) => number,
+    time: number,
+  ): void {
+    const corners = [
+      [40, 40, 1, 1],
+      [ARENA_W - 40, 40, -1, 1],
+      [40, ARENA_H - 40, 1, -1],
+      [ARENA_W - 40, ARENA_H - 40, -1, -1],
+    ] as const;
+    ctx.save();
+    for (let index = 0; index < corners.length; index++) {
+      const [worldX, worldY, inwardX, inwardY] = corners[index];
+      const x = toSX(worldX);
+      const groundY = toSY(worldY);
+      const wave = Math.sin(time * 1.65 + index * 1.37);
+      const flutter = Math.sin(time * 3.4 + index * 2.11) * 0.85;
+      const direction = inwardX;
+      const poleTop = groundY - 34 * TILT;
+      const tailX = x + direction * (20.5 + wave * 2.1);
+      const centerY = poleTop + 7.2 * TILT + inwardY * flutter * 0.24;
+      const controlX = x + direction * (9.5 + wave * 1.15);
+      ctx.fillStyle = '#e8283f';
+      ctx.beginPath();
+      ctx.moveTo(x, poleTop);
+      ctx.quadraticCurveTo(controlX, poleTop + 2.7 * TILT - flutter * 0.25, tailX, centerY);
+      ctx.quadraticCurveTo(controlX + direction * 0.9, poleTop + 12.5 * TILT + flutter * 0.18, x, poleTop + 14 * TILT);
+      ctx.closePath();
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(255,244,208,0.44)';
+      ctx.lineWidth = 0.9;
+      ctx.beginPath();
+      ctx.moveTo(x + direction * 1.6, poleTop + 2 * TILT);
+      ctx.quadraticCurveTo(controlX, poleTop + 4.2 * TILT, tailX - direction * 2.4, centerY);
       ctx.stroke();
     }
     ctx.restore();
