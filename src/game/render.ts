@@ -818,6 +818,60 @@ export class Renderer {
     }
     } // end procedural fallback base
 
+    if (this.liveStadium) {
+      // A final code-built nap survives WebP resampling as distinct grass
+      // blades. It is baked into the pitch canvas once (never per frame), uses
+      // a fixed generator and follows the alternating mower direction. Paired
+      // root shadows and fine lit edges keep the fibres physical at gameplay
+      // scale without becoming a noisy particle field.
+      let turfSeed = 0x47a91f2d;
+      const turfRandom = (): number => {
+        turfSeed = (Math.imul(turfSeed, 1664525) + 1013904223) >>> 0;
+        return turfSeed / 0x100000000;
+      };
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(0, 0, ARENA_W, ARENA_H);
+      ctx.clip();
+      ctx.lineCap = 'round';
+      for (let blade = 0; blade < 9_600; blade++) {
+        const x = 10 + turfRandom() * (ARENA_W - 20);
+        const y = 10 + turfRandom() * (ARENA_H - 20);
+        const densityWave = (
+          Math.sin(x * 0.0107 + y * 0.0041)
+          + Math.cos(y * 0.0129 - x * 0.0037)
+        ) * 0.5;
+        if (turfRandom() > 0.72 + densityWave * 0.08) continue;
+        const mowerDirection = Math.floor(x / 112) % 2 === 0 ? 1 : -1;
+        const length = 2.1 + turfRandom() * 3.8;
+        const bend = mowerDirection * (0.35 + turfRandom() * 1.25) + (turfRandom() - 0.5) * 0.7;
+        const lift = length * (0.82 + turfRandom() * 0.16);
+        const alpha = 0.045 + turfRandom() * 0.05;
+        ctx.strokeStyle = `rgba(32,42,12,${alpha * 0.72})`;
+        ctx.lineWidth = 0.76;
+        ctx.beginPath();
+        ctx.moveTo(x + 0.75, y + 0.55);
+        ctx.quadraticCurveTo(x + bend * 0.42 + 0.75, y - lift * 0.48 + 0.55, x + bend + 0.75, y - lift + 0.55);
+        ctx.stroke();
+        ctx.strokeStyle = `rgba(223,224,145,${alpha})`;
+        ctx.lineWidth = 0.58;
+        ctx.beginPath();
+        ctx.moveTo(x, y);
+        ctx.quadraticCurveTo(x + bend * 0.42, y - lift * 0.48, x + bend, y - lift);
+        ctx.stroke();
+        if (blade % 17 === 0) {
+          const siblingLean = bend * 0.62 - mowerDirection * 0.9;
+          ctx.strokeStyle = `rgba(191,198,106,${alpha * 0.72})`;
+          ctx.lineWidth = 0.52;
+          ctx.beginPath();
+          ctx.moveTo(x + 0.9, y + 0.2);
+          ctx.quadraticCurveTo(x + siblingLean * 0.45, y - lift * 0.31, x + siblingLean, y - lift * 0.72);
+          ctx.stroke();
+        }
+      }
+      ctx.restore();
+    }
+
     // Chalk markings: thinner, slightly translucent and softly grounded into
     // the turf so they read as painted grass rather than bright UI strokes.
     ctx.strokeStyle = 'rgba(245,247,250,0.74)';
