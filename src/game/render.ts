@@ -1132,26 +1132,28 @@ export class Renderer {
       ctx.fillStyle = 'rgba(235,241,238,0.075)';
       ctx.fillRect(left, top, Math.abs(backX - frontX), height);
 
-      ctx.strokeStyle = 'rgba(232,238,235,0.42)';
-      ctx.lineWidth = 1.25;
-      for (let row = 0; row <= 10; row++) {
-        const y = top + (height * row) / 10;
-        ctx.beginPath();
-        ctx.moveTo(frontX, y);
-        ctx.quadraticCurveTo(
-          frontX + (backX - frontX) * 0.56,
-          y + Math.sin((row / 10) * Math.PI) * 3.2,
-          backX,
-          y,
-        );
-        ctx.stroke();
-      }
-      for (let column = 0; column <= 5; column++) {
-        const x = frontX + ((backX - frontX) * column) / 5;
-        ctx.beginPath();
-        ctx.moveTo(x, top);
-        ctx.quadraticCurveTo(x + dir * Math.sin((column / 5) * Math.PI) * 2.6, top + height / 2, x, top + height);
-        ctx.stroke();
+      if (!this.liveStadium) {
+        ctx.strokeStyle = 'rgba(232,238,235,0.42)';
+        ctx.lineWidth = 1.25;
+        for (let row = 0; row <= 10; row++) {
+          const y = top + (height * row) / 10;
+          ctx.beginPath();
+          ctx.moveTo(frontX, y);
+          ctx.quadraticCurveTo(
+            frontX + (backX - frontX) * 0.56,
+            y + Math.sin((row / 10) * Math.PI) * 3.2,
+            backX,
+            y,
+          );
+          ctx.stroke();
+        }
+        for (let column = 0; column <= 5; column++) {
+          const x = frontX + ((backX - frontX) * column) / 5;
+          ctx.beginPath();
+          ctx.moveTo(x, top);
+          ctx.quadraticCurveTo(x + dir * Math.sin((column / 5) * Math.PI) * 2.6, top + height / 2, x, top + height);
+          ctx.stroke();
+        }
       }
 
       // Rear stanchion, diagonal braces and four dark anchor plates establish
@@ -1416,6 +1418,7 @@ export class Renderer {
     if (this.liveStadium) this.drawPitchEdgeOcclusion(ctx, toSX, toSY);
     if (this.liveStadium) this.drawTurfWindFibres(ctx, toSX, toSY, time);
     if (this.liveStadium) this.drawLiveCornerFlags(ctx, toSX, toSY, time);
+    if (this.liveStadium) this.drawLiveGoalNets(ctx, toSX, toSY, time);
 
     // ground decals: telegraphs, flare zones, slow zones
     this.updateAndDrawTurfFootprints(ctx, sim, toSX, toSY, time);
@@ -2793,6 +2796,61 @@ export class Renderer {
       ctx.moveTo(x + direction * 1.6, poleTop + 2 * TILT);
       ctx.quadraticCurveTo(controlX, poleTop + 4.2 * TILT, tailX - direction * 2.4, centerY);
       ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  /** Tensioned net mesh with a restrained breeze between fixed anchors. */
+  private drawLiveGoalNets(
+    ctx: CanvasRenderingContext2D,
+    toSX: (wx: number) => number,
+    toSY: (wy: number) => number,
+    time: number,
+  ): void {
+    const topWorld = ARENA_H / 2 - 130;
+    const heightWorld = 260;
+    ctx.save();
+    ctx.strokeStyle = 'rgba(232,238,235,0.42)';
+    ctx.lineWidth = 1.25;
+    for (const side of [0, 1]) {
+      const frontWorldX = side === 0 ? 40 : ARENA_W - 40;
+      const direction = side === 0 ? -1 : 1;
+      const backWorldX = frontWorldX + direction * 52;
+      const frontX = toSX(frontWorldX);
+      const backX = toSX(backWorldX);
+      const top = toSY(topWorld);
+      const bottom = toSY(topWorld + heightWorld);
+      const phase = time * 1.22 + side * 1.73;
+      for (let row = 0; row <= 10; row++) {
+        const rowT = row / 10;
+        const anchorY = top + (bottom - top) * rowT;
+        const anchorFade = Math.sin(rowT * Math.PI);
+        const sway = Math.sin(phase + row * 0.47) * 1.55 * anchorFade;
+        ctx.beginPath();
+        ctx.moveTo(frontX, anchorY);
+        ctx.quadraticCurveTo(
+          frontX + (backX - frontX) * 0.56 + direction * sway * 0.3,
+          anchorY + Math.sin(rowT * Math.PI) * 2.25 + sway,
+          backX,
+          anchorY,
+        );
+        ctx.stroke();
+      }
+      for (let column = 0; column <= 5; column++) {
+        const columnT = column / 5;
+        const x = frontX + (backX - frontX) * columnT;
+        const anchorFade = Math.sin(columnT * Math.PI);
+        const sway = Math.sin(phase + column * 0.63) * 1.35 * anchorFade;
+        ctx.beginPath();
+        ctx.moveTo(x, top);
+        ctx.quadraticCurveTo(
+          x + direction * Math.sin(columnT * Math.PI) * 2.2 + sway,
+          (top + bottom) / 2,
+          x,
+          bottom,
+        );
+        ctx.stroke();
+      }
     }
     ctx.restore();
   }
