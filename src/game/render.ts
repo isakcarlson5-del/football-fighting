@@ -2333,6 +2333,35 @@ export class Renderer {
         ctx.fillStyle = glow;
         ctx.fillRect(x - radius, y - radius, radius * 2, radius * 2);
       }
+      // Tiny paired torso/head motions reinforce the baked spectators instead
+      // of adding free-floating particles. Only selected seeds animate and the
+      // surround clip prevents all overlap with the pitch.
+      if (i % 5 === 1 || i % 11 === 3) {
+        const cheer = Math.max(0, Math.sin(phase * 0.46 + seedA * 3.1));
+        const lift = cheer * (0.75 + seedB * 1.2);
+        const shirtColors = [
+          'rgba(207,54,70,0.27)',
+          'rgba(45,112,181,0.27)',
+          'rgba(232,181,52,0.25)',
+          'rgba(226,228,218,0.24)',
+        ];
+        ctx.fillStyle = 'rgba(219,181,142,0.24)';
+        ctx.beginPath();
+        ctx.arc(x, y - 3.2 - lift, 1.15, 0, TAU);
+        ctx.fill();
+        ctx.fillStyle = shirtColors[i % shirtColors.length];
+        ctx.fillRect(x - 1.5, y - 1.6 - lift, 3, 3.2);
+        if (cheer > 0.62) {
+          ctx.strokeStyle = shirtColors[(i + 1) % shirtColors.length];
+          ctx.lineWidth = 0.72;
+          ctx.beginPath();
+          ctx.moveTo(x - 1.1, y - 1.1 - lift);
+          ctx.lineTo(x - 2.8, y - 4.2 - lift);
+          ctx.moveTo(x + 1.1, y - 1.1 - lift);
+          ctx.lineTo(x + 2.8, y - 4.2 - lift);
+          ctx.stroke();
+        }
+      }
       if (i % 7 === 0) {
         const wave = Math.sin(phase) * 2.5;
         ctx.strokeStyle = 'rgba(226,230,220,0.42)';
