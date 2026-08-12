@@ -342,7 +342,13 @@ export class Renderer {
     void loadStripAtlas('ally-bodyguard-heavy-run', 'art/allies/bodyguard-heavy-run.png');
     void loadStripAtlas('ally-bodyguard-scout', 'art/allies/bodyguard-scout.png');
     void loadStripAtlas('ally-bodyguard-scout-run', 'art/allies/bodyguard-scout-run.png');
-    for (let i = 0; i < 400; i++) this.crowdSeed.push(Math.random());
+    // Stable stadium seed makes visual reviews and repeated arena loads
+    // pixel-comparable while retaining varied crowd and material placement.
+    let stadiumSeed = 0x5f3759df;
+    for (let i = 0; i < 400; i++) {
+      stadiumSeed = (Math.imul(stadiumSeed, 1664525) + 1013904223) >>> 0;
+      this.crowdSeed.push(stadiumSeed / 0x100000000);
+    }
   }
 
   /** Loads generated pickup art while preserving the procedural fallback. */
@@ -1304,6 +1310,7 @@ export class Renderer {
     // (skipped when the arena plate supplies its own crowd)
     if (!this.plate) this.drawCrowd(ctx, toSX, toSY, sx + b.x0, sy / TILT + b.y0, vw, vh / TILT, time);
     if (this.liveStadium) this.drawLiveShowpieceStadium(ctx, b, sx, sy, vw, vh, time);
+    if (this.liveStadium) this.drawPitchEdgeOcclusion(ctx, toSX, toSY);
     if (this.liveStadium) this.drawTurfWindFibres(ctx, toSX, toSY, time);
 
     // ground decals: telegraphs, flare zones, slow zones
@@ -2558,6 +2565,49 @@ export class Renderer {
       ctx.quadraticCurveTo(x + lean * 0.45, y - length * 0.45, x + lean, y - length);
       ctx.stroke();
     }
+    ctx.restore();
+  }
+
+  /** Narrow asymmetric contact shadows anchor the horizontal turf to the
+   *  vertical stadium construction. Each side fades independently, avoiding
+   *  a uniform vignette or gameplay-looking border around the pitch. */
+  private drawPitchEdgeOcclusion(
+    ctx: CanvasRenderingContext2D,
+    toSX: (wx: number) => number,
+    toSY: (wy: number) => number,
+  ): void {
+    const left = toSX(0);
+    const right = toSX(ARENA_W);
+    const top = toSY(0);
+    const bottom = toSY(ARENA_H);
+    const width = Math.max(1, right - left);
+    const height = Math.max(1, bottom - top);
+    ctx.save();
+    const topShade = ctx.createLinearGradient(0, top, 0, top + 21);
+    topShade.addColorStop(0, 'rgba(3,15,8,0.115)');
+    topShade.addColorStop(0.34, 'rgba(3,15,8,0.045)');
+    topShade.addColorStop(1, 'rgba(3,15,8,0)');
+    ctx.fillStyle = topShade;
+    ctx.fillRect(left, top, width, 22);
+
+    const bottomShade = ctx.createLinearGradient(0, bottom, 0, bottom - 18);
+    bottomShade.addColorStop(0, 'rgba(3,15,8,0.085)');
+    bottomShade.addColorStop(0.42, 'rgba(3,15,8,0.035)');
+    bottomShade.addColorStop(1, 'rgba(3,15,8,0)');
+    ctx.fillStyle = bottomShade;
+    ctx.fillRect(left, bottom - 19, width, 20);
+
+    const leftShade = ctx.createLinearGradient(left, 0, left + 14, 0);
+    leftShade.addColorStop(0, 'rgba(3,15,8,0.066)');
+    leftShade.addColorStop(1, 'rgba(3,15,8,0)');
+    ctx.fillStyle = leftShade;
+    ctx.fillRect(left, top + 14, 15, Math.max(0, height - 28));
+
+    const rightShade = ctx.createLinearGradient(right, 0, right - 11, 0);
+    rightShade.addColorStop(0, 'rgba(3,15,8,0.052)');
+    rightShade.addColorStop(1, 'rgba(3,15,8,0)');
+    ctx.fillStyle = rightShade;
+    ctx.fillRect(right - 12, top + 17, 13, Math.max(0, height - 34));
     ctx.restore();
   }
 
