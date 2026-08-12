@@ -834,6 +834,11 @@ export class Renderer {
       ctx.rect(0, 0, ARENA_W, ARENA_H);
       ctx.clip();
       ctx.lineCap = 'round';
+      const ellipticalWear = (x: number, y: number, cx: number, cy: number, rx: number, ry: number): number => {
+        const dx = (x - cx) / rx;
+        const dy = (y - cy) / ry;
+        return Math.max(0, 1 - Math.sqrt(dx * dx + dy * dy));
+      };
       for (let blade = 0; blade < 9_600; blade++) {
         const x = 10 + turfRandom() * (ARENA_W - 20);
         const y = 10 + turfRandom() * (ARENA_H - 20);
@@ -843,6 +848,40 @@ export class Renderer {
         ) * 0.5;
         if (turfRandom() > 0.72 + densityWave * 0.08) continue;
         const mowerDirection = Math.floor(x / 112) % 2 === 0 ? 1 : -1;
+        const trafficWear = Math.max(
+          ellipticalWear(x, y, ARENA_W * 0.5, ARENA_H * 0.5, 370, 225),
+          ellipticalWear(x, y, 138, ARENA_H * 0.5, 220, 330),
+          ellipticalWear(x, y, ARENA_W - 138, ARENA_H * 0.5, 220, 330),
+        );
+        if (trafficWear > 0.08 && turfRandom() < trafficWear * 0.58) {
+          const flattenedDirection = turfRandom() < 0.5 ? -1 : 1;
+          const flattenedLength = 3.2 + turfRandom() * (4.2 + trafficWear * 3.8);
+          const flattenedLift = (turfRandom() - 0.5) * (1.4 - trafficWear * 0.65);
+          const flattenedAlpha = 0.036 + turfRandom() * 0.038;
+          ctx.strokeStyle = `rgba(28,38,10,${flattenedAlpha * (0.85 + trafficWear * 0.35)})`;
+          ctx.lineWidth = 0.72;
+          ctx.beginPath();
+          ctx.moveTo(x + 0.65, y + 0.65);
+          ctx.quadraticCurveTo(
+            x + flattenedDirection * flattenedLength * 0.46,
+            y + flattenedLift * 0.45 + 0.65,
+            x + flattenedDirection * flattenedLength,
+            y + flattenedLift + 0.65,
+          );
+          ctx.stroke();
+          ctx.strokeStyle = `rgba(198,201,116,${flattenedAlpha * 0.72})`;
+          ctx.lineWidth = 0.5;
+          ctx.beginPath();
+          ctx.moveTo(x, y);
+          ctx.quadraticCurveTo(
+            x + flattenedDirection * flattenedLength * 0.46,
+            y + flattenedLift * 0.45,
+            x + flattenedDirection * flattenedLength,
+            y + flattenedLift,
+          );
+          ctx.stroke();
+          continue;
+        }
         const length = 2.1 + turfRandom() * 3.8;
         const bend = mowerDirection * (0.35 + turfRandom() * 1.25) + (turfRandom() - 0.5) * 0.7;
         const lift = length * (0.82 + turfRandom() * 0.16);
