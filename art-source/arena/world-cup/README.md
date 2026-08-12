@@ -15,6 +15,23 @@ apron and non-repeating turf texture locally. No external source art is used.
 - Grass detail: per-pixel seeded variation, 75,000 micro-blades, clippings,
   subtle traffic compression and a crisp drainage/contact lip.
 
+### Showpiece detail pass
+
+World Cup Showpiece deliberately uses only code-authored materials and objects,
+but targets the same density hierarchy as the realistic AI reference:
+
+- Six physical bowl layers with overhang/contact shadows.
+- Individually shaded seats, occupied spectator bodies and fictional flags.
+- Upper and lower tiers, access aisles, stair nosings, rails and glass boxes.
+- Roof membrane grain, structural ribs, tension cables, catwalk and floodlights.
+- Abstract textless LED boards, slab joints and a four-sided drainage grate.
+- Four deep player tunnels, transparent dugouts and shaped substitute seats.
+- Broadcast cameras, articulated camera jibs, cable coils, coolers and staff.
+- 220,000 authored turf micro-details across multiple spatial frequencies,
+  plus roller nap, dew, clippings, repaired plugs, wear and broad color drift.
+- A mobile-safe live stadium layer animates restrained phone flashes and small
+  supporter flags only outside the calibrated grass rectangle.
+
 ## World Cup Modern AI
 
 Generated with the built-in image-generation tool using this production prompt:

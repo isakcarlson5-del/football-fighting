@@ -169,6 +169,7 @@ export class Renderer {
   private pitch: HTMLCanvasElement;
   private plate: HTMLImageElement | null = null;
   private plateGrass: ArenaGrassRect = PLATE_GRASS;
+  private liveStadium = false;
   /** World rect covered by the prerendered pitch canvas (camera hard limits). */
   private bounds = { x0: -MARGIN, y0: -MARGIN, x1: ARENA_W + MARGIN, y1: ARENA_H + MARGIN };
   private scale = 1;
@@ -538,9 +539,10 @@ export class Renderer {
   }
 
   /** Swap in the AI arena plate and rebuild the prerendered world canvas. */
-  setArenaImage(img: HTMLImageElement, grassRect: ArenaGrassRect = PLATE_GRASS): void {
+  setArenaImage(img: HTMLImageElement, grassRect: ArenaGrassRect = PLATE_GRASS, liveStadium = false): void {
     this.plate = img;
     this.plateGrass = grassRect;
+    this.liveStadium = liveStadium;
     this.pitch = this.buildPitch();
   }
 
@@ -1014,6 +1016,7 @@ export class Renderer {
     // animated crowd: jumping dots near the visible stands edge
     // (skipped when the arena plate supplies its own crowd)
     if (!this.plate) this.drawCrowd(ctx, toSX, toSY, sx + b.x0, sy / TILT + b.y0, vw, vh / TILT, time);
+    if (this.liveStadium) this.drawLiveShowpieceStadium(ctx, b, sx, sy, vw, vh, time);
 
     // ground decals: telegraphs, flare zones, slow zones
     for (const t of sim.telegraphs) {
@@ -1963,5 +1966,84 @@ export class Renderer {
       ctx.fillStyle = colors[i % colors.length];
       ctx.fillRect(toSX(x), toSY(y) - jump, 6, 6);
     }
+  }
+
+  /** Restrained runtime life for the detailed Showpiece plate.
+   *
+   * The effect is clipped to the stadium surround and uses a fixed seed table,
+   * so no particles or allocations enter the dense combat loop. It animates
+   * phone flashes and little supporter flags without ever drawing over turf.
+   */
+  private drawLiveShowpieceStadium(
+    ctx: CanvasRenderingContext2D,
+    bounds: { x0: number; y0: number; x1: number; y1: number },
+    sx: number,
+    sy: number,
+    vw: number,
+    vh: number,
+    time: number,
+  ): void {
+    const left = -bounds.x0 - sx;
+    const right = ARENA_W - bounds.x0 - sx;
+    const top = (-bounds.y0 * TILT) - sy;
+    const bottom = ((ARENA_H - bounds.y0) * TILT) - sy;
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(0, 0, vw, vh);
+    ctx.rect(left, top, Math.max(0, right - left), Math.max(0, bottom - top));
+    ctx.clip('evenodd');
+
+    const surroundW = Math.max(1, bounds.x1 - bounds.x0);
+    const surroundH = Math.max(1, (bounds.y1 - bounds.y0) * TILT);
+    const worldLeft = -sx;
+    const worldRight = surroundW - sx;
+    const worldTop = -sy;
+    const worldBottom = surroundH - sy;
+    for (let i = 0; i < 92; i++) {
+      const seedA = this.crowdSeed[(i * 2) % this.crowdSeed.length] ?? 0.5;
+      const seedB = this.crowdSeed[(i * 2 + 1) % this.crowdSeed.length] ?? 0.5;
+      const side = i % 4;
+      let x = worldLeft;
+      let y = worldTop;
+      if (side === 0 || side === 1) {
+        x = worldLeft + seedA * surroundW;
+        y = side === 0
+          ? worldTop + seedB * Math.max(12, top - worldTop)
+          : bottom + seedB * Math.max(12, worldBottom - bottom);
+      } else {
+        x = side === 2
+          ? worldLeft + seedA * Math.max(12, left - worldLeft)
+          : right + seedA * Math.max(12, worldRight - right);
+        y = worldTop + seedB * surroundH;
+      }
+      if (x < -12 || x > vw + 12 || y < -12 || y > vh + 12) continue;
+      const phase = time * (1.4 + seedB * 2.2) + i * 2.381;
+      const flash = Math.max(0, Math.sin(phase * 0.73) - 0.965) / 0.035;
+      if (flash > 0) {
+        const radius = 2.1 + flash * 3.8;
+        const glow = ctx.createRadialGradient(x, y, 0, x, y, radius);
+        glow.addColorStop(0, `rgba(255,251,224,${0.8 * flash})`);
+        glow.addColorStop(1, 'rgba(255,244,198,0)');
+        ctx.fillStyle = glow;
+        ctx.fillRect(x - radius, y - radius, radius * 2, radius * 2);
+      }
+      if (i % 7 === 0) {
+        const wave = Math.sin(phase) * 2.5;
+        ctx.strokeStyle = 'rgba(226,230,220,0.42)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(x, y + 4);
+        ctx.lineTo(x, y - 8);
+        ctx.stroke();
+        ctx.fillStyle = i % 14 === 0 ? 'rgba(222,49,70,0.72)' : 'rgba(238,185,49,0.72)';
+        ctx.beginPath();
+        ctx.moveTo(x, y - 8);
+        ctx.lineTo(x + 8 + wave, y - 5);
+        ctx.lineTo(x, y - 1);
+        ctx.fill();
+      }
+    }
+    ctx.restore();
   }
 }

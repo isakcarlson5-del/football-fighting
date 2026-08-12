@@ -37,8 +37,9 @@ with layered light/heavy/critical hit audio. Curveball Swarm and Golden Boot
 Seekers add damage-reserving, live-retargeting long-range projectiles with
 dedicated generated card and projectile art. Menu and arena art are generated
 and shipped as local files. The arena system includes three 3072x2048
-orthographic World Cup-style production plates: the deterministic
-**World Cup Classic** (default), deterministic **World Cup Showpiece**, and
+orthographic World Cup-style production plates: deterministic
+**World Cup Classic**, the detailed deterministic **World Cup Showpiece**
+(default), and
 AI-authored **World Cup Modern**. Each plate has its own measured grass rectangle
 so the game's coordinate-accurate markings, goals and character feet align to
 the physical turf instead of depending on AI-drawn field geometry. Security Detail uses its

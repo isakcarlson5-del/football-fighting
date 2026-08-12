@@ -300,6 +300,9 @@ test('security guards split grounded targets and ignore the aerial drone', async
 });
 
 test('performance: stable fps with a heavy late-game horde', async ({ page }) => {
+  // Measure the richest plate, including its clipped live-stadium overlay.
+  await page.goto('/?arena=world-cup-showpiece');
+  await page.waitForSelector('.game-logo');
   await page.click('[data-act="play"]');
   await page.click('[data-act="start"]');
   await page.waitForTimeout(300);
@@ -334,6 +337,8 @@ test('performance: stable fps with a heavy late-game horde', async ({ page }) =>
 
 test('sustained live play never crashes or returns to the menu', async ({ page }) => {
   const errors = await collectErrors(page);
+  await page.goto('/?arena=world-cup-showpiece');
+  await page.waitForSelector('.game-logo');
   await page.click('[data-act="play"]');
   await page.click('[data-act="start"]');
   await page.waitForTimeout(300);
@@ -371,6 +376,16 @@ test('sustained live play never crashes or returns to the menu', async ({ page }
   await page.keyboard.down('KeyW');
   await page.waitForTimeout(5000);
   await page.keyboard.up('KeyW');
+
+  // A scripted boss can legitimately die during this soak and pause for its
+  // two reward picks. Resolve intended reward UI before judging whether the
+  // run survived; the regression is a menu/reset/crash, not a level-up pause.
+  for (let i = 0; i < 4; i++) {
+    const runState = await page.evaluate(() => window.__FF.getState().run);
+    if (runState !== 'levelup') break;
+    await page.locator('.upgrade-card').first().click();
+    await page.waitForTimeout(120);
+  }
 
   const state = await page.evaluate(() => ({
     state: window.__FF.getState(),

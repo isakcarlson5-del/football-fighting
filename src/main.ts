@@ -65,6 +65,7 @@ interface ArenaVariant {
   id: ArenaVariantId;
   path: string;
   grass: ArenaGrassRect;
+  liveStadium?: boolean;
 }
 const arenaVariants: Record<ArenaVariantId, ArenaVariant> = {
   'world-cup-classic': {
@@ -76,6 +77,7 @@ const arenaVariants: Record<ArenaVariantId, ArenaVariant> = {
     id: 'world-cup-showpiece',
     path: 'art/arena/world-cup/world-cup-showpiece.webp',
     grass: { x: 390, y: 322, w: 2292, h: 1404 },
+    liveStadium: true,
   },
   'world-cup-modern-ai': {
     id: 'world-cup-modern-ai',
@@ -87,12 +89,12 @@ const arenaVariants: Record<ArenaVariantId, ArenaVariant> = {
 const requestedArena = new URLSearchParams(location.search).get('arena') as ArenaVariantId | null;
 const arenaVariant = requestedArena && arenaVariants[requestedArena]
   ? arenaVariants[requestedArena]
-  : arenaVariants['world-cup-classic'];
+  : arenaVariants['world-cup-showpiece'];
 
 // Arena plate: swap the gameplay world's base when the selected generated art is ready.
 {
   const img = new Image();
-  img.onload = () => renderer.setArenaImage(img, arenaVariant.grass);
+  img.onload = () => renderer.setArenaImage(img, arenaVariant.grass, arenaVariant.liveStadium ?? false);
   img.src = arenaVariant.path;
 }
 
