@@ -254,6 +254,22 @@ def _draw_showpiece_stadium(base: Image.Image, palette: dict[str, tuple[int, int
         draw.line((23, y, 111, y + 42), fill=(219, 229, 229, 135), width=4)
         draw.line((3049, y, 2961, y + 42), fill=(219, 229, 229, 135), width=4)
 
+    # Distributed speaker arrays and match-control displays add recognisable
+    # tournament infrastructure without using copied brands, crests or text.
+    for x in range(310, 2810, 250):
+        for y, flip in ((88, 1), (1960, -1)):
+            draw.rounded_rectangle((x, y - 10, x + 42, y + 13), radius=4, fill=(6, 11, 16, 255), outline=(113, 127, 132, 155), width=2)
+            for driver_x in (x + 10, x + 31):
+                draw.ellipse((driver_x - 6, y - 5, driver_x + 6, y + 7), fill=(20, 25, 29, 255), outline=(148, 157, 158, 110), width=1)
+                draw.ellipse((driver_x - 2, y - 1, driver_x + 2, y + 3), fill=(2, 5, 8, 255))
+            draw.line((x + 21, y + 13 * flip, x + 21, y + 27 * flip), fill=(141, 151, 153, 170), width=3)
+    for x0, y0 in ((1110, 128), (1780, 128), (1110, 1876), (1780, 1876)):
+        draw.rounded_rectangle((x0, y0, x0 + 178, y0 + 48), radius=7, fill=(3, 10, 17, 255), outline=(153, 175, 182, 185), width=3)
+        draw.rectangle((x0 + 9, y0 + 9, x0 + 169, y0 + 39), fill=(9, 32, 48, 255))
+        draw.rectangle((x0 + 16, y0 + 15, x0 + 66, y0 + 33), fill=(187, 38, 57, 225))
+        draw.rectangle((x0 + 112, y0 + 15, x0 + 162, y0 + 33), fill=(37, 107, 170, 225))
+        draw.ellipse((x0 + 80, y0 + 13, x0 + 98, y0 + 35), outline=(235, 218, 139, 190), width=3)
+
     # Pitch apron with slabs, drainage channels and a segmented abstract LED
     # perimeter. No words, sponsors or tournament marks are baked in.
     draw.rounded_rectangle((320, 255, 2752, 1793), radius=98, fill=(20, 35, 43, 255), outline=(163, 178, 180, 160), width=5)
@@ -298,6 +314,18 @@ def _draw_showpiece_stadium(base: Image.Image, palette: dict[str, tuple[int, int
         draw.rounded_rectangle((tx0, ty0, tx1, ty1), radius=14, fill=(2, 7, 12, 255), outline=(150, 165, 165, 185), width=4)
         inset = 10
         draw.rounded_rectangle((tx0 + inset, ty0 + inset, tx1 - inset, ty1 - inset), radius=10, fill=(10, 20, 28, 255))
+        center_x = (tx0 + tx1) // 2
+        center_y = (ty0 + ty1) // 2
+        if tx1 - tx0 > ty1 - ty0:
+            draw.polygon(((tx0 + 14, ty1 - 15), (tx1 - 14, ty1 - 15), (center_x + 54, center_y), (center_x - 54, center_y)), fill=(25, 34, 40, 230))
+            for rail_y in (ty0 + 17, ty1 - 18):
+                draw.line((tx0 + 18, rail_y, center_x - 45, center_y), fill=(121, 137, 141, 145), width=2)
+                draw.line((tx1 - 18, rail_y, center_x + 45, center_y), fill=(121, 137, 141, 145), width=2)
+        else:
+            draw.polygon(((tx0 + 14, ty0 + 14), (tx0 + 14, ty1 - 14), (center_x, center_y + 54), (center_x, center_y - 54)), fill=(25, 34, 40, 230))
+            for rail_x in (tx0 + 17, tx1 - 18):
+                draw.line((rail_x, ty0 + 18, center_x, center_y - 45), fill=(121, 137, 141, 145), width=2)
+                draw.line((rail_x, ty1 - 18, center_x, center_y + 45), fill=(121, 137, 141, 145), width=2)
         for n in range(4):
             px = tx0 + 26 + n * max(14, (tx1 - tx0 - 52) // 4)
             py = ty0 + 25 + n * max(14, (ty1 - ty0 - 50) // 4)
@@ -332,6 +360,17 @@ def _draw_showpiece_stadium(base: Image.Image, palette: dict[str, tuple[int, int
     for x, y in ((780, 304), (2275, 304), (780, 1744), (2275, 1744)):
         draw.rounded_rectangle((x, y, x + 24, y + 28), radius=4, fill=(220, 226, 218, 255), outline=(72, 91, 96, 200), width=2)
         draw.rectangle((x + 5, y + 7, x + 19, y + 13), fill=(40, 132, 170, 220))
+    # Match-ball cradles are small but fully modelled: rail, shadow and six
+    # panelled balls per rack, all kept outside the playable grass.
+    for x, y in ((805, 293), (2206, 293), (805, 1729), (2206, 1729)):
+        draw.rounded_rectangle((x - 6, y + 8, x + 74, y + 29), radius=5, fill=(1, 5, 8, 120))
+        draw.line((x, y + 8, x + 68, y + 8), fill=(139, 151, 153, 210), width=3)
+        draw.line((x + 4, y + 8, x + 4, y + 27), fill=(139, 151, 153, 185), width=2)
+        draw.line((x + 64, y + 8, x + 64, y + 27), fill=(139, 151, 153, 185), width=2)
+        for ball_index in range(6):
+            bx = x + 7 + ball_index * 11
+            draw.ellipse((bx - 5, y - 1, bx + 5, y + 9), fill=(230, 231, 220, 255), outline=(33, 42, 45, 210), width=1)
+            draw.polygon(((bx, y + 1), (bx + 3, y + 3), (bx + 2, y + 6), (bx - 2, y + 6), (bx - 3, y + 3)), fill=(37, 46, 48, 210))
     for x, y in ((450, 309), (2622, 309), (450, 1739), (2622, 1739)):
         for ring in range(4):
             draw.ellipse((x - ring * 2, y - ring * 2, x + 18 + ring * 2, y + 10 + ring * 2), outline=(11, 16, 19, 180), width=2)
@@ -456,20 +495,40 @@ def _grass_texture(style: str, seed: int) -> Image.Image:
         light = (47, 137, 67)
         band = 146
     else:
-        dark = (25, 103, 47)
-        light = (52, 139, 69)
-        band = 191
+        # Measured from the approved olive broadcast-pitch reference. The
+        # red/blue balance is intentionally warmer and less neon than generic
+        # game grass; 112px runtime-source bands reproduce its tighter cadence.
+        dark = (93, 108, 42)
+        light = (119, 135, 57)
+        band = 112
 
+    is_showpiece = style == "showpiece"
     turf = Image.new("RGB", (width, height), dark)
     pixels = turf.load()
     # Per-pixel seeded fibre/noise detail survives camera zoom without a repeated tile.
     for y in range(height):
         for x in range(width):
-            stripe = (x // band) % 2
+            stripe_index = x // band
+            stripe = stripe_index % 2
             base = light if stripe == 0 else dark
+            if is_showpiece:
+                # Real mower turns do not form single-pixel digital seams. A
+                # narrow five-pixel transition keeps the measured cadence but
+                # lets adjacent blade directions feather into one another.
+                position = x % band
+                edge_distance = min(position, band - 1 - position)
+                if edge_distance < 5:
+                    edge_mix = (edge_distance + 1) / 6
+                    midpoint = tuple((dark[channel] + light[channel]) / 2 for channel in range(3))
+                    base = tuple(round(midpoint[channel] * (1 - edge_mix) + base[channel] * edge_mix) for channel in range(3))
+                roller_nap = round(math.sin(position / band * math.pi) * (1 if stripe == 0 else -1))
+                base = (base[0] + roller_nap, base[1] + roller_nap, base[2])
             fine = ((x * 17 + y * 31 + seed * 13) % 23) - 11
             grain = rng.randrange(-6, 7)
-            cross = 3 if ((x + y) // 34) % 2 == 0 else -2
+            if is_showpiece:
+                cross = 2 if ((x + y) // 34) % 2 == 0 else -1
+            else:
+                cross = 3 if ((x + y) // 34) % 2 == 0 else -2
             pixels[x, y] = (
                 max(0, min(255, base[0] + grain + fine // 5)),
                 max(0, min(255, base[1] + grain + fine // 3 + cross)),
@@ -483,14 +542,15 @@ def _grass_texture(style: str, seed: int) -> Image.Image:
         y = rng.randrange(height)
         length = rng.choice((1, 1, 2, 2, 3))
         if rng.random() < 0.58:
-            color = (176, 209, 143, rng.randrange(15, 42))
+            color = (184, 199, 109, rng.randrange(13, 36)) if is_showpiece else (176, 209, 143, rng.randrange(15, 42))
         else:
-            color = (3, 41, 18, rng.randrange(12, 36))
+            color = (44, 58, 17, rng.randrange(11, 31)) if is_showpiece else (3, 41, 18, rng.randrange(12, 36))
         draw.line((x, y, x + rng.choice((-1, 0, 1)), y + length), fill=color, width=1)
     for _ in range(900):
         x = rng.randrange(width)
         y = rng.randrange(height)
-        draw.ellipse((x, y, x + rng.randrange(2, 7), y + rng.randrange(1, 4)), fill=(15, 61, 27, rng.randrange(12, 36)))
+        clipping = (57, 69, 25, rng.randrange(10, 31)) if is_showpiece else (15, 61, 27, rng.randrange(12, 36))
+        draw.ellipse((x, y, x + rng.randrange(2, 7), y + rng.randrange(1, 4)), fill=clipping)
 
     # Natural use, never painted markings: subtle compression through central lanes.
     wear = Image.new("RGBA", (width, height))
@@ -501,11 +561,12 @@ def _grass_texture(style: str, seed: int) -> Image.Image:
             r = math.sqrt(rng.random())
             x = cx + math.cos(a) * rx * r
             y = cy + math.sin(a) * ry * r
-            wear_draw.ellipse((x - 7, y - 3, x + 7, y + 3), fill=(171, 157, 91, rng.randrange(3, 11)))
+            wear_color = (156, 143, 73, rng.randrange(3, 10)) if is_showpiece else (171, 157, 91, rng.randrange(3, 11))
+            wear_draw.ellipse((x - 7, y - 3, x + 7, y + 3), fill=wear_color)
     wear = wear.filter(ImageFilter.GaussianBlur(2.2))
     turf = Image.alpha_composite(turf.convert("RGBA"), wear)
 
-    if style == "showpiece":
+    if is_showpiece:
         # Broadcast-pitch finish: multiple independent spatial frequencies
         # avoid the single-noise-layer look of a procedural texture.
         detail = Image.new("RGBA", (width, height))
@@ -516,25 +577,25 @@ def _grass_texture(style: str, seed: int) -> Image.Image:
             for x in range(stripe_x + 5, min(width, stripe_x + band), 11):
                 detail_draw.line(
                     (x, 0, x + direction * 19, height),
-                    fill=(202, 232, 173, 7),
+                    fill=(210, 219, 142, 6),
                     width=1,
                 )
         # Groundskeeper seams, dew flecks and clipped blade clusters.
         for y in range(0, height, 87):
-            detail_draw.line((0, y, width, y + 9), fill=(230, 245, 215, 8), width=1)
+            detail_draw.line((0, y, width, y + 9), fill=(227, 231, 170, 6), width=1)
         for _ in range(145_000):
             x = rng.randrange(width)
             y = rng.randrange(height)
             if rng.random() < 0.72:
-                c = (211, 239, 181, rng.randrange(7, 25))
+                c = (218, 226, 148, rng.randrange(6, 21))
             else:
-                c = (1, 31, 13, rng.randrange(8, 27))
+                c = (44, 57, 16, rng.randrange(7, 23))
             length = rng.choice((1, 1, 2, 2, 3, 4))
             detail_draw.line((x, y, x + rng.choice((-1, 0, 1)), y + length), fill=c, width=1)
         for _ in range(3_800):
             x = rng.randrange(width)
             y = rng.randrange(height)
-            detail_draw.ellipse((x - 1, y - 1, x + 2, y + 1), fill=(231, 241, 218, rng.randrange(8, 24)))
+            detail_draw.ellipse((x - 1, y - 1, x + 2, y + 1), fill=(231, 231, 170, rng.randrange(7, 20)))
 
         # Physical divots and repaired plugs remain subtle enough not to read
         # as pickups or combat marks.
@@ -543,8 +604,8 @@ def _grass_texture(style: str, seed: int) -> Image.Image:
             y = rng.randrange(12, height - 12)
             rx = rng.randrange(2, 7)
             ry = rng.randrange(1, 4)
-            detail_draw.ellipse((x - rx, y - ry, x + rx, y + ry), fill=(3, 37, 16, rng.randrange(10, 32)))
-            detail_draw.arc((x - rx - 1, y - ry - 1, x + rx + 2, y + ry + 2), 195, 350, fill=(172, 207, 132, 30), width=1)
+            detail_draw.ellipse((x - rx, y - ry, x + rx, y + ry), fill=(53, 64, 21, rng.randrange(9, 27)))
+            detail_draw.arc((x - rx - 1, y - ry - 1, x + rx + 2, y + ry + 2), 195, 350, fill=(183, 193, 105, 26), width=1)
         turf = Image.alpha_composite(turf, detail)
 
         # Broad, almost invisible natural luminance drift prevents a perfectly
@@ -556,12 +617,16 @@ def _grass_texture(style: str, seed: int) -> Image.Image:
                 wave = math.sin(x / 137.0) + math.cos(y / 93.0) + math.sin((x + y) / 211.0)
                 drift_pixels[x, y] = max(0, min(255, int(128 + wave * 10)))
         drift = drift.filter(ImageFilter.GaussianBlur(42))
-        cool = Image.new("RGBA", (width, height), (14, 49, 23, 0))
+        cool = Image.new("RGBA", (width, height), (72, 79, 24, 0))
         cool.putalpha(drift.point(lambda v: max(0, min(15, abs(v - 128)))))
         turf = Image.alpha_composite(turf, cool)
 
     # Crisp drainage lip and contact occlusion are part of the same ground plane.
-    turf = ImageEnhance.Contrast(turf).enhance(1.08)
+    # Keep the legacy 1.08 expression untouched for deterministic Classic output.
+    if is_showpiece:
+        turf = ImageEnhance.Contrast(turf).enhance(1.035)
+    else:
+        turf = ImageEnhance.Contrast(turf).enhance(1.08)
     return turf
 
 

@@ -666,13 +666,15 @@ export class Renderer {
     c.width = Math.ceil(w);
     c.height = Math.ceil(h * TILT);
     const ctx = c.getContext('2d')!;
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
     ctx.setTransform(1, 0, 0, TILT, 0, 0);
     ctx.translate(ml, mt);
 
     if (this.plate) {
-      // AI arena plate: the measured grass rect maps exactly onto the playable
-      // arena (slight non-uniform scale absorbs the plate's aspect difference);
-      // the plate's own stands/track fill the surrounding margin completely.
+      // The authored arena plate's measured grass rect maps exactly onto the
+      // playable arena. A slight non-uniform scale absorbs each source plate's
+      // aspect difference while its stands fill the surrounding margin.
       ctx.drawImage(this.plate, -this.plateGrass.x * psx, -this.plateGrass.y * psy, this.plate.width * psx, this.plate.height * psy);
     } else {
     // surround apron
@@ -833,15 +835,59 @@ export class Renderer {
     ctx.shadowBlur = 0;
     ctx.shadowOffsetY = 0;
 
-    // goals
+    // Goals: layered mesh, ground shadow, rear frame and highlighted posts.
+    // The old translucent box read as a UI rectangle rather than a real net.
     for (const side of [0, 1]) {
       const gx = side === 0 ? 40 : ARENA_W - 40;
       const dir = side === 0 ? -1 : 1;
-      ctx.fillStyle = 'rgba(245,247,250,0.25)';
-      ctx.fillRect(gx + (dir === -1 ? -46 : 0), ARENA_H / 2 - 130, 46, 260);
+      const frontX = gx;
+      const backX = gx + dir * 52;
+      const left = Math.min(frontX, backX);
+      const top = ARENA_H / 2 - 130;
+      const height = 260;
+      ctx.save();
+      ctx.fillStyle = 'rgba(3,18,10,0.34)';
+      ctx.fillRect(left + 5, top + 7, Math.abs(backX - frontX), height);
+      ctx.fillStyle = 'rgba(235,241,238,0.10)';
+      ctx.fillRect(left, top, Math.abs(backX - frontX), height);
+
+      ctx.strokeStyle = 'rgba(232,238,235,0.42)';
+      ctx.lineWidth = 1.25;
+      for (let row = 0; row <= 10; row++) {
+        const y = top + (height * row) / 10;
+        ctx.beginPath();
+        ctx.moveTo(frontX, y);
+        ctx.lineTo(backX, y);
+        ctx.stroke();
+      }
+      for (let column = 0; column <= 5; column++) {
+        const x = frontX + ((backX - frontX) * column) / 5;
+        ctx.beginPath();
+        ctx.moveTo(x, top);
+        ctx.lineTo(x, top + height);
+        ctx.stroke();
+      }
+
+      ctx.strokeStyle = 'rgba(16,35,27,0.48)';
+      ctx.lineWidth = 8;
+      ctx.beginPath();
+      ctx.moveTo(frontX + 4, top + 5);
+      ctx.lineTo(frontX + 4, top + height + 5);
+      ctx.stroke();
       ctx.strokeStyle = '#f5f7fa';
       ctx.lineWidth = 6;
-      ctx.strokeRect(gx + (dir === -1 ? -46 : 0), ARENA_H / 2 - 130, 46, 260);
+      ctx.strokeRect(left, top, Math.abs(backX - frontX), height);
+      ctx.beginPath();
+      ctx.moveTo(frontX, top);
+      ctx.lineTo(frontX, top + height);
+      ctx.stroke();
+      ctx.strokeStyle = 'rgba(255,255,255,0.78)';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(frontX - dir * 1.5, top + 2);
+      ctx.lineTo(frontX - dir * 1.5, top + height - 2);
+      ctx.stroke();
+      ctx.restore();
     }
 
     // stadium lighting: dark corners, floodlight pools (procedural base only;
@@ -879,6 +925,10 @@ export class Renderer {
       [40, ARENA_H - 40],
       [ARENA_W - 40, ARENA_H - 40],
     ]) {
+      ctx.fillStyle = 'rgba(3,18,10,0.28)';
+      ctx.beginPath();
+      ctx.ellipse(cx + 9, cy + 3, 18, 5, 0, 0, TAU);
+      ctx.fill();
       ctx.strokeStyle = '#ffd23f';
       ctx.lineWidth = 4;
       ctx.beginPath();
@@ -892,6 +942,12 @@ export class Renderer {
       ctx.lineTo(cx, cy - 20);
       ctx.closePath();
       ctx.fill();
+      ctx.strokeStyle = 'rgba(255,244,208,0.46)';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(cx + 2, cy - 32);
+      ctx.lineTo(cx + 18, cy - 27);
+      ctx.stroke();
     }
 
     return c;
@@ -1021,6 +1077,7 @@ export class Renderer {
 
     ctx.setTransform(scale, 0, 0, scale, shX, shY);
     ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
 
     // pitch blit
     const sx = camTX - vw / 2;

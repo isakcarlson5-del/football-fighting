@@ -57,6 +57,10 @@ Two production plates are original deterministic renders built entirely by
 `scripts/generate_world_cup_arenas.py`; their 3072x2048 PNG sources are included
 under `art-source/arena/world-cup/`. They combine exact stadium geometry with
 seeded, non-repeating grass-fibre, clipping, wear, mowing and drainage detail.
+The default Showpiece turf uses an olive broadcast-pitch palette measured from
+a user-supplied colour reference (mean RGB 106/122/49); no reference pixels or
+external texture are copied into the game. Its narrow mower cadence, feathered
+roller transitions, material drift and fibre field are regenerated in code.
 The third plate was created with the built-in image generator and reconstructed
 by `scripts/process_arena_variants.py`. No external texture is shipped. Two CC0
 OpenGameArt grass textures were evaluated but rejected because their 512x512
