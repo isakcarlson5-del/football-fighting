@@ -498,8 +498,8 @@ def _grass_texture(style: str, seed: int) -> Image.Image:
         # Measured from the approved olive broadcast-pitch reference. The
         # red/blue balance is intentionally warmer and less neon than generic
         # game grass; 112px runtime-source bands reproduce its tighter cadence.
-        dark = (94, 109, 43)
-        light = (118, 134, 56)
+        dark = (96, 111, 46)
+        light = (118, 134, 57)
         band = 112
 
     is_showpiece = style == "showpiece"
@@ -782,7 +782,7 @@ def _grass_texture(style: str, seed: int) -> Image.Image:
     # Crisp drainage lip and contact occlusion are part of the same ground plane.
     # Keep the legacy 1.08 expression untouched for deterministic Classic output.
     if is_showpiece:
-        turf = ImageEnhance.Contrast(turf).enhance(1.035)
+        turf = ImageEnhance.Contrast(turf).enhance(1.025)
     else:
         turf = ImageEnhance.Contrast(turf).enhance(1.08)
     return turf
