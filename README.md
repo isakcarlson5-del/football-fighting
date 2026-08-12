@@ -37,10 +37,11 @@ with layered light/heavy/critical hit audio. Curveball Swarm and Golden Boot
 Seekers add damage-reserving, live-retargeting long-range projectiles with
 dedicated generated card and projectile art. Menu and arena art are generated
 and shipped as local files. The arena system includes three 3072x2048
-orthographic production plates: **Midnight Final** (default), **Heritage Day**
-and **Electric Derby**. Each plate has its own measured grass rectangle so the
-game's coordinate-accurate markings, goals and character feet align to the
-physical turf instead of depending on AI-drawn field geometry. Security Detail uses its
+orthographic World Cup-style production plates: the deterministic
+**World Cup Classic** (default), deterministic **World Cup Showpiece**, and
+AI-authored **World Cup Modern**. Each plate has its own measured grass rectangle
+so the game's coordinate-accurate markings, goals and character feet align to
+the physical turf instead of depending on AI-drawn field geometry. Security Detail uses its
 own generated idle/move/punch/intercept bodyguard strip. Every ability draft
 card uses dedicated generated art whose composition communicates its AERIAL or
 GROUND delivery at a glance; compact procedural icons remain in the combat HUD.
@@ -49,15 +50,16 @@ Every enemy has a segmented in-world health bar: compact steel for regular
 threats, gold with numeric HP for elites, and a larger red boss treatment.
 No paid APIs, no paid assets, no network calls at runtime.
 
-### Arena asset research
+### Arena asset research and provenance
 
-The official [Kenney Sports Pack](https://kenney.nl/assets/sports-pack) was
-evaluated as the safest ready-made fallback: it is free, CC0, attribution-free
-and suitable for commercial browser games. Its top-down field tiles are much
-simpler than the game's current authored 2.5D stadium plate, however, so they
-were not substituted merely for being external. The shipped arena remains the
-sharper local generated asset; Kenney is the documented zero-cost fallback if a
-future redesign needs modular field geometry.
+Two production plates are original deterministic renders built entirely by
+`scripts/generate_world_cup_arenas.py`; their 3072x2048 PNG sources are included
+under `art-source/arena/world-cup/`. They combine exact stadium geometry with
+seeded, non-repeating grass-fibre, clipping, wear, mowing and drainage detail.
+The third plate was created with the built-in image generator and reconstructed
+by `scripts/process_arena_variants.py`. No external texture is shipped. Two CC0
+OpenGameArt grass textures were evaluated but rejected because their 512x512
+sources would visibly repeat and soften at gameplay scale.
 
 ## Run it locally
 
@@ -69,9 +71,9 @@ npm run dev        # dev server -> http://localhost:5173
 Compare the three playable arena variants directly:
 
 ```text
-http://localhost:5173/?arena=midnight-final
-http://localhost:5173/?arena=heritage-day
-http://localhost:5173/?arena=electric-derby
+http://localhost:5173/?arena=world-cup-classic
+http://localhost:5173/?arena=world-cup-showpiece
+http://localhost:5173/?arena=world-cup-modern-ai
 ```
 
 ## Production build

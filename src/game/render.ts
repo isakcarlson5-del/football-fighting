@@ -1432,8 +1432,17 @@ export class Renderer {
         const atlas = semanticAtlas ?? vis.atlas;
         const x = toSX(p.x);
         const y = toSY(p.y);
-        // The delivered feet baseline is the only grounding cue. A separate
-        // contact shadow/selection ring made the player float above the plate.
+        // Two tight cleat occlusion marks visually pin the authored foot
+        // baseline to the turf. They are deliberately tiny and independent —
+        // never a selection disc or character ring — so the player reads as
+        // standing on detailed grass without looking like a floating token.
+        ctx.save();
+        ctx.fillStyle = 'rgba(2, 18, 8, 0.24)';
+        ctx.beginPath();
+        ctx.ellipse(x - 5.2, y + 0.8, 6.8, 2.05, -0.14, 0, TAU);
+        ctx.ellipse(x + 5.2, y + 0.8, 6.8, 2.05, 0.14, 0, TAU);
+        ctx.fill();
+        ctx.restore();
         // dash trail
         if (p.dashT > 0) {
           const dashAngle = Math.atan2(p.dashDy * TILT, p.dashDx);

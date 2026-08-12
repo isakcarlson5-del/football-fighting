@@ -60,33 +60,34 @@ const debugMove = debugMoveKey ? debugMoveVectors[debugMoveKey] : undefined;
   img.src = 'art/menu-key-art.jpg';
 }
 
-type ArenaVariantId = 'midnight-final' | 'heritage-day' | 'electric-derby';
+type ArenaVariantId = 'world-cup-classic' | 'world-cup-showpiece' | 'world-cup-modern-ai';
 interface ArenaVariant {
   id: ArenaVariantId;
   path: string;
   grass: ArenaGrassRect;
 }
 const arenaVariants: Record<ArenaVariantId, ArenaVariant> = {
-  'midnight-final': {
-    id: 'midnight-final',
-    path: 'art/arena/variants/midnight-final.webp',
-    grass: { x: 410, y: 300, w: 2248, h: 1462 },
+  'world-cup-classic': {
+    id: 'world-cup-classic',
+    path: 'art/arena/world-cup/world-cup-classic.webp',
+    grass: { x: 390, y: 322, w: 2292, h: 1404 },
   },
-  'heritage-day': {
-    id: 'heritage-day',
-    path: 'art/arena/variants/heritage-day.webp',
-    grass: { x: 298, y: 292, w: 2470, h: 1476 },
+  'world-cup-showpiece': {
+    id: 'world-cup-showpiece',
+    path: 'art/arena/world-cup/world-cup-showpiece.webp',
+    grass: { x: 390, y: 322, w: 2292, h: 1404 },
   },
-  'electric-derby': {
-    id: 'electric-derby',
-    path: 'art/arena/variants/electric-derby.webp',
-    grass: { x: 464, y: 368, w: 2144, h: 1314 },
+  'world-cup-modern-ai': {
+    id: 'world-cup-modern-ai',
+    path: 'art/arena/world-cup/world-cup-modern-ai.webp',
+    // Measured on the 1536x1024 AI source and doubled for runtime output.
+    grass: { x: 612, y: 412, w: 1828, h: 1254 },
   },
 };
 const requestedArena = new URLSearchParams(location.search).get('arena') as ArenaVariantId | null;
 const arenaVariant = requestedArena && arenaVariants[requestedArena]
   ? arenaVariants[requestedArena]
-  : arenaVariants['midnight-final'];
+  : arenaVariants['world-cup-classic'];
 
 // Arena plate: swap the gameplay world's base when the selected generated art is ready.
 {

@@ -126,8 +126,8 @@ describe('generated locomotion art', () => {
     expect(statSync(path).size).toBeGreaterThan(300_000);
   });
 
-  it.each(['midnight-final', 'heritage-day', 'electric-derby'])('%s ships as a high-resolution production arena', (id) => {
-    const path = resolve(`public/art/arena/variants/${id}.webp`);
+  it.each(['world-cup-classic', 'world-cup-showpiece', 'world-cup-modern-ai'])('%s ships as a high-resolution production arena', (id) => {
+    const path = resolve(`public/art/arena/world-cup/${id}.webp`);
     expect(opaqueWebpHeader(path)).toEqual({ width: 3072, height: 2048 });
     expect(statSync(path).size).toBeGreaterThan(1_500_000);
   });

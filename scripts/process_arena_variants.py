@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build high-resolution runtime arena plates from approved AI source art."""
+"""Build the high-resolution runtime plate for the approved AI arena."""
 
 from pathlib import Path
 
@@ -7,10 +7,10 @@ from PIL import Image, ImageFilter
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SOURCE_DIR = ROOT / "art-source" / "arena" / "variants"
-OUTPUT_DIR = ROOT / "public" / "art" / "arena" / "variants"
+SOURCE_DIR = ROOT / "art-source" / "arena" / "world-cup"
+OUTPUT_DIR = ROOT / "public" / "art" / "arena" / "world-cup"
 TARGET_SIZE = (3072, 2048)
-VARIANTS = ("midnight-final", "heritage-day", "electric-derby")
+VARIANTS = ("world-cup-modern-ai",)
 
 
 def build_variant(variant: str) -> None:

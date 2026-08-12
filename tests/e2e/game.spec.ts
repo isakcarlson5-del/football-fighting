@@ -73,12 +73,12 @@ test('all 32 directional player cycles load during real movement', async ({ page
 
 test('all three calibrated high-resolution arena plates load and remain playable', async ({ page }) => {
   const errors = await collectErrors(page);
-  for (const arena of ['midnight-final', 'heritage-day', 'electric-derby']) {
+  for (const arena of ['world-cup-classic', 'world-cup-showpiece', 'world-cup-modern-ai']) {
     await page.goto(`/?debug=1&stage=arena-preview&move=e&arena=${arena}`);
     await expect.poll(() => page.evaluate(
       (arenaId) => performance
         .getEntriesByType('resource')
-        .some((entry) => entry.name.endsWith(`/art/arena/variants/${arenaId}.webp`)),
+        .some((entry) => entry.name.endsWith(`/art/arena/world-cup/${arenaId}.webp`)),
       arena,
     )).toBe(true);
     const state = await page.evaluate(() => ({
