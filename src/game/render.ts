@@ -77,6 +77,19 @@ interface TurfFootprint {
   angle: number;
 }
 
+interface TurfClipping {
+  active: boolean;
+  x: number;
+  y: number;
+  born: number;
+  vx: number;
+  vy: number;
+  angle: number;
+  spin: number;
+  length: number;
+  shade: number;
+}
+
 /** Smoothly blend authored poses at render rate while retaining the concrete
  *  12-frame cycle. The cubic easing prevents a visible snap at frame edges. */
 export function directionalFrameBlend(animT: number, fps: number, frames: number): DirectionalFrameBlend {
@@ -219,6 +232,10 @@ export class Renderer {
     active: false, x: 0, y: 0, born: 0, side: 1, angle: 0,
   }));
   private turfFootprintCursor = 0;
+  private turfClippings: TurfClipping[] = Array.from({ length: 72 }, () => ({
+    active: false, x: 0, y: 0, born: 0, vx: 0, vy: 0, angle: 0, spin: 0, length: 0, shade: 0,
+  }));
+  private turfClippingCursor = 0;
   private lastTurfFootprintAt = -1e9;
   private lastTurfFootprintX = Number.NaN;
   private lastTurfFootprintY = Number.NaN;
@@ -2214,6 +2231,25 @@ export class Renderer {
         mark.angle = angle;
         this.nextTurfFoot = this.nextTurfFoot === -1 ? 1 : -1;
         this.turfFootprintCursor = (this.turfFootprintCursor + 1) % this.turfFootprints.length;
+        const clippingCount = p.dashT > 0 ? 7 : 3;
+        for (let clippingIndex = 0; clippingIndex < clippingCount; clippingIndex++) {
+          const clipping = this.turfClippings[this.turfClippingCursor];
+          const spread = clippingIndex - (clippingCount - 1) / 2;
+          const seed = this.turfClippingCursor * 2.399 + mark.x * 0.017 + mark.y * 0.013;
+          const sideAngle = angle + Math.PI + spread * 0.115 + Math.sin(seed) * 0.08;
+          const speed = (p.dashT > 0 ? 34 : 17) + (0.5 + 0.5 * Math.sin(seed * 1.71)) * (p.dashT > 0 ? 38 : 18);
+          clipping.active = true;
+          clipping.x = mark.x + Math.cos(angle + Math.PI / 2) * spread * 1.1;
+          clipping.y = mark.y + Math.sin(angle + Math.PI / 2) * spread * 1.1;
+          clipping.born = time;
+          clipping.vx = Math.cos(sideAngle) * speed;
+          clipping.vy = Math.sin(sideAngle) * speed;
+          clipping.angle = sideAngle;
+          clipping.spin = (clippingIndex % 2 === 0 ? 1 : -1) * (2.2 + (seed % 1) * 2.1);
+          clipping.length = 2.7 + (0.5 + 0.5 * Math.cos(seed * 2.31)) * 3.6;
+          clipping.shade = clippingIndex % 3;
+          this.turfClippingCursor = (this.turfClippingCursor + 1) % this.turfClippings.length;
+        }
         this.lastTurfFootprintAt = time;
         this.lastTurfFootprintX = p.x;
         this.lastTurfFootprintY = p.y;
@@ -2267,6 +2303,36 @@ export class Renderer {
         ctx.lineTo(1.2 + mark.side * 0.5, offset * 0.44 - 1.7);
         ctx.stroke();
       }
+      ctx.restore();
+    }
+
+    for (const clipping of this.turfClippings) {
+      if (!clipping.active) continue;
+      const age = time - clipping.born;
+      const lifetime = 0.72;
+      if (age >= lifetime) {
+        clipping.active = false;
+        continue;
+      }
+      const drag = Math.exp(-age * 4.7);
+      const x = toSX(clipping.x + clipping.vx * age * drag);
+      const y = toSY(clipping.y + clipping.vy * age * drag);
+      const lift = Math.sin(clamp(age / lifetime, 0, 1) * Math.PI) * Math.min(4.5, clipping.length * 0.7);
+      const alpha = (1 - age / lifetime) * 0.34;
+      ctx.save();
+      ctx.translate(x, y - lift);
+      ctx.rotate(clipping.angle + clipping.spin * age);
+      ctx.scale(1, TILT);
+      ctx.strokeStyle = clipping.shade === 0
+        ? `rgba(184,195,102,${alpha})`
+        : clipping.shade === 1
+          ? `rgba(66,83,25,${alpha * 0.92})`
+          : `rgba(216,216,132,${alpha * 0.78})`;
+      ctx.lineWidth = 0.75;
+      ctx.beginPath();
+      ctx.moveTo(-clipping.length * 0.5, 0);
+      ctx.quadraticCurveTo(0, -0.9, clipping.length * 0.5, 0.2);
+      ctx.stroke();
       ctx.restore();
     }
   }

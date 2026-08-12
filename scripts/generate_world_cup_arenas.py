@@ -695,6 +695,49 @@ def _grass_texture(style: str, seed: int) -> Image.Image:
                 detail_draw.line((x, y, x + cut_length, y + 2), fill=(38, 43, 11, rng.randrange(18, 38)), width=1)
                 detail_draw.line((x + 1, y - 1, x + cut_length - 1, y + 1), fill=(197, 193, 113, rng.randrange(9, 22)), width=1)
 
+        # Goalkeepers repeatedly push off inside two compact corridors. Small
+        # crescent cuts, replaced turf plugs and combed recovery blades give
+        # those areas match-specific history without painting generic dirt.
+        for goal_x, direction in ((126, 1), (width - 126, -1)):
+            for track in range(-5, 6):
+                track_y = height // 2 + track * 24
+                for step in range(0, 178, 9):
+                    x = goal_x + direction * step
+                    jitter = ((track * 31 + step * 17 + seed) % 9) - 4
+                    length = 5 + ((step * 13 + track * 7 + seed) % 7)
+                    detail_draw.line(
+                        (x, track_y + jitter, x - direction * length, track_y + jitter + (track % 3) - 1),
+                        fill=(42, 49, 12, 29),
+                        width=1,
+                    )
+                    if (step + track) % 4 == 0:
+                        detail_draw.point((x + direction, track_y + jitter - 1), fill=(220, 216, 138, 27))
+            for row in range(-7, 8):
+                y = height // 2 + row * 27 + ((row * row * 11 + seed) % 13) - 6
+                x = goal_x + direction * (18 + (abs(row) * 17) % 82)
+                plug_rx = 6 + (abs(row) * 3) % 8
+                plug_ry = 2 + (abs(row) * 5) % 4
+                detail_draw.ellipse(
+                    (x - plug_rx, y - plug_ry, x + plug_rx, y + plug_ry),
+                    fill=(84, 91, 30, 18),
+                    outline=(187, 184, 101, 31),
+                    width=1,
+                )
+                detail_draw.arc(
+                    (x - plug_rx - 2, y - plug_ry - 1, x + plug_rx + 3, y + plug_ry + 2),
+                    182 if direction > 0 else 2,
+                    338 if direction > 0 else 158,
+                    fill=(39, 45, 11, 46),
+                    width=1,
+                )
+                for blade in range(-2, 3):
+                    root_y = y + blade * 2
+                    detail_draw.line(
+                        (x + direction * (plug_rx + 2), root_y, x + direction * (plug_rx + 7), root_y + blade),
+                        fill=(205, 207, 124, 31),
+                        width=1,
+                    )
+
         # Groundskeeper seams, dew flecks and clipped blade fragments.
         for y in range(0, height, 87):
             detail_draw.line((0, y, width, y + 9), fill=(227, 231, 170, 6), width=1)
