@@ -2238,12 +2238,33 @@ export class Renderer {
       ctx.beginPath();
       ctx.ellipse(0, 0, 5.2, 2.1, mark.side * 0.12, 0, TAU);
       ctx.fill();
+      // A planted boot presses individual fibres backwards along its travel
+      // axis. These short deterministic strokes sit beneath the character and
+      // make contact readable without a glow, ring or particle emitter.
+      ctx.strokeStyle = `rgba(43,57,17,${alpha * 1.28})`;
+      ctx.lineWidth = 0.8;
+      for (let fibre = -3; fibre <= 3; fibre++) {
+        const offset = fibre * 1.15;
+        const reach = 4.2 + ((fibre * fibre + mark.side + 7) % 3) * 1.3;
+        ctx.beginPath();
+        ctx.moveTo(-1.4, offset * 0.34);
+        ctx.lineTo(-reach, offset * 0.5 + mark.side * 0.32);
+        ctx.stroke();
+      }
       ctx.strokeStyle = `rgba(194,220,167,${alpha * 0.48})`;
       ctx.lineWidth = 0.75;
       for (const offset of [-2.5, 0, 2.5]) {
         ctx.beginPath();
         ctx.moveTo(-3.8, offset * 0.2);
         ctx.lineTo(2.8, offset * 0.17);
+        ctx.stroke();
+      }
+      ctx.strokeStyle = `rgba(210,218,132,${alpha * 0.42})`;
+      ctx.lineWidth = 0.65;
+      for (const offset of [-3.4, 3.4]) {
+        ctx.beginPath();
+        ctx.moveTo(-0.5, offset * 0.3);
+        ctx.lineTo(1.2 + mark.side * 0.5, offset * 0.44 - 1.7);
         ctx.stroke();
       }
       ctx.restore();

@@ -508,14 +508,26 @@ def _grass_texture(style: str, seed: int) -> Image.Image:
     # Per-pixel seeded fibre/noise detail survives camera zoom without a repeated tile.
     for y in range(height):
         for x in range(width):
-            stripe_index = x // band
+            if is_showpiece:
+                # Tiny mower corrections prevent kilometre-perfect computer
+                # seams. The displacement stays below two source pixels and
+                # changes slowly enough to remain a straight broadcast stripe.
+                provisional_stripe = x // band
+                edge_drift = round(
+                    math.sin(y / 171.0 + provisional_stripe * 0.73) * 1.15
+                    + math.sin(y / 47.0 + provisional_stripe * 1.31) * 0.42
+                )
+                sampled_x = max(0, min(width - 1, x + edge_drift))
+            else:
+                sampled_x = x
+            stripe_index = sampled_x // band
             stripe = stripe_index % 2
             base = light if stripe == 0 else dark
             if is_showpiece:
                 # Real mower turns do not form single-pixel digital seams. A
                 # narrow five-pixel transition keeps the measured cadence but
                 # lets adjacent blade directions feather into one another.
-                position = x % band
+                position = sampled_x % band
                 edge_distance = min(position, band - 1 - position)
                 if edge_distance < 5:
                     edge_mix = (edge_distance + 1) / 6
@@ -581,7 +593,16 @@ def _grass_texture(style: str, seed: int) -> Image.Image:
         fibre_step = 8
         for cell_y in range(0, height, fibre_step):
             for cell_x in range(0, width, fibre_step):
-                if rng.random() > 0.78:
+                # Low-frequency density fields form natural lush and lean
+                # patches. They are evaluated continuously, so there are no
+                # rectangular clusters or visible texture-tile boundaries.
+                density_wave = (
+                    math.sin(cell_x / 173.0 + cell_y / 289.0)
+                    + math.cos(cell_y / 137.0 - cell_x / 347.0)
+                    + math.sin((cell_x + cell_y) / 421.0)
+                ) / 3
+                fibre_density = 0.69 + density_wave * 0.085
+                if rng.random() > fibre_density:
                     continue
                 x = cell_x + rng.randrange(fibre_step)
                 y = cell_y + rng.randrange(fibre_step)
@@ -589,7 +610,7 @@ def _grass_texture(style: str, seed: int) -> Image.Image:
                 lean = 1 if stripe_index % 2 == 0 else -1
                 blade_length = rng.choice((4, 4, 5, 5, 6, 6, 7, 8))
                 bend = lean * rng.choice((0, 1, 1, 1, 2)) + rng.choice((-1, 0, 0, 0, 1))
-                blade_alpha = rng.randrange(28, 56)
+                blade_alpha = rng.randrange(29, 57) + round(max(0, density_wave) * 4)
                 detail_draw.line(
                     (x + 1, y + 1, x + bend + 1, y + blade_length + 1),
                     fill=(31, 40, 10, round(blade_alpha * 0.58)),
@@ -620,6 +641,27 @@ def _grass_texture(style: str, seed: int) -> Image.Image:
                     fill=(188 + rng.randrange(0, 22), 196 + rng.randrange(0, 19), 105 + rng.randrange(0, 22), base_alpha),
                     width=1,
                 )
+
+        # The mower turns and groundskeepers travel around the perimeter. This
+        # creates a narrow pressed fringe with blades lying parallel to the
+        # drainage channel, grounding the turf at the stadium boundary.
+        perimeter = Image.new("RGBA", (width, height))
+        perimeter_draw = ImageDraw.Draw(perimeter, "RGBA")
+        perimeter_draw.rectangle((0, 0, width - 1, height - 1), outline=(34, 45, 12, 28), width=4)
+        perimeter_draw.rectangle((5, 5, width - 6, height - 6), outline=(168, 175, 93, 13), width=2)
+        for x in range(3, width - 3, 9):
+            jitter = ((x * 19 + seed) % 7) - 3
+            length = 4 + ((x * 11 + seed) % 8)
+            perimeter_draw.line((x, 4 + jitter * 0.2, x + length, 5 + jitter * 0.2), fill=(203, 208, 126, 28), width=1)
+            perimeter_draw.line((x, height - 5 - jitter * 0.2, x - length, height - 6 - jitter * 0.2), fill=(43, 51, 13, 24), width=1)
+        for y in range(3, height - 3, 9):
+            jitter = ((y * 17 + seed) % 7) - 3
+            length = 4 + ((y * 13 + seed) % 8)
+            perimeter_draw.line((4 + jitter * 0.2, y, 5 + jitter * 0.2, y + length), fill=(203, 208, 126, 27), width=1)
+            perimeter_draw.line((width - 5 - jitter * 0.2, y, width - 6 - jitter * 0.2, y - length), fill=(43, 51, 13, 24), width=1)
+        perimeter = perimeter.filter(ImageFilter.GaussianBlur(0.22))
+        detail = Image.alpha_composite(detail, perimeter)
+        detail_draw = ImageDraw.Draw(detail, "RGBA")
 
         # Traffic zones alter individual fibres rather than painting soft
         # brown blobs. Goal mouths and the centre lane contain flattened blades,
