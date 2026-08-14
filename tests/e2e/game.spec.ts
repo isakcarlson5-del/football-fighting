@@ -1292,6 +1292,15 @@ test('draft supports WASD and arrows while two rerolls are shared across the run
   const reroll = page.locator('#levelup-screen [data-act="reroll"]');
   await expect(cards.first()).toBeFocused();
   await expect(reroll).toHaveText('Reroll cards · 2 left');
+
+  // Keyboard navigation must recover even if the browser or canvas caused
+  // focus to leave the draft between frames.
+  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+  await page.keyboard.press('KeyD');
+  await expect(cards.nth(1)).toBeFocused();
+  await page.keyboard.press('KeyA');
+  await expect(cards.first()).toBeFocused();
+
   await page.keyboard.press('KeyD');
   await expect(cards.nth(1)).toBeFocused();
   await page.keyboard.press('KeyA');

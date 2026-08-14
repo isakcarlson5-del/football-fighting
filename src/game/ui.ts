@@ -106,6 +106,7 @@ export class UI {
   } = {};
   private dockSig = '';
   private dialogCleanup: (() => void) | null = null;
+  private draftCleanup: (() => void) | null = null;
   selectedPlayer = PLAYERS[0].id;
 
   constructor(root: HTMLElement, hooks: UiHooks, save: Save) {
@@ -133,6 +134,7 @@ export class UI {
 
   clear(): void {
     this.dialogCleanup?.();
+    this.draftCleanup?.();
     this.root.innerHTML = '';
     this.hudRefs = {};
     this.dockSig = '';
@@ -188,6 +190,70 @@ export class UI {
     this.dialogCleanup = cleanup;
     requestAnimationFrame(() => (focusable()[0] ?? el).focus({ preventScroll: true }));
     return close;
+  }
+
+  /** Roving-focus navigation shared by every screen: WASD/arrows move
+   * focus between the focusable controls, Enter/Space activates the
+   * focused control. Text fields keep their native behaviour (typing,
+   * caret, slider adjust), and screens with their own keydown handling
+   * keep precedence because they preventDefault. Skin swatches stay out
+   * of the arrow path so character cards read as one clean unit. */
+  private bindMenuNav(el: HTMLElement): void {
+    const direction = (key: string): 'up' | 'down' | 'left' | 'right' | null => {
+      const k = key.toLowerCase();
+      if (k === 'arrowup' || k === 'w') return 'up';
+      if (k === 'arrowdown' || k === 's') return 'down';
+      if (k === 'arrowleft' || k === 'a') return 'left';
+      if (k === 'arrowright' || k === 'd') return 'right';
+      return null;
+    };
+    const targets = () => [...el.querySelectorAll<HTMLElement>(
+      'button:not([disabled]):not(.skin-swatch), input:not([disabled]):not([type="hidden"]), select:not([disabled]), [tabindex]:not([tabindex="-1"]):not(.skin-swatch), [href]',
+    )].filter((node) => node.offsetParent !== null);
+    el.addEventListener('keydown', (event) => {
+      if (!(event instanceof KeyboardEvent) || event.defaultPrevented) return;
+      const active = document.activeElement;
+      if (active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement || active instanceof HTMLSelectElement) return;
+      const key = event.key;
+      if (key === 'Enter' || key === ' ') {
+        event.preventDefault();
+        if (active instanceof HTMLElement) active.click();
+        return;
+      }
+      const dir = direction(key);
+      if (!dir) return;
+      event.preventDefault();
+      const nodes = targets();
+      if (nodes.length === 0) return;
+      if (!(active instanceof HTMLElement) || !nodes.includes(active)) {
+        nodes[0].focus({ preventScroll: true });
+        return;
+      }
+      const cur = active.getBoundingClientRect();
+      const cx = cur.left + cur.width / 2;
+      const cy = cur.top + cur.height / 2;
+      let best: HTMLElement | null = null;
+      let bestScore = Infinity;
+      for (const node of nodes) {
+        if (node === active) continue;
+        const rect = node.getBoundingClientRect();
+        const dx = rect.left + rect.width / 2 - cx;
+        const dy = rect.top + rect.height / 2 - cy;
+        const horizontal = dir === 'left' || dir === 'right';
+        const forward = horizontal ? dx : dy;
+        if (dir === 'left' && forward >= -8) continue;
+        if (dir === 'right' && forward <= 8) continue;
+        if (dir === 'up' && forward >= -8) continue;
+        if (dir === 'down' && forward <= 8) continue;
+        const perpendicular = horizontal ? Math.abs(dy) : Math.abs(dx);
+        const score = Math.abs(forward) + perpendicular * 4;
+        if (score < bestScore) {
+          bestScore = score;
+          best = node;
+        }
+      }
+      best?.focus({ preventScroll: true });
+    });
   }
 
   /**
@@ -269,6 +335,7 @@ export class UI {
     el.querySelector('[data-act="leaderboard-refresh"]')?.addEventListener('click', () => this.hooks.onLeaderboardRefresh());
     el.querySelector('[data-act="vip-open"]')?.addEventListener('click', () => this.showVipAdmin());
     this.root.appendChild(el);
+    this.bindMenuNav(el);
   }
 
   renderLeaderboard(entries: LeaderboardEntry[], online: boolean): void {
@@ -340,6 +407,7 @@ export class UI {
     this.root.appendChild(el);
     const close = this.bindDialog(el, () => el.remove());
     el.querySelector('[data-act="vip-close"]')?.addEventListener('click', close);
+    this.bindMenuNav(el);
   }
 
   renderVipAdmin(data: VipAdminStats | null, error?: string): void {
@@ -485,23 +553,7 @@ export class UI {
       card.addEventListener('click', (ev) => {
         const target = ev.target as HTMLElement;
         if (target.classList.contains('skin-swatch')) return;
-        selectCard(card, false);
-      });
-      card.addEventListener('keydown', (rawEvent) => {
-        const event = rawEvent as KeyboardEvent;
-        const key = event.key.toLowerCase();
-        if (key === 'enter' || key === ' ') {
-          event.preventDefault();
-          selectCard(card, true);
-          return;
-        }
-        const directions = ['arrowleft', 'arrowup', 'a', 'w', 'arrowright', 'arrowdown', 'd', 's'];
-        if (!directions.includes(key)) return;
-        event.preventDefault();
-        const all = [...el.querySelectorAll<HTMLElement>('.char-card')];
-        const current = all.indexOf(card as HTMLElement);
-        const delta = ['arrowleft', 'arrowup', 'a', 'w'].includes(key) ? -1 : 1;
-        selectCard(all[(current + delta + all.length) % all.length], true);
+        selectCard(card, true);
       });
     });
     el.querySelectorAll('.skin-swatch').forEach((sw) => {
@@ -517,6 +569,7 @@ export class UI {
     el.querySelector('[data-act="back"]')!.addEventListener('click', () => this.hooks.onQuitToMenu());
     el.querySelector('[data-act="start"]')!.addEventListener('click', () => this.hooks.onPlay(this.selectedPlayer));
     this.root.appendChild(el);
+    this.bindMenuNav(el);
   }
 
   /* ---------------- HUD ---------------- */
@@ -738,6 +791,7 @@ export class UI {
     remainingPicks = 0,
     initialRerolls = 0,
   ): void {
+    this.draftCleanup?.();
     const existing = this.root.querySelector('#levelup-screen');
     existing?.remove();
     const bossLoot = mode === 'boss';
@@ -746,6 +800,10 @@ export class UI {
     const el = document.createElement('div');
     el.className = bossLoot ? 'screen boss-loot' : 'screen';
     el.id = 'levelup-screen';
+    const closeDraft = () => {
+      this.draftCleanup?.();
+      el.remove();
+    };
     const renderCards = (opts: UpgradeOption[]) => {
       const cards = opts
         .map((o, i) => {
@@ -784,7 +842,7 @@ export class UI {
       wrap.querySelectorAll<HTMLButtonElement>('.upgrade-card').forEach((c) => {
         c.addEventListener('click', () => {
           const idx = Number((c as HTMLElement).dataset.idx);
-          el.remove();
+          closeDraft();
           this.hooks.onUpgradePicked(opts[idx]);
         });
         c.addEventListener('focus', () => {
@@ -821,14 +879,18 @@ export class UI {
     renderCards(options);
     this.root.appendChild(el);
     el.querySelector<HTMLButtonElement>('.upgrade-card')?.focus({ preventScroll: true });
-    el.addEventListener('keydown', (event) => {
+    const handleDraftKeydown = (event: KeyboardEvent) => {
       if (!(event instanceof KeyboardEvent)) return;
       const key = event.key.toLowerCase();
-      if (!['arrowleft', 'arrowright', 'arrowup', 'arrowdown', 'w', 'a', 's', 'd'].includes(key)) return;
+      if (!['arrowleft', 'arrowright', 'arrowup', 'arrowdown', 'w', 'a', 's', 'd', 'enter', ' '].includes(key)) return;
       const cards = [...el.querySelectorAll<HTMLButtonElement>('.upgrade-card')];
+      if (cards.length === 0) return;
       const current = cards.indexOf(document.activeElement as HTMLButtonElement);
       const onRerollControl = document.activeElement === rerollButton;
-      if ((key === 'arrowdown' || key === 's') && current >= 0 && !rerollButton.disabled) {
+      if (key === 'enter' || key === ' ') {
+        if (onRerollControl && !rerollButton.disabled) rerollButton.click();
+        else cards[current >= 0 ? current : Math.min(lastCardIndex, cards.length - 1)]?.click();
+      } else if ((key === 'arrowdown' || key === 's') && !rerollButton.disabled) {
         rerollButton.focus({ preventScroll: true });
       } else if ((key === 'arrowup' || key === 'w') && onRerollControl) {
         cards[Math.min(lastCardIndex, cards.length - 1)]?.focus({ preventScroll: true });
@@ -842,7 +904,14 @@ export class UI {
         cards[Math.min(lastCardIndex, cards.length - 1)]?.focus({ preventScroll: true });
       }
       event.preventDefault();
-    });
+      event.stopImmediatePropagation();
+    };
+    window.addEventListener('keydown', handleDraftKeydown);
+    const cleanup = () => {
+      window.removeEventListener('keydown', handleDraftKeydown);
+      if (this.draftCleanup === cleanup) this.draftCleanup = null;
+    };
+    this.draftCleanup = cleanup;
   }
 
   /* ---------------- pause ---------------- */
@@ -889,6 +958,7 @@ export class UI {
     el.querySelector('[data-act="quit"]')!.addEventListener('click', () => this.hooks.onQuitToMenu());
     this.root.appendChild(el);
     this.bindDialog(el, resume);
+    this.bindMenuNav(el);
   }
 
   hidePause(): void {
@@ -932,6 +1002,7 @@ export class UI {
     el.querySelector('[data-act="club"]')!.addEventListener('click', () => this.hooks.onOpenClub());
     el.querySelector('[data-act="menu"]')!.addEventListener('click', () => this.hooks.onQuitToMenu());
     this.root.appendChild(el);
+    this.bindMenuNav(el);
   }
 
   /* ---------------- club (shop + skins) ---------------- */
@@ -1022,5 +1093,6 @@ export class UI {
     );
     el.querySelector('[data-act="back"]')!.addEventListener('click', () => this.hooks.onCloseClub());
     this.root.appendChild(el);
+    this.bindMenuNav(el);
   }
 }
