@@ -155,7 +155,7 @@ describe('generated locomotion art', () => {
   it.each(playerIds.flatMap((player) => playerDirections.map((direction) => [player, direction])))(
     '%s has a 12-frame transparent %s directional runtime strip',
     (player, direction) => {
-      const path = resolve(`public/art/players/directional-v2/${player}/${direction}.webp`);
+      const path = resolve(`public/art/players/directional-v3/${player}/${direction}.webp`);
       expect(webpHeader(path)).toEqual({ width: 256 * 12, height: 320, alpha: true });
       expect(statSync(path).size).toBeGreaterThan(150_000);
     },

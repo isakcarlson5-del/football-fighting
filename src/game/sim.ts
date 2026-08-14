@@ -1138,7 +1138,9 @@ export class Sim {
     return this.pickupRadiusForRank(this.player.stats.magnet);
   }
   get activeMagnetRadius(): number {
-    return Math.min(260, Math.max(170, this.pickupRadius * 1.35));
+    // Match pickup: once collected, Ball Magnet covers every reachable point
+    // on the pitch. Individual special tools are filtered separately below.
+    return Math.hypot(ARENA_W, ARENA_H);
   }
   get regen(): number {
     return this.player.stats.regen * 0.4;
@@ -1564,6 +1566,11 @@ export class Sim {
    * nudge so touching their visible edge still feels responsive. */
   private isAnchoredSpecialPickup(kind: Pickup['kind']): boolean {
     return kind === 'magnet' || kind === 'bomb';
+  }
+
+  /** Ball Magnet vacuums earned loot, never chain-activating another tool. */
+  private isActiveMagnetCollectible(kind: Pickup['kind']): boolean {
+    return kind === 'xp' || kind === 'coin' || kind === 'heal' || kind === 'trophy';
   }
 
   private dropLoot(e: Enemy): void {
@@ -4296,7 +4303,11 @@ export class Sim {
       const d2 = dist2(pk.x, pk.y, p.x, p.y);
       const anchoredSpecial = this.isAnchoredSpecialPickup(pk.kind);
       const anchoredPullRadius = Math.min(68, pr * 0.55);
-      if (!anchoredSpecial && this.magnetT > 0 && d2 < activeMagnetRadius * activeMagnetRadius) {
+      if (
+        this.magnetT > 0
+        && this.isActiveMagnetCollectible(pk.kind)
+        && d2 < activeMagnetRadius * activeMagnetRadius
+      ) {
         const d = Math.sqrt(d2) || 1;
         const pull = 1650 + Math.min(650, d * 0.7);
         pk.vx += ((p.x - pk.x) / d) * pull * dt * 4;

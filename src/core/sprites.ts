@@ -155,7 +155,7 @@ let stripUseClock = 0;
 // The local server gives art files a one-year immutable cache lifetime.
 // Bump this revision whenever a shipped player sheet is corrected so browsers
 // cannot keep displaying an obsolete kit after a game update.
-export const PLAYER_ART_REVISION = '5';
+export const PLAYER_ART_REVISION = '6';
 
 export function playerArtUrl(path: string): string {
   return `${path}?v=${PLAYER_ART_REVISION}`;

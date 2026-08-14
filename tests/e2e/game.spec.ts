@@ -119,13 +119,13 @@ test('character select shows all 4 players with stats and traits', async ({ page
   const initialFrames = await runners.evaluateAll((elements) => elements.map((element) => getComputedStyle(element).backgroundPositionX));
   const resolvedPreviewUrls = await runners.evaluateAll((elements) => elements
     .map((element) => getComputedStyle(element).backgroundImage));
-  expect(resolvedPreviewUrls.every((url) => url.includes('/art/players/directional-v2/'))).toBe(true);
+  expect(resolvedPreviewUrls.every((url) => url.includes('/art/players/directional-v3/'))).toBe(true);
   expect(resolvedPreviewUrls.every((url) => !url.includes('/assets/art/'))).toBe(true);
   await expect.poll(async () => runners.evaluateAll((elements) => elements
     .map((element) => getComputedStyle(element).backgroundPositionX)
     .join('|'))).not.toBe(initialFrames.join('|'));
   const loadedStrips = await page.evaluate(() => performance.getEntriesByType('resource')
-    .filter((entry) => entry.name.includes('/art/players/directional-v2/') && entry.name.endsWith('/e.webp'))
+    .filter((entry) => entry.name.includes('/art/players/directional-v3/') && entry.name.endsWith('/e.webp'))
     .map((entry) => entry.name));
   expect(loadedStrips.length).toBeGreaterThanOrEqual(4);
 });
@@ -157,7 +157,7 @@ test('all 32 directional player cycles load during real movement', async ({ page
       await expect.poll(() => page.evaluate(
         ({ playerId, directionId }) => performance
           .getEntriesByType('resource')
-          .some((entry) => new URL(entry.name).pathname.endsWith(`/art/players/directional-v2/${playerId}/${directionId}.webp`)),
+          .some((entry) => new URL(entry.name).pathname.endsWith(`/art/players/directional-v3/${playerId}/${directionId}.webp`)),
         { playerId: player, directionId: direction },
       )).toBe(true);
       const movement = await page.evaluate(() => {

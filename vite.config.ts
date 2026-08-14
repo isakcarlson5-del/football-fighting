@@ -16,6 +16,11 @@ const RELEASE_EXCLUDED_ASSETS = [
   'art/allies/bodyguard-scout.png',
   'art/vfx/kick-contact-turf-strip.png',
 ] as const;
+const RELEASE_EXCLUDED_DIRECTORIES = [
+  // Keep the prior authored player atlases in source control as a rollback,
+  // but do not ship two complete 384-frame sets in the portal payload.
+  'art/players/directional-v2',
+] as const;
 
 async function directoryBytes(path: string): Promise<number> {
   let total = 0;
@@ -36,6 +41,7 @@ export default defineConfig({
       // Preserve every source asset. Only known-unreferenced legacy files are
       // omitted from the generated portal package.
       await Promise.all(RELEASE_EXCLUDED_ASSETS.map((asset) => rm(resolve(output, asset), { force: true })));
+      await Promise.all(RELEASE_EXCLUDED_DIRECTORIES.map((directory) => rm(resolve(output, directory), { recursive: true, force: true })));
       const bytes = await directoryBytes(output);
       if (bytes > INITIAL_PORTAL_BUDGET) {
         throw new Error(`Portal payload ${bytes} bytes exceeds the 50 MB Basic Launch budget.`);

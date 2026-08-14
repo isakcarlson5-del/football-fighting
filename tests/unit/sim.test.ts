@@ -1720,26 +1720,36 @@ describe('sim core loop', () => {
     expect(sim.events.some((event) => event.type === 'trophy')).toBe(true);
   });
 
-  it('Magnet Surge pulls nearby loot without vacuuming the full pitch', () => {
+  it('Ball Magnet vacuums the full pitch while leaving special tools grounded', () => {
     const sim = makeSim();
     sim.player.abilities = {};
     sim.enemies.forEach((e) => (e.active = false));
     sim.debugDropPickup('xp', sim.player.x + 150, sim.player.y);
     sim.debugDropPickup('xp', sim.player.x + 700, sim.player.y);
+    sim.debugDropPickup('heal', sim.player.x - 700, sim.player.y);
+    sim.debugDropPickup('bomb', sim.player.x, sim.player.y + 700);
+    sim.debugDropPickup('freeze', sim.player.x, sim.player.y - 700);
     const xp = sim.pickups.filter((pickup) => pickup.active && pickup.kind === 'xp');
     const nearby = xp[0];
     const distant = xp[1];
+    const heal = sim.pickups.find((pickup) => pickup.active && pickup.kind === 'heal')!;
+    const bomb = sim.pickups.find((pickup) => pickup.active && pickup.kind === 'bomb')!;
+    const freeze = sim.pickups.find((pickup) => pickup.active && pickup.kind === 'freeze')!;
     sim.debugDropPickup('magnet', sim.player.x, sim.player.y);
     step(sim, 1);
     expect(sim.magnetT).toBeGreaterThan(3);
-    nearby.vx = 0;
-    nearby.vy = 0;
-    distant.vx = 0;
-    distant.vy = 0;
+    for (const pickup of [nearby, distant, heal, bomb, freeze]) {
+      pickup.vx = 0;
+      pickup.vy = 0;
+      pickup.t = 0;
+    }
     step(sim, 1);
     expect(nearby.vx).toBeLessThan(-100);
-    expect(Math.abs(distant.vx)).toBeLessThan(0.001);
-    expect(sim.activeMagnetRadius).toBeLessThanOrEqual(260);
+    expect(distant.vx).toBeLessThan(-100);
+    expect(heal.vx).toBeGreaterThan(100);
+    expect(Math.abs(bomb.vy)).toBeLessThan(0.001);
+    expect(Math.abs(freeze.vy)).toBeLessThan(0.001);
+    expect(sim.activeMagnetRadius).toBeGreaterThanOrEqual(Math.hypot(2400, 1600));
     expect(sim.events.some((event) => event.type === 'magnet')).toBe(true);
   });
 
