@@ -152,6 +152,14 @@ const stripCache = new Map<string, Atlas | null>(); // null = unavailable -> pro
 const stripPending = new Map<string, Promise<Atlas | null>>();
 const stripLastUsed = new Map<string, number>();
 let stripUseClock = 0;
+// The local server gives art files a one-year immutable cache lifetime.
+// Bump this revision whenever a shipped player sheet is corrected so browsers
+// cannot keep displaying an obsolete kit after a game update.
+export const PLAYER_ART_REVISION = '4';
+
+export function playerArtUrl(path: string): string {
+  return `${path}?v=${PLAYER_ART_REVISION}`;
+}
 
 export interface StripAtlasOptions {
   frameWidth?: number;
@@ -161,6 +169,28 @@ export interface StripAtlasOptions {
   maxFrames?: number;
   flippable?: boolean;
   buildEffects?: boolean;
+  alignOpaqueBottom?: boolean;
+}
+
+/** Downward-only correction for generated run frames whose whole body was
+ * authored above the shared foot line. Keeping the final opaque pixel on the
+ * same baseline removes visible hovering without inventing in-between art. */
+export function opaqueFrameBaselineOffset(
+  pixels: Uint8ClampedArray,
+  width: number,
+  height: number,
+  feetY: number,
+): number {
+  let bottom = -1;
+  for (let y = height - 1; y >= 0 && bottom < 0; y--) {
+    for (let x = 0; x < width; x++) {
+      if (pixels[(y * width + x) * 4 + 3] > 16) {
+        bottom = y;
+        break;
+      }
+    }
+  }
+  return bottom < 0 ? 0 : Math.max(0, Math.min(height - 1 - bottom, feetY - (bottom + 1)));
 }
 
 /**
@@ -204,6 +234,15 @@ export function loadStripAtlas(
       const canvas = makeCanvas(img.width, frameHeight);
       const ctx = canvas.getContext('2d')!;
       ctx.drawImage(img, 0, 0);
+      if (options.alignOpaqueBottom) {
+        for (let frame = 0; frame < frameCount; frame++) {
+          const data = ctx.getImageData(frame * frameWidth, 0, frameWidth, frameHeight);
+          const offset = opaqueFrameBaselineOffset(data.data, frameWidth, frameHeight, feetY);
+          if (offset <= 0) continue;
+          ctx.clearRect(frame * frameWidth, 0, frameWidth, frameHeight);
+          ctx.putImageData(data, frame * frameWidth, offset);
+        }
+      }
       if (tint) {
         // recolor the shirt zone only (skins); number/arms largely untouched
         ctx.globalCompositeOperation = 'hue';
@@ -281,10 +320,10 @@ export function trimStripAtlasCache(idPrefix: string, keepId: string, maxEntries
 /** Kick off loading all player locomotion and attack strips. */
 export function primePlayerStrips(playerIds: string[]): void {
   for (const id of playerIds) {
-    void loadStripAtlas(id, `art/players/${id}.png`);
-    void loadStripAtlas(`${id}-run`, `art/players/${id}-run.png`);
-    void loadStripAtlas(`${id}-idle`, `art/players/${id}-idle.png`);
-    void loadStripAtlas(`${id}-kick`, `art/players/${id}-kick.png`);
+    void loadStripAtlas(id, playerArtUrl(`art/players/${id}.png`));
+    void loadStripAtlas(`${id}-run`, playerArtUrl(`art/players/${id}-run.png`));
+    void loadStripAtlas(`${id}-idle`, playerArtUrl(`art/players/${id}-idle.png`));
+    void loadStripAtlas(`${id}-kick`, playerArtUrl(`art/players/${id}-kick.png`));
   }
 }
 
@@ -1025,6 +1064,9 @@ export function enemyAtlas(id: Exclude<EnemyId, 'official' | 'captain' | 'drumbo
       case 'drone':
         drawFigure(ctx, { skin: '#55758a', hair: '#172635', hairStyle: 'hood', shirt: '#172635', shorts: '#172635', socks: '#172635', trim: '#53dcff', sunglasses: true, bulk: 0.72 }, f);
         break;
+      case 'varcam':
+        drawFigure(ctx, { skin: '#394a54', hair: '#111a20', hairStyle: 'hood', shirt: '#202b31', shorts: '#202b31', socks: '#202b31', trim: '#ff425d', sunglasses: true, bulk: 0.82 }, f);
+        break;
     }
   });
 }
@@ -1411,4 +1453,5 @@ export const ABILITY_GLYPHS: Record<string, AbilityGlyph> = {
   guard: 'shield',
   pressure: 'pressure',
   blast: 'blast',
+  keeperhalo: 'shield',
 };

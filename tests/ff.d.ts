@@ -14,6 +14,21 @@ declare global {
       addCoins(n: number): void;
       getSave(): Save;
       getFps(): number;
+      getTimingMetrics(): { simulatedTime: number; discardedTime: number; tempoRatio: number };
+      getInputState(): { ax: number; ay: number; joyActive: boolean; joyX: number; joyY: number };
+      getArenaRenderMode(): { liveStadium: boolean; hybridDepth: boolean };
+      getReducedVfx(): boolean;
+      getCameraState(): { x: number; y: number; lookX: number; lookY: number };
+      getPlayerOcclusionStrength(): number;
+      getBossScreenRect(): { left: number; right: number; top: number; bottom: number; centerX: number } | null;
+      getCombatPresentationMetrics(): {
+        activeEnemies: number;
+        visibleHealthBars: number;
+        renderedParticles: number;
+        renderedImpacts: number;
+        renderedSeekerTrails: number;
+        renderedDamageNumbers: number;
+      };
       pickUpgrade(i: number): void;
       skipToBoss(n: 1 | 2): void;
       debugSpawn(id: string, dx: number, dy: number, elite?: boolean): void;

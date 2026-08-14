@@ -3,26 +3,84 @@
 import { META_TRACKS, SKINS, type MetaTrackId } from './data';
 
 const KEY = 'ff_save_v1';
+export const SAVE_VERSION = 2;
 
 export interface SaveData {
+  version: number;
   coins: number;
   ranks: Record<MetaTrackId, number>;
   ownedSkins: string[];
   equipped: Record<string, string>; // playerId -> skinId
   stats: { runs: number; wins: number; totalKills: number; bestTime: number; bestLevel: number };
+  leaderboardName: string;
   muted: boolean;
+  reducedVfx: boolean;
+  haptics: boolean;
   volume: { master: number; sfx: number; music: number };
 }
 
 function defaults(): SaveData {
   return {
+    version: SAVE_VERSION,
     coins: 0,
     ranks: { power: 0, move: 0, magnet: 0, guard: 0 },
     ownedSkins: [],
     equipped: {},
     stats: { runs: 0, wins: 0, totalKills: 0, bestTime: 0, bestLevel: 0 },
-    muted: false,
+    leaderboardName: 'Guest',
+    muted: true,
+    reducedVfx: false,
+    haptics: true,
     volume: { master: 0.9, sfx: 1, music: 0.7 },
+  };
+}
+
+function finite(value: unknown, fallback: number, min = 0, max = Number.MAX_SAFE_INTEGER): number {
+  return typeof value === 'number' && Number.isFinite(value)
+    ? Math.min(max, Math.max(min, value))
+    : fallback;
+}
+
+/** Migrate and validate old/local data without discarding legitimate progress. */
+function normalizeSave(value: unknown): SaveData {
+  const base = defaults();
+  if (!value || typeof value !== 'object') return base;
+  const raw = value as Partial<SaveData>;
+  const ranks = raw.ranks && typeof raw.ranks === 'object' ? raw.ranks : base.ranks;
+  const stats = raw.stats && typeof raw.stats === 'object' ? raw.stats : base.stats;
+  const volume = raw.volume && typeof raw.volume === 'object' ? raw.volume : base.volume;
+  const equipped = raw.equipped && typeof raw.equipped === 'object'
+    ? Object.fromEntries(Object.entries(raw.equipped).filter((entry): entry is [string, string] => typeof entry[1] === 'string'))
+    : {};
+  return {
+    version: SAVE_VERSION,
+    coins: Math.round(finite(raw.coins, base.coins)),
+    ranks: Object.fromEntries(META_TRACKS.map((track) => [
+      track.id,
+      Math.round(finite(ranks[track.id], 0, 0, track.maxRank)),
+    ])) as Record<MetaTrackId, number>,
+    ownedSkins: Array.isArray(raw.ownedSkins)
+      ? [...new Set(raw.ownedSkins.filter((id): id is string => typeof id === 'string'))]
+      : [],
+    equipped,
+    stats: {
+      runs: Math.round(finite(stats.runs, 0)),
+      wins: Math.round(finite(stats.wins, 0)),
+      totalKills: Math.round(finite(stats.totalKills, 0)),
+      bestTime: Math.round(finite(stats.bestTime, 0)),
+      bestLevel: Math.round(finite(stats.bestLevel, 0)),
+    },
+    leaderboardName: typeof raw.leaderboardName === 'string'
+      ? raw.leaderboardName.trim().slice(0, 20) || base.leaderboardName
+      : base.leaderboardName,
+    muted: typeof raw.muted === 'boolean' ? raw.muted : base.muted,
+    reducedVfx: typeof raw.reducedVfx === 'boolean' ? raw.reducedVfx : base.reducedVfx,
+    haptics: typeof raw.haptics === 'boolean' ? raw.haptics : base.haptics,
+    volume: {
+      master: finite(volume.master, base.volume.master, 0, 1),
+      sfx: finite(volume.sfx, base.volume.sfx, 0, 1),
+      music: finite(volume.music, base.volume.music, 0, 1),
+    },
   };
 }
 
@@ -37,14 +95,7 @@ export class Save {
     try {
       const raw = storage.getItem(KEY);
       if (raw) {
-        const parsed = JSON.parse(raw) as Partial<SaveData>;
-        this.data = {
-          ...defaults(),
-          ...parsed,
-          ranks: { ...defaults().ranks, ...parsed.ranks },
-          stats: { ...defaults().stats, ...parsed.stats },
-          volume: { ...defaults().volume, ...parsed.volume },
-        };
+        this.data = normalizeSave(JSON.parse(raw));
       }
     } catch {
       // Corrupt save: fall back to defaults rather than crashing.

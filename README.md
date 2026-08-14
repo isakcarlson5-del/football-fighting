@@ -7,7 +7,7 @@ automatically; you steer the movement. Earn XP from fallen opponents, draft
 upgrades each level, beat the 4:00, 7:00 and 9:00 bosses, and spend your
 winnings on permanent upgrades and cosmetic kits between runs.
 
-The current pace pass runs players at 130% and enemies at 125% of the original
+The current pace pass runs players at 160% and enemies at 142% of the original
 movement baseline. Enemy attack cadence is unchanged, preserving reaction time
 while making positioning, pursuit and the continuously rising pressure more immediate.
 
@@ -28,12 +28,15 @@ LRU cache so the richer animation remains mobile-safe.
 Three XP tiers, coins, healing drinks, boss trophies and the rare Full-Pitch
 Magnet, Matchday Wipeout and Stoppage-Time Freeze drops use dedicated generated
 pickup art. The magnet vacuums every ground collectible, the bomb clears regular
-threats while chunking bosses and now plays a six-stage AI-authored full-pitch
+threats while chunking bosses and now plays a six-stage authored full-pitch
 explosion instead of the old procedural ring, and the freeze pauses the hostile
-layer for 5.5s.
+layer for 4.0s.
 Directional contact
 sparks and distinct aerial landing bursts use pooled, mobile-safe rendering
-with layered light/heavy/critical hit audio. Curveball Swarm and Golden Boot
+with layered light/heavy/critical hit audio. Precision Strike now lifts a tiny
+continuous low-alpha dust cluster at boot contact instead of stepping through a
+large explosion strip; Orbiting Press balls carry short generated tangent wisps
+that remain subordinate to the ball. Curveball Swarm and Golden Boot
 Seekers add damage-reserving, live-retargeting long-range projectiles with
 dedicated generated card and projectile art. Menu and arena art are generated
 and shipped as local files. The arena system includes three 3072x2048
@@ -42,14 +45,22 @@ orthographic World Cup-style production plates: deterministic
 (default), and
 AI-authored **World Cup Modern**. Each plate has its own measured grass rectangle
 so the game's coordinate-accurate markings, goals and character feet align to
-the physical turf instead of depending on AI-drawn field geometry. Security Detail uses its
-own generated idle/move/punch/intercept bodyguard strip. Every ability draft
-card uses dedicated generated art whose composition communicates its AERIAL or
-GROUND delivery at a glance; compact procedural icons remain in the combat HUD.
+the physical turf instead of depending on AI-drawn field geometry. Security
+Detail uses four generated idle/move/punch/intercept bodyguard sets. Each guard
+patrols an independent world-space escort sector, targets grounded threats
+independently and derives its painted run direction from its real velocity
+instead of mirroring player input. Every ability draft card uses dedicated
+generated art whose composition communicates its AERIAL or GROUND delivery and
+unique decision role at a glance; compact procedural icons remain in the combat HUD.
 Bosses now leave a tiered trophy pickup with a bonus coin payout and celebration.
 Every enemy has a segmented in-world health bar: compact steel for regular
 threats, gold with numeric HP for elites, and a larger red boss treatment.
-No paid APIs, no paid assets, no network calls at runtime.
+The main menu also includes an optional same-origin community leaderboard.
+Players choose a public leaderboard name while a random anonymous visitor ID
+keeps run totals stable across sessions. A token-protected VIP view exposes
+aggregate and per-anonymous-visitor game statistics without storing raw IP
+addresses. The game remains fully playable and keeps local progression when
+the community server is unavailable. No paid APIs or paid assets are required.
 
 ### Arena asset research and provenance
 
@@ -70,23 +81,35 @@ sources would visibly repeat and soften at gameplay scale.
 
 ```bash
 npm install        # once
-npm run dev        # dev server -> http://localhost:5173
+npm run dev        # game + community server -> http://localhost:5180
 ```
 
 Compare the three playable arena variants directly:
 
 ```text
-http://localhost:5173/?arena=world-cup-classic
-http://localhost:5173/?arena=world-cup-showpiece
-http://localhost:5173/?arena=world-cup-modern-ai
+http://localhost:5180/?arena=world-cup-classic
+http://localhost:5180/?arena=world-cup-showpiece
+http://localhost:5180/?arena=world-cup-modern-ai
 ```
 
 ## Production build
 
 ```bash
 npm run build      # type-check + bundle to dist/
-npm run preview    # serve the production build -> http://localhost:4173
+npm run serve      # production game + persistent community server -> http://localhost:5180
+npm run preview    # static build only, without online leaderboard -> http://localhost:4173
 ```
+
+Community data is written to `server-data/community.json` and is excluded from
+Git. To enable the private dashboard, set a unique token of at least 16
+characters before starting the server:
+
+```bash
+FF_ADMIN_TOKEN='replace-with-a-private-random-token' npm run dev
+```
+
+Do not commit or publish this token. A public leaderboard requires deploying
+the Node server; a static portal build intentionally falls back to offline mode.
 
 ## Tests
 
@@ -100,8 +123,11 @@ Playwright browsers install into the project-local `.pw-browsers/` folder:
 
 ## Controls
 
-- **Desktop:** WASD / arrow keys to move. `1/2/3` pick level-up cards. `Esc`/`P` pause.
-- **Mobile/touch:** drag on the left side of the screen — a virtual joystick appears.
+- **Desktop:** WASD / arrow keys to move, `Space` to dash and `Esc`/`P` to pause.
+  In an ability draft, use A/D or left/right to switch cards, S/down to reach
+  reroll, W/up to return to the cards and Enter to choose. Each run has exactly
+  two shared rerolls; clicking the reroll button works as well.
+- **Mobile/touch:** drag on the left side for the radial virtual joystick; use the separate right-side dash button to burst along the current thumb direction.
 
 ## Game structure
 
@@ -112,19 +138,21 @@ Playwright browsers install into the project-local `.pw-browsers/` folder:
   variants. The pitch opens quiet, then threats enter naturally one at a time
   from changing edges through a fractional spawn budget, never discrete waves.
   Smoothstep checkpoints ramp from 0.6 enemies/s at kickoff to 1.9 at 2:00,
-  6.5 at 5:00, 14 at 7:30 and a browser-safe 24 at full time. HP, damage and
+  6.5 at 5:00, 14 at 7:30 and 30 at full time. HP, damage and
   speed have their own checkpoint curves; ranged threats (6), drones (4), bulls
   (3) and summoners (2) have hard alive caps. Elites begin at 55s, use 8x HP,
   always drop a rare pickup, and tighten from roughly 49s to a 22s interval.
 - **Abilities (5 levels each):** Precision Strike, Curveball Swarm, Golden Boot
   Seekers, Orbiting Press, Captain's Whistle, Nutmeg Dash, Security Detail,
-  Pitch Pressure and the hybrid First Touch Blast. Level-up offers 3 cards;
+  Pitch Pressure and the hybrid First Touch Blast. Their unique roles cover
+  directed burst, aerial specialization, boss break, sustained clear, rescue,
+  positioning, defensive timing, zone control and hybrid break. Level-up offers 3 cards;
   abilities combine with stat trainings
   (power, speed, max HP, regen, magnet, armor).
 - **Players:** distinct speed/health/power plus a signature trait and starting ability.
 - **Meta (The Club):** permanent Power / Pace / Ball-Control (XP pickup) / Security-Budget
   tracks and purchasable alternate kits per player. Coins, purchases, equipped skins
-  and best stats persist in `localStorage`.
+  leaderboard name and best stats persist in `localStorage`.
 
 ## Project layout
 
@@ -133,17 +161,26 @@ src/core/    engine: rng, math, input, synthesized audio, procedural sprite fall
 src/game/    data (players/abilities/enemies/shop), sim (pure logic), render (2.5D), ui (DOM), meta (save)
 public/art/  generated runtime images: backgrounds, sprite strips and icons
 art-source/  original generated source plates retained for asset provenance
+server/      optional zero-dependency leaderboard, visitor and VIP statistics server
 tools/       dev-only art composer + sprite sheet viewer (not in the bundle)
 tests/       vitest unit tests + playwright e2e
 scripts/     playtest + art generation, chroma-key normalization and runtime encoding
 ```
 
+The shared runtime art contract is documented in `ART_DIRECTION.md`; its camera,
+light, scale and aerial-depth values are consumed by the renderer and covered by
+tests. The combined `?debug=1&stage=art-direction&arena=world-cup-hybrid-25d`
+scene keeps the player, a supporter, guard, drone, bull and boss reviewable in
+one frame.
+
 ## Verification evidence
 
-- `npm test` — 190 unit tests green (rng, data, pacing, meta/save, combat lanes,
+- `npm test` — 274 unit tests green (rng, data, pacing, meta/save, combat lanes,
   smooth frame blending, eight-way player/boss direction selection, stateful poses, generated PNG/WebP asset
-  headers, Wipeout ring removal, rare pickups and simulation behaviours).
-- `npm run test:e2e` — 19 browser tests cover menu, selection, combat, level-up,
+  headers, Wipeout ring removal, rare pickups, community server security and simulation behaviours).
+- `npm run test:e2e` — 68 active browser tests (one opt-in natural-match
+  soak skipped by default). The full suite covers menu, leaderboard, VIP access,
+  selection, combat, level-up,
   persistence, boss loot, dense late-game performance and sustained live play
   without a crash or an unintended return to the menu. The suite exercises all
   32 player/direction combinations and verifies the requested directional WebP
@@ -156,5 +193,8 @@ scripts/     playtest + art generation, chroma-key normalization and runtime enc
   directions, smooth 18 fps held-contact blended run cycles, three simultaneous directional
   bosses, the full six-stage Matchday Wipeout sequence and zero console
   warnings/errors.
-- Sound: autoplay-safe synthesized WebAudio SFX, crowd bed and adaptive music;
-  mute and separate master/SFX/music levels persist locally.
+- Sound: disabled by default at every launch. Players may opt in with Unmute;
+  autoplay-safe synthesized WebAudio SFX, crowd bed and adaptive music plus
+  separate master/SFX/music levels remain available. Warning and
+  immediate-threat cues route through a dedicated priority bus; level-4 danger
+  briefly ducks music and routine combat sounds instead of raising master gain.

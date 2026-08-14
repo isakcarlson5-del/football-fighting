@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="theme-color" content="#0b3d1e" />
     <meta name="description" content="Football Fighting - an arena-survivor roguelite. Survive the terrace invasion until full time." />
     <title>Football Fighting</title>
@@ -11,7 +11,8 @@
   <body>
     <div id="app">
       <canvas id="game" aria-label="Football Fighting game canvas"></canvas>
-      <div id="ui" aria-live="polite"></div>
+      <div id="ui"></div>
+      <div id="announcer" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
     </div>
     <script type="module" src="./src/main.ts"></script>
   </body>

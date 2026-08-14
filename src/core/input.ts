@@ -1,4 +1,32 @@
 /** Keyboard + virtual joystick input. */
+
+export const JOYSTICK_DEADZONE = 0.18;
+
+export interface InputAxis {
+  x: number;
+  y: number;
+}
+
+/** Remove a radial joystick deadzone without introducing a speed step at its
+ * edge. Direction is preserved and the remaining physical travel maps back to
+ * the complete 0..1 gameplay range. */
+export function remapRadialDeadzone(
+  x: number,
+  y: number,
+  deadzone = JOYSTICK_DEADZONE,
+): InputAxis {
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return { x: 0, y: 0 };
+  const safeDeadzone = Math.min(0.999, Math.max(0, Number.isFinite(deadzone) ? deadzone : JOYSTICK_DEADZONE));
+  const rawMagnitude = Math.hypot(x, y);
+  if (rawMagnitude <= safeDeadzone || rawMagnitude <= Number.EPSILON) return { x: 0, y: 0 };
+  const clampedMagnitude = Math.min(1, rawMagnitude);
+  const remappedMagnitude = (clampedMagnitude - safeDeadzone) / (1 - safeDeadzone);
+  return {
+    x: (x / rawMagnitude) * remappedMagnitude,
+    y: (y / rawMagnitude) * remappedMagnitude,
+  };
+}
+
 export class Input {
   keys = new Set<string>();
   /** Movement axis, -1..1 each. */
@@ -37,19 +65,14 @@ export class Input {
     if (k.has('w') || k.has('arrowup')) y -= 1;
     if (k.has('s') || k.has('arrowdown')) y += 1;
     if (this.joyActive) {
-      x += this.joyX;
-      y += this.joyY;
+      const joy = remapRadialDeadzone(this.joyX, this.joyY);
+      x += joy.x;
+      y += joy.y;
     }
     const l = Math.hypot(x, y);
     if (l > 1) {
       x /= l;
       y /= l;
-    }
-    // radial deadzone: joystick micro-jitter must not read as intent to move
-    // (keyboard input is 0/1 and passes straight through)
-    if (Math.hypot(x, y) < 0.18) {
-      x = 0;
-      y = 0;
     }
     this.ax = x;
     this.ay = y;

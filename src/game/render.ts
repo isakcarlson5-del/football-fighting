@@ -5,6 +5,7 @@
  */
 
 import { clamp, TAU } from '../core/math';
+import { exponentialSmoothing } from '../core/timing';
 import {
   ballSprite,
   bossAtlas,
@@ -15,6 +16,7 @@ import {
   getStripAtlas,
   guardAtlas,
   loadStripAtlas,
+  playerArtUrl,
   playerAtlas,
   trimStripAtlasCache,
   trophySprite,
@@ -22,14 +24,25 @@ import {
   type Atlas,
 } from '../core/sprites';
 import { BOSSES, ENEMIES, FREEZE_DURATION, SKINS, type BossId, type EnemyDef, type PlayerDef } from './data';
-import { ARENA_H, ARENA_W, KICK_DURATION, type Enemy, type Guard, type Sim } from './sim';
+import { ARENA_H, ARENA_W, BOSS_INTRO_DURATION, BOSS_MELEE_LUNGE_DURATION, DASH_ANTICIPATION_DURATION, DASH_RECOVERY_DURATION, ENEMY_MELEE_LUNGE_DURATION, enemyAirLift, enemyRunCycleDistance, guardRunCycleDistance, guardRunPresentation, hybridBossBodyContact, KICK_AIM_LOCK_DELAY, KICK_CONTACT_DELAY, KICK_DURATION, MELEE_RECOVERY_DURATION, type Enemy, type Guard, type Pickup, type Sim } from './sim';
 import type { Save } from './meta';
 
-const TILT = 0.62;
+/** Runtime art bible. Values are consumed by the renderer so perspective,
+ * scale hierarchy and lighting cannot silently drift between actor classes. */
+export const ART_DIRECTION_PROFILE = Object.freeze({
+  projectionTilt: 0.62,
+  lightCast: Object.freeze({ x: 0.78, y: 0.56 }),
+  scale: Object.freeze({ player: 1.68, standardEnemy: 1.52, ally: 1.56, elite: 1.22 }),
+  aerial: Object.freeze({ baseLift: 38, bobAmplitude: 4 }),
+  saturation: Object.freeze({ minimum: 0.72, maximum: 1.08 }),
+  bossScale: Object.freeze({ minimum: 2.08, maximum: 3 }),
+});
+
+const TILT = ART_DIRECTION_PROFILE.projectionTilt;
 const MARGIN = 340; // stands width around pitch (world units) — procedural fallback only
-const PLAYER_ENTITY_SCALE = 1.68;
-const ENEMY_ENTITY_SCALE = 1.52;
-const ALLY_ENTITY_SCALE = 1.56;
+const PLAYER_ENTITY_SCALE = ART_DIRECTION_PROFILE.scale.player;
+const ENEMY_ENTITY_SCALE = ART_DIRECTION_PROFILE.scale.standardEnemy;
+const ALLY_ENTITY_SCALE = ART_DIRECTION_PROFILE.scale.ally;
 export interface ArenaGrassRect {
   x: number;
   y: number;
@@ -49,6 +62,325 @@ const MOVEMENT_DIRECTIONS: readonly MovementDirection[] = ['e', 'se', 's', 'sw',
 const BOSS_DIRECTION_FRAME_WIDTH = 480;
 const PLAYER_DIRECTION_FRAME_WIDTH = 256;
 const PLAYER_DIRECTION_RUN_FPS = 18;
+const HYBRID_GOAL_DEPTH = 34;
+const HYBRID_GOAL_LIFT = 13.5;
+const HYBRID_GOAL_POST_HEIGHT = 27;
+// Stadium-camera verticals lean a few pixels toward the upper-left. Keep this
+// shear identical on both goals: mirroring it with the goal direction makes
+// one set of posts look folded sideways instead of rising from the turf.
+const HYBRID_GOAL_HEIGHT_SHEAR_X = 3.4;
+const HYBRID_GOAL_RIM_GAP_PAD = 23;
+const HYBRID_LIGHT_CAST_X = ART_DIRECTION_PROFILE.lightCast.x;
+const HYBRID_LIGHT_CAST_Y = ART_DIRECTION_PROFILE.lightCast.y;
+export const HYBRID_LIGHT_CAST = Object.freeze({ x: HYBRID_LIGHT_CAST_X, y: HYBRID_LIGHT_CAST_Y });
+const HYBRID_PENALTY_DEPTH = 330;
+const HYBRID_PENALTY_HEIGHT = 820;
+const HYBRID_GOAL_AREA_DEPTH = 130;
+const HYBRID_GOAL_AREA_HEIGHT = 420;
+const HYBRID_PENALTY_SPOT_DEPTH = 230;
+const HYBRID_PENALTY_ARC_RADIUS = 150;
+
+/** Aerial enemies descend for the first 200ms of overheat, stay planted for
+ * 950ms, then rise during the last 200ms. Ground-lane hit tests use the same
+ * state in Sim, so the visual height always communicates vulnerability. */
+export function aerialOverheatHeightScale(groundT: number): number {
+  if (groundT <= 0) return 1;
+  if (groundT > 1.15) return clamp((groundT - 1.15) / 0.2, 0, 1);
+  if (groundT < 0.2) return clamp(1 - groundT / 0.2, 0, 1);
+  return 0;
+}
+
+export interface HybridPitchMarkingGeometry {
+  side: 'left' | 'right';
+  goalLineX: number;
+  penaltyLineX: number;
+  goalAreaLineX: number;
+  penaltySpotX: number;
+  penaltyTop: number;
+  penaltyBottom: number;
+  goalAreaTop: number;
+  goalAreaBottom: number;
+  arcStart: number;
+  arcEnd: number;
+}
+
+export interface HybridCentreMarkingGeometry {
+  lineX: number;
+  top: number;
+  bottom: number;
+  circleX: number;
+  circleY: number;
+  radius: number;
+}
+
+export interface ScreenOcclusionRect {
+  left: number;
+  right: number;
+  top: number;
+  bottom: number;
+}
+
+/** Fraction of the player's readable body covered by a body that is actually
+ * painted in front. This stays independent of gameplay collision geometry so
+ * giant authored silhouettes can receive a visual-only transparency budget. */
+export function playerOcclusionStrength(
+  player: ScreenOcclusionRect,
+  actor: ScreenOcclusionRect,
+  actorInFront: boolean,
+): number {
+  if (!actorInFront) return 0;
+  const playerWidth = Math.max(1, player.right - player.left);
+  const playerHeight = Math.max(1, player.bottom - player.top);
+  const overlapWidth = Math.max(0, Math.min(player.right, actor.right) - Math.max(player.left, actor.left));
+  const overlapHeight = Math.max(0, Math.min(player.bottom, actor.bottom) - Math.max(player.top, actor.top));
+  const covered = clamp((overlapWidth * overlapHeight) / (playerWidth * playerHeight), 0, 1);
+  const normalized = clamp((covered - 0.06) / 0.54, 0, 1);
+  return normalized * normalized * (3 - 2 * normalized);
+}
+
+/** Collision-aligned World Cup pitch geometry for the optional live layer.
+ * Exporting this keeps the mirrored goal construction independently testable. */
+export function hybridPitchMarkingGeometry(side: 'left' | 'right'): HybridPitchMarkingGeometry {
+  const direction = side === 'left' ? 1 : -1;
+  const goalLineX = side === 'left' ? 40 : ARENA_W - 40;
+  const arcHalfAngle = Math.acos((HYBRID_PENALTY_DEPTH - HYBRID_PENALTY_SPOT_DEPTH) / HYBRID_PENALTY_ARC_RADIUS);
+  return {
+    side,
+    goalLineX,
+    penaltyLineX: goalLineX + direction * HYBRID_PENALTY_DEPTH,
+    goalAreaLineX: goalLineX + direction * HYBRID_GOAL_AREA_DEPTH,
+    penaltySpotX: goalLineX + direction * HYBRID_PENALTY_SPOT_DEPTH,
+    penaltyTop: (ARENA_H - HYBRID_PENALTY_HEIGHT) / 2,
+    penaltyBottom: (ARENA_H + HYBRID_PENALTY_HEIGHT) / 2,
+    goalAreaTop: (ARENA_H - HYBRID_GOAL_AREA_HEIGHT) / 2,
+    goalAreaBottom: (ARENA_H + HYBRID_GOAL_AREA_HEIGHT) / 2,
+    arcStart: side === 'left' ? -arcHalfAngle : Math.PI - arcHalfAngle,
+    arcEnd: side === 'left' ? arcHalfAngle : Math.PI + arcHalfAngle,
+  };
+}
+
+/** Shared halfway-line construction for the hybrid pitch. Keeping this world
+ * geometry explicit makes the cached chalk treatment testable and guarantees
+ * that its worn overlay stays registered with the Showpiece base markings. */
+export function hybridCentreMarkingGeometry(): HybridCentreMarkingGeometry {
+  return {
+    lineX: ARENA_W / 2,
+    top: 40,
+    bottom: ARENA_H - 40,
+    circleX: ARENA_W / 2,
+    circleY: ARENA_H / 2,
+    radius: 190,
+  };
+}
+
+/** Sub-pixel wind response for the two live goal nets. Opposite phase keeps
+ * the stadium from moving like one synchronized UI animation. */
+export function hybridGoalNetBreathe(time: number, side: 'left' | 'right'): number {
+  if (!Number.isFinite(time)) return 0;
+  return Math.sin(time * 0.82 + (side === 'right' ? 1.7 : 0.2)) * 0.48;
+}
+
+export type HybridShadowKind = 'player' | 'enemy' | 'boss' | 'guard' | 'aerial' | 'pickup';
+
+export interface HybridEntityShadowGeometry {
+  castLength: number;
+  castWidth: number;
+  offsetX: number;
+  offsetY: number;
+  alpha: number;
+  contactAlpha: number;
+}
+
+export interface EntityScreenRect {
+  left: number;
+  right: number;
+  top: number;
+  bottom: number;
+  centerX: number;
+}
+
+/** Material shadow proportions for the optional hybrid arena. They follow the
+ * same lower-right floodlight direction as the raised goal cage. Elevation
+ * separates and softens aerial shadows instead of turning them into foot rings. */
+export function hybridEntityShadowGeometry(
+  radius: number,
+  kind: HybridShadowKind,
+  elevation = 0,
+  out?: HybridEntityShadowGeometry,
+): HybridEntityShadowGeometry {
+  const safeRadius = clamp(Number.isFinite(radius) ? radius : 16, 5, 70);
+  const safeElevation = clamp(Number.isFinite(elevation) ? elevation : 0, 0, 80);
+  const airborne = clamp(safeElevation / 52, 0, 1);
+  const kindScale = kind === 'boss' ? 1.32
+    : kind === 'player' ? 1.06
+      : kind === 'guard' ? 0.96
+        : kind === 'aerial' ? 0.78
+          : kind === 'pickup' ? 0.56
+          : 0.9;
+  const baseLength = clamp(11 + safeRadius * 0.52, 16, 48) * kindScale;
+  const baseWidth = clamp(4.2 + safeRadius * 0.2, 5.5, 17) * Math.sqrt(kindScale);
+  const geometry = out ?? {
+    castLength: 0,
+    castWidth: 0,
+    offsetX: 0,
+    offsetY: 0,
+    alpha: 0,
+    contactAlpha: 0,
+  };
+  geometry.castLength = baseLength * (1 + airborne * 0.3);
+  geometry.castWidth = baseWidth * (1 + airborne * 0.2);
+  geometry.offsetX = 1.8 + airborne * 10.5;
+  geometry.offsetY = 2.2 + airborne * 8.2;
+  geometry.alpha = (kind === 'boss' ? 0.165 : kind === 'player' ? 0.145 : kind === 'pickup' ? 0.095 : 0.12) * (1 - airborne * 0.34);
+  geometry.contactAlpha = kind === 'aerial' || safeElevation > 1
+    ? 0
+    : (kind === 'boss' ? 0.21 : kind === 'pickup' ? 0.13 : 0.17);
+  return geometry;
+}
+
+/** Restrained foreground scale for billboard actors in the hybrid arena.
+ * The feet remain at their collision point; only the authored cutout changes
+ * size, producing depth without changing hitboxes or projectile targeting. */
+export function hybridEntityDepthScale(worldY: number): number {
+  const normalized = clamp((Number.isFinite(worldY) ? worldY : ARENA_H / 2) / ARENA_H, 0, 1);
+  const eased = normalized * normalized * (3 - 2 * normalized);
+  return 0.96 + eased * 0.08;
+}
+
+/** Orbiting Press is a protective halo behind the hero, never a foreground
+ * billboard. Preserve natural depth on the far half, but cap the near half
+ * immediately behind the player's painter position. */
+export function orbitPainterDepthY(playerY: number, ballWorldY: number): number {
+  return Math.min(ballWorldY, playerY - 0.01);
+}
+
+export interface OrbitTrailArcGeometry {
+  arcRadians: number;
+  segments: number;
+  segmentLength: number;
+  remainingGapRadians: number;
+}
+
+/** Builds a curved Orbiting Press wake that follows the real circular path.
+ * The tail always stops with enough chord clearance before the following ball,
+ * even at the six-ball maximum, so adjacent wakes cannot intersect a ball. */
+export function orbitTrailArcGeometry(radius: number, count: number, ballDiameter = 28): OrbitTrailArcGeometry {
+  const safeRadius = Math.max(1, Number.isFinite(radius) ? radius : 1);
+  const safeCount = Math.max(1, Math.floor(Number.isFinite(count) ? count : 1));
+  const angularGap = TAU / safeCount;
+  const clearanceChord = Math.max(1, ballDiameter) + 30;
+  const clearanceAngle = 2 * Math.asin(clamp(clearanceChord / (2 * safeRadius), 0, 0.95));
+  const desiredArc = clamp(100 / safeRadius, 0.48, 0.82);
+  const arcRadians = Math.min(desiredArc, Math.max(0.18, angularGap - clearanceAngle));
+  const segments = Math.max(6, Math.min(10, Math.ceil(arcRadians * 12)));
+  const segmentLength = clamp((safeRadius * arcRadians / segments) * 3.8, 28, 40);
+  return {
+    arcRadians,
+    segments,
+    segmentLength,
+    remainingGapRadians: angularGap - arcRadians,
+  };
+}
+
+export interface PickupVisibleBounds {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export interface AerialLaunchVisual {
+  bodyAlpha: number;
+  wakeAlpha: number;
+  scale: number;
+}
+
+/** Keeps newly kicked aerial objects from being painted across the hero's
+ * face on their contact frame. The ball itself emerges quickly from the foot;
+ * the larger additive wake arrives later, once the projectile has cleared the
+ * authored body silhouette. This is visual-only and never changes targeting. */
+export function aerialLaunchVisual(age: number): AerialLaunchVisual {
+  const safeAge = Math.max(0, Number.isFinite(age) ? age : 0);
+  const smooth = (value: number): number => {
+    const t = clamp(value, 0, 1);
+    return t * t * (3 - 2 * t);
+  };
+  const bodyAlpha = smooth((safeAge - 0.022) / 0.082);
+  const wakeAlpha = smooth((safeAge - 0.074) / 0.13);
+  return {
+    bodyAlpha,
+    wakeAlpha,
+    scale: 0.76 + bodyAlpha * 0.24,
+  };
+}
+
+/** Measured alpha bounds of the generated pickup PNGs, normalized to their
+ * source canvases. Rendering only this visible rectangle lets the lowest real
+ * asset pixel sit exactly on the world contact point instead of floating on
+ * each file's different transparent export margin. */
+export function pickupVisibleBounds(kind: Pickup['kind'], tier: Pickup['tier']): PickupVisibleBounds {
+  if (kind === 'bomb') return { x: 31 / 256, y: 18 / 256, width: 194 / 256, height: 220 / 256 };
+  if (kind === 'freeze') return { x: 29 / 256, y: 18 / 256, width: 197 / 256, height: 220 / 256 };
+  if (kind === 'magnet') return { x: 18 / 256, y: 19 / 256, width: 220 / 256, height: 217 / 256 };
+  if (kind === 'trophy') return { x: 19 / 128, y: 8 / 128, width: 89 / 128, height: 112 / 128 };
+  if (kind === 'coin') return { x: 8 / 128, y: 11 / 128, width: 112 / 128, height: 105 / 128 };
+  if (kind === 'heal') return { x: 34 / 128, y: 8 / 128, width: 59 / 128, height: 112 / 128 };
+  if (tier === 2) return { x: 31 / 128, y: 8 / 128, width: 65 / 128, height: 112 / 128 };
+  if (tier === 3) return { x: 22 / 128, y: 8 / 128, width: 84 / 128, height: 112 / 128 };
+  return { x: 15 / 128, y: 8 / 128, width: 97 / 128, height: 112 / 128 };
+}
+
+/** Stronger but still restrained depth cue for fixed corner assemblies. Their
+ * turf socket stays at the authored world point while only the pole/cloth
+ * silhouette grows toward the near camera edge. */
+export function hybridCornerFlagDepthScale(worldY: number): number {
+  const normalized = clamp((Number.isFinite(worldY) ? worldY : ARENA_H / 2) / ARENA_H, 0, 1);
+  const eased = normalized * normalized * (3 - 2 * normalized);
+  return 0.92 + eased * 0.16;
+}
+
+/** Screen-space offset for the rear structural tier of the hybrid bowl. It
+ * moves at roughly one quarter of the pitch camera delta and is clamped so the
+ * effect reads as depth rather than a sliding background. */
+export function hybridStadiumParallax(camera: number, centre: number): number {
+  if (!Number.isFinite(camera) || !Number.isFinite(centre)) return 0;
+  return clamp((camera - centre) * 0.024, -8, 8);
+}
+
+/** Visual-only height for hostile projectiles in the hybrid arena. Bottle
+ * lobs rise and settle through a single readable arc; electric darts retain a
+ * taut low flight path so players can distinguish their timing at a glance. */
+export function hybridHostileProjectileElevation(kind: 'bottle' | 'electric' | 'scan', life: number, maxLife = 2.2): number {
+  const remaining = Math.max(0, Number.isFinite(life) ? life : 0);
+  if (kind === 'electric') return 28;
+  if (kind === 'scan') return 34;
+  const duration = Math.max(0.001, Number.isFinite(maxLife) ? maxLife : 2.2);
+  const phase = clamp(1 - remaining / duration, 0, 1);
+  return 12 + Math.sin(phase * Math.PI) * 34;
+}
+
+export interface CorpseCollapseVisual {
+  rotation: number;
+  scaleX: number;
+  scaleY: number;
+  sink: number;
+  alpha: number;
+}
+
+/** A compressed three-beat collapse keeps the body attached to the turf and
+ * avoids turning a complete billboard into a flat 77-degree card. */
+export function corpseCollapseVisual(progress: number): CorpseCollapseVisual {
+  const u = clamp(Number.isFinite(progress) ? progress : 0, 0, 1);
+  const collapse = clamp(u / 0.72, 0, 1);
+  const eased = collapse * collapse * (3 - 2 * collapse);
+  return {
+    rotation: eased * 0.48,
+    scaleX: 1 + Math.sin(eased * Math.PI) * 0.08,
+    scaleY: 1 - eased * 0.38,
+    sink: eased * 13,
+    alpha: u < 0.58 ? 1 : Math.max(0, 1 - (u - 0.58) / 0.42),
+  };
+}
 
 /** Quantize a world-space movement vector into one of eight authored views. */
 export function movementDirection(dx: number, dy: number): MovementDirection {
@@ -66,6 +398,32 @@ export interface DirectionalFrameBlend {
 export interface PlayerStepCue {
   strength: number;
   foot: -1 | 1;
+}
+
+export interface BossArrivalVisual {
+  progress: number;
+  alpha: number;
+  scale: number;
+  lift: number;
+  beamAlpha: number;
+}
+
+/** Short bottom-up materialization. It never resembles a red danger circle:
+ * the entrance is communicated through silhouette reveal and vertical light. */
+export function bossArrivalVisual(
+  remaining: number,
+  duration = BOSS_INTRO_DURATION,
+): BossArrivalVisual {
+  const safeDuration = Math.max(0.001, Number.isFinite(duration) ? duration : BOSS_INTRO_DURATION);
+  const progress = clamp(1 - Math.max(0, Number.isFinite(remaining) ? remaining : 0) / safeDuration, 0, 1);
+  const eased = 1 - Math.pow(1 - progress, 3);
+  return {
+    progress,
+    alpha: 0.16 + eased * 0.84,
+    scale: 0.78 + eased * 0.22,
+    lift: (1 - eased) * 30,
+    beamAlpha: Math.sin(progress * Math.PI) * 0.72,
+  };
 }
 
 interface TurfFootprint {
@@ -98,22 +456,17 @@ export function dampedTurfDisplacement(age: number, dragRate = 4.7): number {
   return (1 - Math.exp(-safeAge * safeDrag)) / safeDrag;
 }
 
-/** Smoothly blend authored poses at render rate while retaining the concrete
- *  12-frame cycle. The cubic easing prevents a visible snap at frame edges. */
+/** Hold one concrete authored pose per frame. Alpha-dissolving two displaced
+ * cleats creates a visible double foot, especially during slow movement. The
+ * 12-frame directional strips already provide sufficient in-betweens. */
 export function directionalFrameBlend(animT: number, fps: number, frames: number): DirectionalFrameBlend {
   const count = Math.max(1, Math.floor(frames));
   const phase = Math.max(0, Number.isFinite(animT) ? animT : 0) * Math.max(0, fps);
   const base = Math.floor(phase);
-  const fraction = phase - base;
-  // Hold each authored pose briefly before cross-fading. Legs and planted
-  // cleats remain readable at gameplay scale, while the middle transition is
-  // still interpolated smoothly at the display refresh rate.
-  const transition = clamp((fraction - 0.16) / 0.68, 0, 1);
-  const mix = transition * transition * (3 - 2 * transition);
   return {
     frame: base % count,
     nextFrame: (base + 1) % count,
-    mix,
+    mix: 0,
   };
 }
 
@@ -136,6 +489,27 @@ export function playerStepCue(animT: number, fps = PLAYER_DIRECTION_RUN_FPS, fra
     strength: normalized * normalized * (3 - 2 * normalized),
     foot: firstDistance <= secondDistance ? -1 : 1,
   };
+}
+
+export interface FrameAnchorAdjustment { x: number; y: number }
+
+/** Source strips remain untouched. Small measured per-frame corrections are
+ * applied at draw time so the original art is always recoverable. */
+export function playerFrameAnchorAdjustment(playerId: string, frame: number): FrameAnchorAdjustment {
+  return playerId === 'neymar' && frame % 12 === 2 ? { x: 0, y: 2 } : { x: 0, y: 0 };
+}
+
+export function enemyFrameAnchorAdjustment(enemyId: string, frame: number): FrameAnchorAdjustment {
+  const safeFrame = ((Math.floor(frame) % 6) + 6) % 6;
+  if (enemyId === 'invader' && safeFrame === 2) return { x: 0, y: 3 };
+  if (enemyId === 'banner') return { x: 0, y: 4 };
+  if (enemyId === 'flag') {
+    // Pole-base measurements from the six source cells, normalized around
+    // the cell-three hand anchor. This removes the four-pixel flag snap.
+    const xOffsets = [11, -28, 0, 12, -1, 2];
+    return { x: xOffsets[safeFrame], y: 0 };
+  }
+  return { x: 0, y: 0 };
 }
 
 /** Generated enemy strips use semantic poses: idle, move, attack/cast, hurt. */
@@ -170,6 +544,231 @@ export interface EnemyHealthBarStyle {
   numeric: boolean;
 }
 
+export interface CombatPresentationBudget {
+  maxOrdinaryHealthBars: number;
+  particleStride: number;
+  maxStandardImpacts: number;
+  maxPriorityImpacts: number;
+  maxSeekerTrails: number;
+  maxStandardDamageNumbers: number;
+  maxCriticalDamageNumbers: number;
+  hitFlashAlpha: number;
+}
+
+/** Rendering pressure changes presentation only. Simulation, damage, spawn,
+ * targeting and telegraphs never read this budget. */
+export function combatPresentationBudget(activeEnemies: number): CombatPresentationBudget {
+  const count = Math.max(0, Math.floor(activeEnemies));
+  if (count >= 100) {
+    return {
+      maxOrdinaryHealthBars: 5,
+      particleStride: 4,
+      maxStandardImpacts: 4,
+      maxPriorityImpacts: 6,
+      maxSeekerTrails: 5,
+      maxStandardDamageNumbers: 5,
+      maxCriticalDamageNumbers: 6,
+      hitFlashAlpha: 0.24,
+    };
+  }
+  if (count >= 70) {
+    return {
+      maxOrdinaryHealthBars: 7,
+      particleStride: 3,
+      maxStandardImpacts: 6,
+      maxPriorityImpacts: 8,
+      maxSeekerTrails: 7,
+      maxStandardDamageNumbers: 8,
+      maxCriticalDamageNumbers: 8,
+      hitFlashAlpha: 0.32,
+    };
+  }
+  if (count >= 40) {
+    return {
+      maxOrdinaryHealthBars: 10,
+      particleStride: 2,
+      maxStandardImpacts: 10,
+      maxPriorityImpacts: 14,
+      maxSeekerTrails: 10,
+      maxStandardDamageNumbers: 12,
+      maxCriticalDamageNumbers: 10,
+      hitFlashAlpha: 0.42,
+    };
+  }
+  return {
+    maxOrdinaryHealthBars: 16,
+    particleStride: 1,
+    maxStandardImpacts: 20,
+    maxPriorityImpacts: 24,
+    maxSeekerTrails: 16,
+    maxStandardDamageNumbers: 22,
+    maxCriticalDamageNumbers: 16,
+    hitFlashAlpha: 0.56,
+  };
+}
+
+/** Accessibility mode reduces decorative density and flash intensity without
+ * touching telegraphs, health bars, targeting markers or simulation. */
+export function reducedCombatPresentationBudget(base: CombatPresentationBudget): CombatPresentationBudget {
+  return {
+    ...base,
+    particleStride: Math.max(2, base.particleStride * 2),
+    maxStandardImpacts: Math.max(2, Math.ceil(base.maxStandardImpacts * 0.45)),
+    maxPriorityImpacts: Math.max(4, Math.ceil(base.maxPriorityImpacts * 0.65)),
+    maxSeekerTrails: Math.max(3, Math.ceil(base.maxSeekerTrails * 0.45)),
+    maxStandardDamageNumbers: Math.max(4, Math.ceil(base.maxStandardDamageNumbers * 0.55)),
+    maxCriticalDamageNumbers: Math.max(4, Math.ceil(base.maxCriticalDamageNumbers * 0.7)),
+    hitFlashAlpha: base.hitFlashAlpha * 0.58,
+  };
+}
+
+/** Positive scores are eligible ordinary bars; Infinity is reserved for an
+ * elite or a temporary status that the player must be able to identify. */
+export function enemyHealthBarPriority(
+  e: Pick<Enemy, 'hp' | 'maxHp' | 'elite' | 'boss' | 'stun' | 'slow' | 'airT' | 'barHitT' | 'def'>,
+  distanceToPlayer: number,
+  activeEnemies: number,
+): number {
+  if (e.boss) return -1;
+  if (e.elite) return Number.POSITIVE_INFINITY;
+  const ratio = e.maxHp > 0 ? clamp(e.hp / e.maxHp, 0, 1) : 0;
+  const count = Math.max(0, activeEnemies);
+  const nearRange = count >= 100 ? 145 : count >= 70 ? 175 : count >= 40 ? 215 : 285;
+  const priorityRange = count >= 100 ? 235 : count >= 70 ? 290 : count >= 40 ? 365 : 480;
+  const behavior = e.def.behavior;
+  const priorityThreat = behavior === 'aerial' || behavior === 'charger' || behavior === 'summoner'
+    || behavior === 'support' || behavior === 'ranged' || behavior === 'cone';
+  const status = e.stun > 0 || e.slow > 0 || e.airT > 0;
+  const damaged = ratio < 0.999;
+  if (!damaged && !status && distanceToPlayer > nearRange && (!priorityThreat || distanceToPlayer > priorityRange)) return -1;
+  let score = Math.max(0, 1800 - distanceToPlayer * 2.2);
+  if (damaged) score += 3200 + (1 - ratio) * 2400;
+  if (e.barHitT > 0) score += 2200;
+  if (status) score += 2100;
+  if (priorityThreat) score += 1100;
+  return score;
+}
+
+export interface HealthBarCollisionRect {
+  left: number;
+  right: number;
+  top: number;
+  bottom: number;
+}
+
+export interface EnemyHealthBarPlacement {
+  x: number;
+  y: number;
+  widthScale: number;
+  alpha: number;
+  lane: number;
+  compact: boolean;
+  hidden: boolean;
+}
+
+/** Deterministically separates billboard health bars in dense crowds.
+ *
+ * Fully healthy ordinary threats may use a smaller scoreboard plate once the
+ * local group becomes crowded. Damaged and elite threats retain the full bar,
+ * then climb through additional vertical lanes so important combat state is
+ * never hidden behind a neighbour. The caller owns `occupied` for one frame. */
+export function placeEnemyHealthBar(
+  anchorX: number,
+  anchorY: number,
+  width: number,
+  height: number,
+  important: boolean,
+  fullHealth: boolean,
+  occupied: HealthBarCollisionRect[],
+  reserved: readonly HealthBarCollisionRect[] = [],
+): EnemyHealthBarPlacement {
+  const nearby = occupied.reduce((count, rect) => {
+    const centerX = (rect.left + rect.right) * 0.5;
+    const centerY = (rect.top + rect.bottom) * 0.5;
+    return count + (Math.abs(centerX - anchorX) < width * 2.15 && Math.abs(centerY - anchorY) < 104 ? 1 : 0);
+  }, 0);
+  // One untouched ordinary bar is enough to establish that a local pack is
+  // healthy. Additional 100% plates carry no new combat information and were
+  // previously displaced into a wall of UI above the actors. Do not reserve a
+  // lane for suppressed bars: the space remains available to damaged enemies,
+  // elites and status-bearing threats, which always keep their full readout.
+  if (!important && fullHealth && nearby >= 1) {
+    return {
+      x: anchorX,
+      y: anchorY,
+      widthScale: 0.6,
+      alpha: 0,
+      lane: 0,
+      compact: true,
+      hidden: true,
+    };
+  }
+  const compact = false;
+  const widthScale = compact ? 0.6 : 1;
+  const alpha = compact ? 0.66 : 1;
+  const plateWidth = width * widthScale + 12;
+  const plateHeight = height * (compact ? 0.82 : 1) + 8;
+  const labelHeadroom = important ? 13 : 0;
+  // Lane spacing is based on the authored full plate, not the compacted
+  // variant. Switching presentation mid-crowd must never reuse a prior lane.
+  const laneStep = Math.max(16, height + 13 + labelHeadroom);
+  const maxLane = important ? 7 : compact ? 6 : 6;
+  let bestLane = 0;
+  let bestX = anchorX;
+  let bestY = anchorY;
+  let bestHits = Number.POSITIVE_INFINITY;
+
+  for (let lane = 0; lane <= maxLane; lane++) {
+    const row = lane === 0 ? 0 : Math.ceil(lane / 2);
+    const side = lane === 0 ? 0 : lane % 2 === 1 ? -1 : 1;
+    const sideDistance = row === 0 ? 0 : 0.58 + Math.max(0, row - 1) * 0.56;
+    const x = anchorX + side * plateWidth * sideDistance;
+    const y = anchorY - row * laneStep;
+    const candidate: HealthBarCollisionRect = {
+      left: x - plateWidth / 2,
+      right: x + plateWidth / 2,
+      top: y - labelHeadroom - 3,
+      bottom: y + plateHeight,
+    };
+    let hits = 0;
+    for (let index = Math.max(0, occupied.length - 48); index < occupied.length; index++) {
+      const rect = occupied[index];
+      if (candidate.right + 3 > rect.left && candidate.left - 3 < rect.right
+        && candidate.bottom + 2 > rect.top && candidate.top - 2 < rect.bottom) hits++;
+    }
+    // A reserved gameplay silhouette is much more important than a collision
+    // between two labels. Bars still remain visible, but exhaust their authored
+    // side/height lanes before accepting overlap with the hero or critical VFX.
+    for (const rect of reserved) {
+      if (candidate.right + 4 > rect.left && candidate.left - 4 < rect.right
+        && candidate.bottom + 3 > rect.top && candidate.top - 3 < rect.bottom) hits += 64;
+    }
+    if (hits < bestHits) {
+      bestHits = hits;
+      bestLane = lane;
+      bestX = x;
+      bestY = y;
+    }
+    if (hits === 0) break;
+  }
+
+  occupied.push({
+    left: bestX - plateWidth / 2,
+    right: bestX + plateWidth / 2,
+    top: bestY - labelHeadroom - 3,
+    bottom: bestY + plateHeight,
+  });
+  return {
+    x: bestX,
+    y: bestY,
+    widthScale,
+    alpha: bestHits > 0 && compact ? 0.58 : alpha,
+    lane: bestLane,
+    compact,
+    hidden: false,
+  };
+}
+
 /** Shared health-bar metrics keep every archetype readable without letting
  *  100+ simultaneous bars dominate the pitch. */
 export function enemyHealthBarStyle(
@@ -193,6 +792,15 @@ export function enemyHealthBarStyle(
   };
 }
 
+export interface CombatPresentationMetrics {
+  activeEnemies: number;
+  visibleHealthBars: number;
+  renderedParticles: number;
+  renderedImpacts: number;
+  renderedSeekerTrails: number;
+  renderedDamageNumbers: number;
+}
+
 export class Renderer {
   private canvas: HTMLCanvasElement;
   private ctx: CanvasRenderingContext2D;
@@ -200,10 +808,13 @@ export class Renderer {
   private plate: HTMLImageElement | null = null;
   private plateGrass: ArenaGrassRect = PLATE_GRASS;
   private liveStadium = false;
+  private hybridDepth = false;
   /** World rect covered by the prerendered pitch canvas (camera hard limits). */
   private bounds = { x0: -MARGIN, y0: -MARGIN, x1: ARENA_W + MARGIN, y1: ARENA_H + MARGIN };
   private scale = 1;
+  private viewWorldH = 1240;
   private shake = 0;
+  private lastDrawTime = Number.NaN;
   private ball: HTMLCanvasElement;
   private matchBallSpr: SpriteBitmap;
   private curveballSpr: SpriteBitmap;
@@ -229,6 +840,14 @@ export class Renderer {
   private captainsHeartSpr: HTMLImageElement | null = null;
   private droneShotSpr: HTMLImageElement | null = null;
   private matchdayWipeoutSpr: HTMLImageElement | null = null;
+  private firstTouchGroundSpr: HTMLImageElement | null = null;
+  private firstTouchAirSpr: HTMLImageElement | null = null;
+  private kickDustSpr: HTMLImageElement | null = null;
+  private orbitTrailSpr: HTMLImageElement | null = null;
+  private keeperHaloSpr: HTMLImageElement | null = null;
+  private varScanShotSpr: HTMLImageElement | null = null;
+  private abilityUpgradeSpr: HTMLImageElement | null = null;
+  private captainsWhistleSpr: HTMLImageElement | null = null;
   private bottleSpr: HTMLCanvasElement;
   private atlasCache = new Map<string, Atlas>();
   private crowdSeed: number[] = [];
@@ -236,6 +855,15 @@ export class Renderer {
   private flashWhiteT = 0;
   private lossStartedAt = -1;
   private matchdayWipeoutStartedAt = -1;
+  private abilityUpgradeStartedAt = -1;
+  private abilityUpgradeMax = false;
+  private keeperBlockStartedAt = -1;
+  private keeperBlockX = 0;
+  private keeperBlockY = 0;
+  private keeperBlockCounter = false;
+  private scanImpactStartedAt = -1;
+  private scanImpactX = 0;
+  private scanImpactY = 0;
   private turfFootprints: TurfFootprint[] = Array.from({ length: 24 }, () => ({
     active: false, x: 0, y: 0, born: 0, side: 1, angle: 0,
   }));
@@ -247,10 +875,36 @@ export class Renderer {
   private lastTurfFootprintAt = -1e9;
   private lastTurfFootprintX = Number.NaN;
   private lastTurfFootprintY = Number.NaN;
+  private lastTurfRunStep = 0;
   private nextTurfFoot: -1 | 1 = -1;
+  private reservedHealthBarZones: HealthBarCollisionRect[] = [{ left: 0, right: 0, top: 0, bottom: 0 }];
+  private playerOcclusionMask = document.createElement('canvas');
+  private playerOcclusionOutline = document.createElement('canvas');
+  private lastPlayerOcclusion = 0;
+  private healthBarVisibleScratch = new Uint8Array(512);
+  private healthBarCandidateScratch: Array<{ index: number; score: number }> = [];
+  private lastPresentationMetrics: CombatPresentationMetrics = {
+    activeEnemies: 0,
+    visibleHealthBars: 0,
+    renderedParticles: 0,
+    renderedImpacts: 0,
+    renderedSeekerTrails: 0,
+    renderedDamageNumbers: 0,
+  };
+  private reducedVfx = false;
+  private hybridShadowScratch: HybridEntityShadowGeometry = {
+    castLength: 0,
+    castWidth: 0,
+    offsetX: 0,
+    offsetY: 0,
+    alpha: 0,
+    contactAlpha: 0,
+  };
 
   camX = ARENA_W / 2;
   camY = ARENA_H / 2;
+  private hybridLookX = 0;
+  private hybridLookY = 0;
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -342,13 +996,37 @@ export class Renderer {
     this.loadPickupSprite('art/vfx/matchday-wipeout-strip.webp', (img) => {
       this.matchdayWipeoutSpr = img;
     });
+    this.loadPickupSprite('art/vfx/first-touch-ground-strip.webp', (img) => {
+      this.firstTouchGroundSpr = img;
+    });
+    this.loadPickupSprite('art/vfx/first-touch-air-strip.webp', (img) => {
+      this.firstTouchAirSpr = img;
+    });
+    this.loadPickupSprite('art/vfx/kick-dust-motes.png', (img) => {
+      this.kickDustSpr = img;
+    });
+    this.loadPickupSprite('art/vfx/orbit-ball-curved-trail.png?v=2', (img) => {
+      this.orbitTrailSpr = img;
+    });
+    this.loadPickupSprite('art/abilities/keeper-halo-strip.png', (img) => {
+      this.keeperHaloSpr = img;
+    });
+    this.loadPickupSprite('art/vfx/var-scan-shot-strip.png', (img) => {
+      this.varScanShotSpr = img;
+    });
+    this.loadPickupSprite('art/vfx/ability-upgrade-strip.png', (img) => {
+      this.abilityUpgradeSpr = img;
+    });
+    this.loadPickupSprite('art/vfx/captains-whistle-strip.webp?v=2', (img) => {
+      this.captainsWhistleSpr = img;
+    });
     void loadStripAtlas('ally-bodyguard-rookie', 'art/allies/bodyguard-rookie.png');
     void loadStripAtlas('ally-bodyguard-rookie-run', 'art/allies/bodyguard-rookie-run.png');
     void loadStripAtlas('ally-bodyguard', 'art/allies/bodyguard.png');
     void loadStripAtlas('ally-bodyguard-run', 'art/allies/bodyguard-run.png');
-    void loadStripAtlas('ally-bodyguard-heavy', 'art/allies/bodyguard-heavy.png');
+    void loadStripAtlas('ally-bodyguard-heavy', 'art/allies/bodyguard-heavy-clean.png');
     void loadStripAtlas('ally-bodyguard-heavy-run', 'art/allies/bodyguard-heavy-run.png');
-    void loadStripAtlas('ally-bodyguard-scout', 'art/allies/bodyguard-scout.png');
+    void loadStripAtlas('ally-bodyguard-scout', 'art/allies/bodyguard-scout-clean.png');
     void loadStripAtlas('ally-bodyguard-scout-run', 'art/allies/bodyguard-scout-run.png');
     // Stable stadium seed makes visual reviews and repeated arena loads
     // pixel-comparable while retaining varied crowd and material placement.
@@ -453,9 +1131,21 @@ export class Renderer {
 
   /** Compact stadium-scoreboard health bar. It uses only pooled canvas work,
    *  so large late-game crowds remain mobile-safe. */
-  private drawEnemyHealthBar(ctx: CanvasRenderingContext2D, e: Enemy, x: number, y: number, time: number): void {
+  private drawEnemyHealthBar(
+    ctx: CanvasRenderingContext2D,
+    e: Enemy,
+    x: number,
+    y: number,
+    time: number,
+    widthScale = 1,
+    alphaScale = 1,
+    anchorX = x,
+    anchorY = y,
+  ): void {
     const style = enemyHealthBarStyle(e);
-    const { ratio, width: w, height: h } = style;
+    const ratio = style.ratio;
+    const w = style.width * widthScale;
+    const h = style.height * (widthScale < 1 ? 0.82 : 1);
     if (x + w / 2 < -12 || x - w / 2 > this.canvas.width + 12 || y < -30 || y > this.canvas.height + 12) return;
 
     const left = Math.round(x - w / 2);
@@ -466,7 +1156,26 @@ export class Renderer {
     const pulse = low ? 0.72 + Math.sin(time * 11 + e.x * 0.01) * 0.2 : 0.88;
 
     ctx.save();
-    ctx.globalAlpha = e.boss || e.elite || ratio < 0.999 ? 1 : 0.84;
+    const visibility = (e.boss || e.elite || ratio < 0.999 ? 1 : 0.84) * alphaScale;
+    ctx.globalAlpha = visibility;
+    if (Math.hypot(anchorX - x, anchorY - y) > 8) {
+      // A displaced dense-crowd plate remains unambiguously attached to its
+      // actor. The curved stem is intentionally quiet and disappears when the
+      // normal close-to-head placement is available.
+      ctx.globalAlpha = 0.3 * alphaScale;
+      ctx.strokeStyle = style.accent;
+      ctx.lineWidth = 0.85;
+      ctx.beginPath();
+      ctx.moveTo(x, top + h + 4);
+      ctx.quadraticCurveTo((x + anchorX) / 2, anchorY - 4, anchorX, anchorY + h / 2);
+      ctx.stroke();
+      ctx.globalAlpha = 0.52 * alphaScale;
+      ctx.fillStyle = style.accent;
+      ctx.beginPath();
+      ctx.arc(anchorX, anchorY + h / 2, 1.25, 0, TAU);
+      ctx.fill();
+      ctx.globalAlpha = visibility;
+    }
     if (e.boss || e.elite) {
       ctx.shadowColor = e.boss ? 'rgba(255,45,76,0.48)' : 'rgba(255,210,63,0.42)';
       ctx.shadowBlur = e.boss ? 9 : 6;
@@ -493,11 +1202,11 @@ export class Renderer {
     const trailW = w * trailRatio;
     if (trailW > w * ratio + 0.5) {
       ctx.fillStyle = e.boss ? '#ffd0d7' : e.elite ? '#fff0a8' : '#dcecf2';
-      ctx.globalAlpha = 0.88;
+      ctx.globalAlpha = 0.88 * alphaScale;
       ctx.beginPath();
       ctx.roundRect(left, top, trailW, h, Math.min(h / 2, trailW / 2));
       ctx.fill();
-      ctx.globalAlpha = e.boss || e.elite || ratio < 0.999 ? 1 : 0.84;
+      ctx.globalAlpha = visibility;
     }
 
     const fillW = Math.max(ratio > 0 ? 2 : 0, w * ratio);
@@ -515,7 +1224,7 @@ export class Renderer {
       ctx.fill();
     }
 
-    ctx.globalAlpha = e.boss || e.elite || ratio < 0.999 ? 0.48 : 0.32;
+    ctx.globalAlpha = (e.boss || e.elite || ratio < 0.999 ? 0.48 : 0.32) * alphaScale;
     ctx.strokeStyle = '#071015';
     ctx.lineWidth = 1;
     for (let segment = 1; segment < 4; segment++) {
@@ -530,11 +1239,11 @@ export class Renderer {
     const statuses: Array<{ color: string; kind: 'dot' | 'air' }> = [];
     if (e.stun > 0) statuses.push({ color: '#c78cff', kind: 'dot' });
     if (e.slow > 0) statuses.push({ color: '#5cecff', kind: 'dot' });
-    if (e.airT > 0 || e.def.behavior === 'aerial') statuses.push({ color: '#7ca8ff', kind: 'air' });
+    if (e.airT > 0 || (e.def.behavior === 'aerial' && e.aerialGroundT <= 0)) statuses.push({ color: '#7ca8ff', kind: 'air' });
     statuses.forEach((status, index) => {
       const sx = left + w + 8 + index * 9;
       const sy = top + h / 2;
-      ctx.globalAlpha = 0.95;
+      ctx.globalAlpha = 0.95 * alphaScale;
       ctx.fillStyle = status.color;
       ctx.strokeStyle = '#061016';
       ctx.lineWidth = 2;
@@ -552,7 +1261,7 @@ export class Renderer {
     });
 
     // Tiny rotated crest anchors the bar to the game's football presentation.
-    ctx.globalAlpha = 1;
+    ctx.globalAlpha = alphaScale;
     ctx.translate(left - 5, top + h / 2);
     ctx.rotate(Math.PI / 4);
     ctx.fillStyle = style.accent;
@@ -587,11 +1296,160 @@ export class Renderer {
   }
 
   /** Swap in the AI arena plate and rebuild the prerendered world canvas. */
-  setArenaImage(img: HTMLImageElement, grassRect: ArenaGrassRect = PLATE_GRASS, liveStadium = false): void {
+  setArenaImage(
+    img: HTMLImageElement,
+    grassRect: ArenaGrassRect = PLATE_GRASS,
+    liveStadium = false,
+    hybridDepth = false,
+  ): void {
     this.plate = img;
     this.plateGrass = grassRect;
     this.liveStadium = liveStadium;
+    this.hybridDepth = hybridDepth;
     this.pitch = this.buildPitch();
+  }
+
+  /** Exposes only the active construction mode for deterministic browser QA. */
+  getArenaRenderMode(): { liveStadium: boolean; hybridDepth: boolean } {
+    return { liveStadium: this.liveStadium, hybridDepth: this.hybridDepth };
+  }
+
+  /** Read-only camera proof for deterministic browser QA. */
+  getCameraState(): { x: number; y: number; lookX: number; lookY: number } {
+    return { x: this.camX, y: this.camY, lookX: this.hybridLookX, lookY: this.hybridLookY };
+  }
+
+  /** Read-only visual-priority proof for deterministic browser QA. */
+  getPlayerOcclusionStrength(): number {
+    return this.lastPlayerOcclusion;
+  }
+
+  /** Read-only proof that dense scenes degrade decorative presentation before
+   * simulation timing or gameplay information. */
+  getCombatPresentationMetrics(): CombatPresentationMetrics {
+    return { ...this.lastPresentationMetrics };
+  }
+
+  setReducedVfx(enabled: boolean): void {
+    this.reducedVfx = !!enabled;
+  }
+
+  getReducedVfx(): boolean {
+    return this.reducedVfx;
+  }
+
+  /** Current CSS-pixel world scale used by screen-space HUD avoidance. */
+  getScale(): number {
+    const backingToCss = this.canvas.width > 0 ? this.canvas.clientWidth / this.canvas.width : 1;
+    return this.scale * backingToCss;
+  }
+
+  /** CSS-pixel billboard bounds for HUD collision avoidance. This mirrors the
+   * real sprite scale/feet anchor without exposing renderer internals to UI. */
+  getEnemyScreenRect(e: Enemy): EntityScreenRect {
+    const atlas = this.enemyAtlasFor(e);
+    const cssScale = this.getScale();
+    const entityScale = ENEMY_ENTITY_SCALE
+      * (80 / atlas.fh)
+      * (e.boss ? BOSSES[e.boss].scale : e.def.scale)
+      * (e.elite ? 1.22 : 1)
+      * (this.hybridDepth ? hybridEntityDepthScale(e.y) : 1);
+    const centerX = (e.x - this.camX) * cssScale + this.canvas.clientWidth / 2;
+    const groundY = (e.y - this.camY) * TILT * cssScale + this.canvas.clientHeight / 2;
+    const lift = e.def.behavior === 'aerial'
+      ? 42 * aerialOverheatHeightScale(e.aerialGroundT)
+      : e.airT > 0 ? 22 : 0;
+    const transparentTop = e.boss === 'drumboss'
+      ? 62
+      : e.boss === 'official' ? 24
+        : e.boss === 'captain' ? 20 : 0;
+    const top = groundY - (lift + (atlas.feetY - transparentTop) * entityScale) * cssScale;
+    const width = atlas.fw * entityScale * cssScale;
+    const height = (atlas.fh - transparentTop) * entityScale * cssScale;
+    return {
+      left: centerX - width / 2,
+      right: centerX + width / 2,
+      top,
+      bottom: top + height,
+      centerX,
+    };
+  }
+
+  /** Starts every run from its real spawn instead of easing from the previous
+   * run's last sideline position. This resets visual state only. */
+  resetCamera(x: number, y: number): void {
+    this.camX = Number.isFinite(x) ? x : ARENA_W / 2;
+    this.camY = Number.isFinite(y) ? y : ARENA_H / 2;
+    this.hybridLookX = 0;
+    this.hybridLookY = 0;
+    this.viewWorldH = 1240;
+    this.shake = 0;
+  }
+
+  /** A cheap two-pass stadium-light shadow. The tapered cast is directional,
+   * while the tiny contact mark is restricted to grounded actors. Keeping it
+   * path-based avoids per-enemy blur filters in 100+ threat stress scenes. */
+  private drawHybridEntityShadow(
+    ctx: CanvasRenderingContext2D,
+    x: number,
+    y: number,
+    radius: number,
+    kind: HybridShadowKind,
+    elevation = 0,
+    opacity = 1,
+  ): void {
+    if (!this.hybridDepth) return;
+    const shadow = hybridEntityShadowGeometry(radius, kind, elevation, this.hybridShadowScratch);
+    const startX = x + shadow.offsetX;
+    const startY = y + shadow.offsetY;
+    const endX = startX + shadow.castLength * HYBRID_LIGHT_CAST_X;
+    const endY = startY + shadow.castLength * HYBRID_LIGHT_CAST_Y;
+
+    ctx.save();
+    ctx.globalAlpha *= clamp(opacity, 0, 1);
+    ctx.fillStyle = `rgba(2,12,8,${shadow.alpha * 0.46})`;
+    ctx.beginPath();
+    ctx.moveTo(startX - shadow.castWidth * 0.68, startY);
+    ctx.quadraticCurveTo(
+      startX + shadow.castLength * 0.32,
+      startY + shadow.castWidth * 0.98,
+      endX,
+      endY,
+    );
+    ctx.quadraticCurveTo(
+      startX + shadow.castLength * 0.43,
+      startY - shadow.castWidth * 0.35,
+      startX + shadow.castWidth * 0.68,
+      startY,
+    );
+    ctx.closePath();
+    ctx.fill();
+
+    ctx.fillStyle = `rgba(2,12,8,${shadow.alpha})`;
+    ctx.beginPath();
+    ctx.moveTo(startX - shadow.castWidth * 0.5, startY + 0.4);
+    ctx.quadraticCurveTo(
+      startX + shadow.castLength * 0.28,
+      startY + shadow.castWidth * 0.52,
+      endX - shadow.castLength * 0.13,
+      endY - shadow.castLength * 0.08,
+    );
+    ctx.quadraticCurveTo(
+      startX + shadow.castLength * 0.35,
+      startY - shadow.castWidth * 0.18,
+      startX + shadow.castWidth * 0.5,
+      startY + 0.4,
+    );
+    ctx.closePath();
+    ctx.fill();
+
+    if (shadow.contactAlpha > 0.001) {
+      ctx.fillStyle = `rgba(2,14,8,${shadow.contactAlpha})`;
+      ctx.beginPath();
+      ctx.ellipse(x, y + 1, shadow.castWidth * 0.48, Math.max(1.3, shadow.castWidth * 0.17), 0.05, 0, TAU);
+      ctx.fill();
+    }
+    ctx.restore();
   }
 
   /** Enemy visuals: generated 2.5D strip when available, else the procedural atlas. */
@@ -613,7 +1471,7 @@ export class Renderer {
     // The drone is a hovering machine, not a footstep character. Holding its
     // clean thrust pose and animating roll/height continuously avoids the
     // clipped, off-centre cells in the generated locomotion strip.
-    if (e.def.behavior === 'aerial') return null;
+    if (e.def.id === 'drone') return null;
     if (e.boss) {
       const direction = movementDirection(e.moveDx, e.moveDy);
       const directionalId = `boss-directional-${e.boss}-${direction}`;
@@ -633,6 +1491,7 @@ export class Renderer {
           minFrames: 12,
           maxFrames: 12,
           buildEffects: false,
+          alignOpaqueBottom: true,
         },
       ).then(() => trimStripAtlasCache('boss-directional-', directionalId, 6));
       const fallbackId = `boss-${e.boss}-run`;
@@ -655,19 +1514,99 @@ export class Renderer {
 
   /** White blinding flash (paparazzo). */
   flashWhite(): void {
-    this.flashWhiteT = 0.28;
+    this.flashWhiteT = this.reducedVfx ? 0.11 : 0.28;
   }
 
   addShake(amount: number): void {
-    this.shake = Math.min(14, this.shake + amount);
+    this.shake = Math.min(14, this.shake + amount * (this.reducedVfx ? 0.42 : 1));
   }
 
   warnFlash(): void {
-    this.flashWarn = 0.42;
+    this.flashWarn = this.reducedVfx ? 0.24 : 0.42;
+  }
+
+  /** Draw only the alpha contour of the exact live player pose above world
+   * VFX. The body remains in painter order; this locator restores position
+   * information without turning the hero into a permanently topmost sticker. */
+  private drawPlayerOcclusionLocator(
+    ctx: CanvasRenderingContext2D,
+    atlas: Atlas,
+    frame: number,
+    x: number,
+    y: number,
+    scale: number,
+    bobY: number,
+    flip: boolean,
+    strength: number,
+  ): void {
+    const dw = atlas.fw * scale;
+    const dh = atlas.fh * scale;
+    const pad = 7;
+    const width = Math.max(1, Math.ceil(dw) + pad * 2);
+    const height = Math.max(1, Math.ceil(dh) + pad * 2);
+    if (this.playerOcclusionMask.width !== width || this.playerOcclusionMask.height !== height) {
+      this.playerOcclusionMask.width = width;
+      this.playerOcclusionMask.height = height;
+      this.playerOcclusionOutline.width = width;
+      this.playerOcclusionOutline.height = height;
+    }
+    const mask = this.playerOcclusionMask.getContext('2d')!;
+    mask.setTransform(1, 0, 0, 1, 0, 0);
+    mask.clearRect(0, 0, width, height);
+    mask.save();
+    if (flip) {
+      mask.translate(width, 0);
+      mask.scale(-1, 1);
+    }
+    const safeFrame = Math.max(0, Math.min(atlas.frames - 1, frame));
+    mask.drawImage(atlas.flash, safeFrame * atlas.fw, 0, atlas.fw, atlas.fh, pad, pad, dw, dh);
+    mask.restore();
+    mask.globalCompositeOperation = 'source-in';
+    mask.fillStyle = '#d9ffe5';
+    mask.fillRect(0, 0, width, height);
+    mask.globalCompositeOperation = 'source-over';
+
+    const outline = this.playerOcclusionOutline.getContext('2d')!;
+    outline.setTransform(1, 0, 0, 1, 0, 0);
+    outline.clearRect(0, 0, width, height);
+    const offsets = [[-3, 0], [3, 0], [0, -3], [0, 3], [-2, -2], [2, -2], [-2, 2], [2, 2]] as const;
+    for (const [ox, oy] of offsets) outline.drawImage(this.playerOcclusionMask, ox, oy);
+    outline.globalCompositeOperation = 'destination-out';
+    outline.drawImage(this.playerOcclusionMask, 0, 0);
+    outline.globalCompositeOperation = 'source-over';
+
+    ctx.save();
+    ctx.globalAlpha = 0.48 + strength * 0.47;
+    ctx.shadowColor = 'rgba(3, 18, 10, 0.92)';
+    ctx.shadowBlur = 5;
+    ctx.drawImage(
+      this.playerOcclusionOutline,
+      x - dw / 2 - pad,
+      y - atlas.feetY * scale + bobY - pad,
+    );
+    ctx.restore();
   }
 
   playMatchdayWipeout(): void {
     this.matchdayWipeoutStartedAt = performance.now() / 1000;
+  }
+
+  playAbilityUpgrade(max: boolean): void {
+    this.abilityUpgradeStartedAt = performance.now() / 1000;
+    this.abilityUpgradeMax = max;
+  }
+
+  playKeeperBlock(x: number, y: number, counter: boolean): void {
+    this.keeperBlockStartedAt = performance.now() / 1000;
+    this.keeperBlockX = x;
+    this.keeperBlockY = y;
+    this.keeperBlockCounter = counter;
+  }
+
+  playScanImpact(x: number, y: number): void {
+    this.scanImpactStartedAt = performance.now() / 1000;
+    this.scanImpactX = x;
+    this.scanImpactY = y;
   }
 
   /* ------------------------------------------------------------------ */
@@ -707,6 +1646,31 @@ export class Renderer {
       // playable arena. A slight non-uniform scale absorbs each source plate's
       // aspect difference while its stands fill the surrounding margin.
       ctx.drawImage(this.plate, -this.plateGrass.x * psx, -this.plateGrass.y * psy, this.plate.width * psx, this.plate.height * psy);
+      if (this.liveStadium) {
+        // Broadcast-grade the photographed turf toward a fresher World Cup
+        // green while retaining every source-pixel highlight and worn patch.
+        // Alternating translucent passes reinforce the mower direction at the
+        // same 112-unit cadence used by the authored blade clusters.
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(0, 0, ARENA_W, ARENA_H);
+        ctx.clip();
+        ctx.fillStyle = 'rgba(52,112,24,0.145)';
+        ctx.fillRect(0, 0, ARENA_W, ARENA_H);
+        for (let strip = 0; strip < Math.ceil(ARENA_W / 112); strip++) {
+          ctx.fillStyle = strip % 2 === 0
+            ? 'rgba(221,226,130,0.020)'
+            : 'rgba(8,54,18,0.026)';
+          ctx.fillRect(strip * 112, 0, 112, ARENA_H);
+        }
+        const broadcastFalloff = ctx.createLinearGradient(0, 0, 0, ARENA_H);
+        broadcastFalloff.addColorStop(0, 'rgba(248,242,170,0.018)');
+        broadcastFalloff.addColorStop(0.48, 'rgba(255,255,222,0.010)');
+        broadcastFalloff.addColorStop(1, 'rgba(10,37,13,0.028)');
+        ctx.fillStyle = broadcastFalloff;
+        ctx.fillRect(0, 0, ARENA_W, ARENA_H);
+        ctx.restore();
+      }
     } else {
     // surround apron
     ctx.fillStyle = '#0d2818';
@@ -909,6 +1873,106 @@ export class Renderer {
         }
       }
       ctx.restore();
+
+      // Low, directional blade clusters break up the remaining flat plate
+      // without turning the grass into uniform noise. Each tuft has a dark
+      // root and two short highlights, follows the local mowing direction and
+      // becomes sparser in the three heaviest traffic zones. This is baked
+      // once into the pitch canvas, so the extra physical detail is free in
+      // the combat loop and remains stable under camera movement.
+      let tuftSeed = 0x9e3779b9;
+      const tuftRandom = (): number => {
+        tuftSeed = (Math.imul(tuftSeed, 1103515245) + 12345) >>> 0;
+        return tuftSeed / 0x100000000;
+      };
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(0, 0, ARENA_W, ARENA_H);
+      ctx.clip();
+      ctx.lineCap = 'round';
+      for (let tuft = 0; tuft < 3_100; tuft++) {
+        const x = 7 + tuftRandom() * (ARENA_W - 14);
+        const y = 7 + tuftRandom() * (ARENA_H - 14);
+        const centreWear = ellipticalWear(x, y, ARENA_W * 0.5, ARENA_H * 0.5, 390, 245);
+        const leftWear = ellipticalWear(x, y, 138, ARENA_H * 0.5, 230, 345);
+        const rightWear = ellipticalWear(x, y, ARENA_W - 138, ARENA_H * 0.5, 230, 345);
+        const wear = Math.max(centreWear, leftWear, rightWear);
+        if (tuftRandom() < wear * 0.52) continue;
+        const mowerDirection = Math.floor(x / 112) % 2 === 0 ? 1 : -1;
+        const baseLean = mowerDirection * (0.55 + tuftRandom() * 1.1);
+        const length = 2.4 + tuftRandom() * 2.8;
+        const rootAlpha = 0.038 + tuftRandom() * 0.024;
+        ctx.strokeStyle = `rgba(24,34,9,${rootAlpha})`;
+        ctx.lineWidth = 1.05;
+        ctx.beginPath();
+        ctx.moveTo(x - 0.55, y + 0.65);
+        ctx.lineTo(x + 1.35, y + 0.45);
+        ctx.stroke();
+        for (let blade = 0; blade < 2; blade++) {
+          const offset = blade * 1.15 - 0.55;
+          const lean = baseLean + (blade === 0 ? -0.7 : 0.6) + (tuftRandom() - 0.5) * 0.45;
+          const lift = length * (0.72 + blade * 0.16);
+          ctx.strokeStyle = blade === 0
+            ? `rgba(196,203,111,${0.048 + tuftRandom() * 0.035})`
+            : `rgba(228,224,145,${0.038 + tuftRandom() * 0.029})`;
+          ctx.lineWidth = 0.5;
+          ctx.beginPath();
+          ctx.moveTo(x + offset, y);
+          ctx.quadraticCurveTo(
+            x + offset + lean * 0.46,
+            y - lift * 0.52,
+            x + offset + lean,
+            y - lift,
+          );
+          ctx.stroke();
+        }
+      }
+      ctx.restore();
+
+      // A broken fringe of real blades bridges the flat turf plate and the
+      // stadium apron. Roots stay just inside the playable field while tips
+      // cross the four source-image seams by a few world units, removing the
+      // ruler-straight cut-out edge without creating a gameplay border.
+      let edgeSeed = 0x6d2b79f5;
+      const edgeRandom = (): number => {
+        edgeSeed = (Math.imul(edgeSeed, 1664525) + 1013904223) >>> 0;
+        return edgeSeed / 0x100000000;
+      };
+      const edgeBlade = (x: number, y: number, outwardX: number, outwardY: number, index: number): void => {
+        if (index % 7 === 3 || edgeRandom() < 0.12) return;
+        const tangentX = -outwardY;
+        const tangentY = outwardX;
+        const rootInset = 0.8 + edgeRandom() * 2.2;
+        const reach = 1.5 + edgeRandom() * 3.7;
+        const sideLean = (edgeRandom() - 0.5) * 2.8;
+        const rootX = x - outwardX * rootInset;
+        const rootY = y - outwardY * rootInset;
+        const tipX = x + outwardX * reach + tangentX * sideLean;
+        const tipY = y + outwardY * reach + tangentY * sideLean;
+        ctx.strokeStyle = `rgba(16,33,8,${0.10 + edgeRandom() * 0.055})`;
+        ctx.lineWidth = 1.05;
+        ctx.beginPath();
+        ctx.moveTo(rootX + 0.65, rootY + 0.55);
+        ctx.quadraticCurveTo(x + tangentX * sideLean * 0.35 + 0.65, y + 0.55, tipX + 0.65, tipY + 0.55);
+        ctx.stroke();
+        ctx.strokeStyle = `rgba(185,201,105,${0.075 + edgeRandom() * 0.06})`;
+        ctx.lineWidth = 0.56;
+        ctx.beginPath();
+        ctx.moveTo(rootX, rootY);
+        ctx.quadraticCurveTo(x + tangentX * sideLean * 0.35, y, tipX, tipY);
+        ctx.stroke();
+      };
+      ctx.save();
+      ctx.lineCap = 'round';
+      for (let x = 4, index = 0; x < ARENA_W - 3; x += 8.2, index++) {
+        edgeBlade(x, 0, 0, -1, index);
+        edgeBlade(x + 3.7, ARENA_H, 0, 1, index + 337);
+      }
+      for (let y = 4, index = 0; y < ARENA_H - 3; y += 8.1, index++) {
+        edgeBlade(0, y, -1, 0, index + 677);
+        edgeBlade(ARENA_W, y + 3.5, 1, 0, index + 863);
+      }
+      ctx.restore();
     }
 
     // Chalk markings: thinner, slightly translucent and softly grounded into
@@ -1107,10 +2171,81 @@ export class Renderer {
           );
         }
       }
+
+      // Chalk is sprayed onto fibres rather than laid as a vector-perfect
+      // ribbon. Sub-pixel pigment crumbs and olive pinholes sit on both sides
+      // of the main markings, making them porous at gameplay zoom while their
+      // collision-readable silhouette remains unchanged.
+      ctx.save();
+      ctx.shadowColor = 'transparent';
+      ctx.shadowBlur = 0;
+      const pigmentNoise = (seed: number): number => {
+        const value = Math.sin(seed * 12.9898 + 78.233) * 43758.5453;
+        return value - Math.floor(value);
+      };
+      const pigmentGrain = (x: number, y: number, tangentX: number, tangentY: number, seed: number): void => {
+        const normalX = -tangentY;
+        const normalY = tangentX;
+        const offset = (pigmentNoise(seed + 0.17) - 0.5) * 4.4;
+        const along = (pigmentNoise(seed + 1.93) - 0.5) * 2.2;
+        const px = x + normalX * offset + tangentX * along;
+        const py = y + normalY * offset + tangentY * along;
+        if (seed % 5 === 0 || seed % 11 === 3) {
+          ctx.fillStyle = `rgba(66,82,31,${0.16 + pigmentNoise(seed + 4.2) * 0.13})`;
+          ctx.fillRect(px, py, 0.75 + pigmentNoise(seed + 7.1) * 0.7, 0.62 + pigmentNoise(seed + 8.3) * 0.55);
+        } else {
+          ctx.fillStyle = `rgba(255,253,229,${0.14 + pigmentNoise(seed + 5.7) * 0.16})`;
+          ctx.fillRect(px, py, 0.55 + pigmentNoise(seed + 3.4) * 0.75, 0.5 + pigmentNoise(seed + 6.8) * 0.58);
+        }
+      };
+      const pigmentLine = (x0: number, y0: number, x1: number, y1: number, count: number, seed: number): void => {
+        const dx = x1 - x0;
+        const dy = y1 - y0;
+        const length = Math.max(1, Math.hypot(dx, dy));
+        const tangentX = dx / length;
+        const tangentY = dy / length;
+        for (let index = 0; index < count; index++) {
+          const t = (index + pigmentNoise(seed + index * 3.7)) / count;
+          pigmentGrain(x0 + dx * t, y0 + dy * t, tangentX, tangentY, seed + index * 13);
+        }
+      };
+      const pigmentArc = (cx: number, cy: number, radius: number, start: number, end: number, count: number, seed: number): void => {
+        for (let index = 0; index < count; index++) {
+          const angle = start + (end - start) * ((index + pigmentNoise(seed + index * 2.9)) / count);
+          pigmentGrain(
+            cx + Math.cos(angle) * radius,
+            cy + Math.sin(angle) * radius,
+            -Math.sin(angle),
+            Math.cos(angle),
+            seed + index * 17,
+          );
+        }
+      };
+      pigmentLine(40, 40, ARENA_W - 40, 40, 290, 701);
+      pigmentLine(40, ARENA_H - 40, ARENA_W - 40, ARENA_H - 40, 290, 1001);
+      pigmentLine(40, 40, 40, ARENA_H - 40, 165, 1301);
+      pigmentLine(ARENA_W - 40, 40, ARENA_W - 40, ARENA_H - 40, 165, 1471);
+      pigmentLine(ARENA_W / 2, 40, ARENA_W / 2, ARENA_H - 40, 170, 1643);
+      pigmentArc(ARENA_W / 2, ARENA_H / 2, 190, 0, TAU, 180, 1813);
+      ctx.restore();
     }
     ctx.shadowColor = 'transparent';
     ctx.shadowBlur = 0;
     ctx.shadowOffsetY = 0;
+
+    // The hybrid markings never animate. Bake them into the same tilted world
+    // canvas as the turf so late-game combat pays only the existing pitch blit
+    // rather than rebuilding hundreds of chalk/scuff paths every frame.
+    if (this.hybridDepth) {
+      ctx.save();
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      this.drawHybridPitchMarkings(
+        ctx,
+        (worldX) => ml + worldX,
+        (worldY) => (mt + worldY) * TILT,
+      );
+      ctx.restore();
+    }
 
     // Goals: layered mesh, ground shadow, rear frame and highlighted posts.
     // The old translucent box read as a UI rectangle rather than a real net.
@@ -1309,13 +2444,13 @@ export class Renderer {
     if (kicking) {
       const kickStrip = getStripAtlas(`${def.id}-kick`, tint);
       if (kickStrip) return { atlas: kickStrip, kind: 'kick' };
-      void loadStripAtlas(`${def.id}-kick`, `art/players/${def.id}-kick.png`, tint);
+      void loadStripAtlas(`${def.id}-kick`, playerArtUrl(`art/players/${def.id}-kick.png`), tint);
     }
     if (!running) {
       const idleStrip = getStripAtlas(`${def.id}-idle`, tint);
       if (idleStrip) return { atlas: idleStrip, kind: 'idle' };
       // trigger a lazy load; until idle art exists, hold a neutral frame
-      void loadStripAtlas(`${def.id}-idle`, `art/players/${def.id}-idle.png`, tint);
+      void loadStripAtlas(`${def.id}-idle`, playerArtUrl(`art/players/${def.id}-idle.png`), tint);
     }
     if (running) {
       const directionalId = `player-directional-${def.id}-${direction}`;
@@ -1332,7 +2467,7 @@ export class Renderer {
         const nextId = `player-directional-${def.id}-${nextDirection}`;
         void loadStripAtlas(
           nextId,
-          `art/players/directional-v2/${def.id}/${nextDirection}.webp`,
+          playerArtUrl(`art/players/directional-v2/${def.id}/${nextDirection}.webp`),
           tint,
           {
             frameWidth: PLAYER_DIRECTION_FRAME_WIDTH,
@@ -1347,13 +2482,13 @@ export class Renderer {
       }
       const runStrip = getStripAtlas(`${def.id}-run`, tint);
       if (runStrip) return { atlas: runStrip, kind: 'run' };
-      void loadStripAtlas(`${def.id}-run`, `art/players/${def.id}-run.png`, tint);
+      void loadStripAtlas(`${def.id}-run`, playerArtUrl(`art/players/${def.id}-run.png`), tint);
     }
     // prefer the generated 2.5D strip; fall back to the procedural atlas
     const strip = getStripAtlas(def.id, tint);
     if (strip) return { atlas: strip, kind: running ? 'run' : 'run-held' };
     // trigger a lazy load (primed at boot; skin variants load on demand)
-    void loadStripAtlas(def.id, `art/players/${def.id}.png`, tint);
+    void loadStripAtlas(def.id, playerArtUrl(`art/players/${def.id}.png`), tint);
     const key = `p:${def.id}:${skinId ?? 'base'}`;
     let a = this.atlasCache.get(key);
     if (!a) {
@@ -1369,9 +2504,44 @@ export class Renderer {
     const W = this.canvas.width;
     const H = this.canvas.height;
     if (W === 0 || H === 0) return;
+    const renderDt = Number.isFinite(this.lastDrawTime)
+      ? clamp(time - this.lastDrawTime, 1 / 240, 0.05)
+      : 1 / 60;
+    this.lastDrawTime = time;
 
-    // view: fixed world-height window
-    const viewWorldH = 1240;
+    // Normal gameplay keeps its established scale. Boss arrival and the final
+    // sudden-death duel use a responsive two-actor frame so narrow portrait
+    // screens actually show both the hero and the threat named by the HUD.
+    const aspect = W / Math.max(1, H);
+    const introBoss = sim.bossIntroT > 0 ? sim.bossAlive : null;
+    const finaleBoss = sim.suddenDeath ? sim.bossAlive : null;
+    // Portrait play keeps the complete boss encounter in a stable two-actor
+    // frame. Returning to the player-only zoom after the intro clipped giant
+    // contact poses and made their readable wind-up unfair on mobile.
+    const encounterBoss = aspect < 0.72 ? sim.bossAlive : null;
+    const framedBoss = introBoss ?? finaleBoss ?? encounterBoss;
+    const introTargetWorldH = aspect < 0.72
+      ? 2050
+      : aspect < 1.05
+        ? 1540
+        : 1360;
+    // A fully materialized major boss is substantially wider than its intro
+    // silhouette. Portrait sudden death therefore needs its own wider frame.
+    const finaleTargetWorldH = aspect < 0.72
+      ? 2550
+      : aspect < 1.05
+        ? 1840
+        : 1400;
+    const targetViewWorldH = introBoss
+      ? introTargetWorldH
+      : finaleBoss
+        ? finaleTargetWorldH
+        : encounterBoss
+          ? 2200
+          : 1240;
+    this.viewWorldH += (targetViewWorldH - this.viewWorldH) * exponentialSmoothing(9.05, renderDt);
+    if (Math.abs(targetViewWorldH - this.viewWorldH) < 0.1) this.viewWorldH = targetViewWorldH;
+    const viewWorldH = this.viewWorldH;
     this.scale = H / (viewWorldH * TILT);
     const scale = this.scale;
     const vw = W / scale;
@@ -1380,10 +2550,21 @@ export class Renderer {
     // camera follows player, hard-clamped so the view never leaves the
     // painted world (bounds derive from the arena plate's real surround)
     const p = sim.player;
-    const px = p ? p.x : this.camX;
-    const py = p ? p.y : this.camY;
-    this.camX += (px - this.camX) * 0.12;
-    this.camY += (py - this.camY) * 0.12;
+    const bossFocusWeight = aspect < 0.72 && finaleBoss ? 0.67 : aspect < 0.72 ? 0.58 : 0.5;
+    const px = p
+      ? framedBoss ? p.x + (framedBoss.x - p.x) * bossFocusWeight : p.x
+      : this.camX;
+    const py = p
+      ? framedBoss ? p.y + (framedBoss.y - p.y) * bossFocusWeight : p.y
+      : this.camY;
+    const targetLookX = this.hybridDepth && p?.moving && !framedBoss ? p.moveDx * 38 : 0;
+    const targetLookY = this.hybridDepth && p?.moving && !framedBoss ? p.moveDy * 28 : 0;
+    const lookFollow = exponentialSmoothing(4.68, renderDt);
+    const cameraFollow = exponentialSmoothing(7.67, renderDt);
+    this.hybridLookX += (targetLookX - this.hybridLookX) * lookFollow;
+    this.hybridLookY += (targetLookY - this.hybridLookY) * lookFollow;
+    this.camX += (px + this.hybridLookX - this.camX) * cameraFollow;
+    this.camY += (py + this.hybridLookY - this.camY) * cameraFollow;
     const b = this.bounds;
     const minCx = b.x0 + vw / 2 + EDGE_PAD;
     const maxCx = b.x1 - vw / 2 - EDGE_PAD;
@@ -1395,7 +2576,7 @@ export class Renderer {
     const camTX = this.camX - b.x0; // pitch-canvas coords (x)
     const camTY = (this.camY - b.y0) * TILT;
 
-    this.shake *= 0.86;
+    this.shake *= Math.exp(-9.05 * renderDt);
     const shX = (Math.random() - 0.5) * this.shake * scale;
     const shY = (Math.random() - 0.5) * this.shake * scale;
 
@@ -1411,14 +2592,27 @@ export class Renderer {
     const toSX = (wx: number) => wx - b.x0 - sx;
     const toSY = (wy: number) => (wy - b.y0) * TILT - sy;
 
+    if (this.hybridDepth) this.drawHybridFloodlightSpill(ctx, toSX, toSY);
+
     // animated crowd: jumping dots near the visible stands edge
     // (skipped when the arena plate supplies its own crowd)
     if (!this.plate) this.drawCrowd(ctx, toSX, toSY, sx + b.x0, sy / TILT + b.y0, vw, vh / TILT, time);
     if (this.liveStadium) this.drawLiveShowpieceStadium(ctx, b, sx, sy, vw, vh, time);
+    if (this.hybridDepth) this.drawHybridStadiumParallax(ctx, b, sx, sy, vw, vh);
     if (this.liveStadium) this.drawPitchEdgeOcclusion(ctx, toSX, toSY);
-    if (this.liveStadium) this.drawTurfWindFibres(ctx, toSX, toSY, time);
+    if (this.hybridDepth) this.drawHybridPitchRimBack(ctx, toSX, toSY);
+    if (this.hybridDepth) this.drawHybridTechnicalZone(ctx, toSX, toSY, time);
+    if (this.hybridDepth) this.drawHybridTouchlineBoards(ctx, toSX, toSY, time);
+    if (this.liveStadium) {
+      // The dense survivor endgame owns the frame budget. The baked nap and
+      // tuft clusters remain fully detailed, while only the tiny animated
+      // glints thin out as the enemy pool grows.
+      const windFibreBudget = sim.enemies.length > 110 ? 26 : sim.enemies.length > 70 ? 52 : 86;
+      this.drawTurfWindFibres(ctx, toSX, toSY, time, windFibreBudget);
+    }
     if (this.liveStadium) this.drawLiveCornerFlags(ctx, toSX, toSY, time);
-    if (this.liveStadium) this.drawLiveGoalNets(ctx, toSX, toSY, time);
+    if (this.liveStadium && !this.hybridDepth) this.drawLiveGoalNets(ctx, toSX, toSY, time);
+    if (this.hybridDepth) this.drawHybridGoalDepth(ctx, toSX, toSY, time);
 
     // ground decals: telegraphs, flare zones, slow zones
     this.updateAndDrawTurfFootprints(ctx, sim, toSX, toSY, time);
@@ -1428,14 +2622,18 @@ export class Renderer {
       const u = 1 - t.t / t.max;
       const tx = toSX(t.x);
       const ty = toSY(t.y);
-      if (t.kind === 'cone') {
-        // vuvuzela wedge: pulsing gold sector down the blast axis
-        ctx.fillStyle = `rgba(255,210,63,${0.1 + u * 0.16})`;
-        ctx.strokeStyle = `rgba(255,210,63,${0.45 + u * 0.45})`;
+      if (t.kind === 'cone' || t.kind === 'card') {
+        // Vuvuzela gold and official red-card sectors share readable geometry
+        // while retaining distinct color language and timings.
+        const officialCard = t.kind === 'card';
+        const coneHalfAngle = officialCard ? Math.PI / 6 : 0.55;
+        const rgb = officialCard ? '255,56,85' : '255,210,63';
+        ctx.fillStyle = `rgba(${rgb},${0.1 + u * 0.16})`;
+        ctx.strokeStyle = `rgba(${rgb},${0.45 + u * 0.45})`;
         ctx.lineWidth = 2.5;
         ctx.beginPath();
         ctx.moveTo(tx, ty);
-        ctx.ellipse(tx, ty, t.r * (0.25 + u * 0.75), t.r * (0.25 + u * 0.75) * TILT, 0, t.dir - 0.55, t.dir + 0.55);
+        ctx.ellipse(tx, ty, t.r * (0.25 + u * 0.75), t.r * (0.25 + u * 0.75) * TILT, 0, t.dir - coneHalfAngle, t.dir + coneHalfAngle);
         ctx.closePath();
         ctx.fill();
         ctx.stroke();
@@ -1487,6 +2685,101 @@ export class Renderer {
       ctx.fill();
     }
 
+    // First Touch Blast is a real pitch-layer animation. Its generated turf
+    // atlas is painted before every actor so the player and enemies remain
+    // grounded above the blast instead of being covered by a UI-like ring.
+    for (const ring of sim.rings) {
+      if (!ring.active || (ring.color !== '#a8ff4d' && ring.color !== '#f5ff9b')) continue;
+      const progress = clamp(1 - ring.life / 0.45, 0, 0.999);
+      const frame = Math.min(5, Math.floor(progress * 6));
+      this.drawVfxFrame(
+        ctx,
+        this.firstTouchGroundSpr,
+        frame,
+        toSX(ring.x),
+        toSY(ring.y) - 3,
+        ring.maxR * 2.18,
+        0,
+        Math.min(1, ring.life / 0.16),
+        false,
+      );
+    }
+
+    // Precision Strike lifts a barely visible AI-authored dust cluster from
+    // the lead cleat. It has no discrete animation cells: position, scale and
+    // opacity move continuously, avoiding the stepping of the former six-cell
+    // turf explosion while keeping the player and ball visually dominant.
+    for (const impact of sim.impacts) {
+      if (!impact.active || impact.kind !== 'kickground') continue;
+      if (!this.kickDustSpr?.complete || this.kickDustSpr.naturalWidth <= 0) continue;
+      const progress = clamp(1 - impact.life / impact.maxLife, 0, 1);
+      const eased = 1 - (1 - progress) * (1 - progress);
+      const fadeIn = clamp(progress / 0.06, 0, 1);
+      const fadeOut = clamp((1 - progress) / 0.76, 0, 1);
+      const alpha = fadeIn * fadeOut * (this.reducedVfx ? 0.24 : 0.48);
+      const screenAngle = Math.atan2(Math.sin(impact.angle) * TILT, Math.cos(impact.angle));
+      const size = (72 + eased * 14) * impact.strength;
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      ctx.globalCompositeOperation = 'screen';
+      ctx.filter = 'brightness(1.7) contrast(1.08)';
+      ctx.translate(
+        toSX(impact.x) + Math.cos(screenAngle) * eased * 4,
+        toSY(impact.y) - 2 - eased * 7,
+      );
+      ctx.rotate(screenAngle * 0.12);
+      ctx.drawImage(this.kickDustSpr, -size / 2, -size / 2, size, size);
+      ctx.restore();
+    }
+
+    // Pressure is a pitch decal, not a body overlay. It must be painted before
+    // every actor so feet, silhouettes and contact VFX stay readable above it.
+    for (const pr of sim.pressures) {
+      if (!pr.active) continue;
+      const u = pr.r / pr.maxR;
+      const alpha = (1 - u) * 0.72 + 0.12;
+      ctx.fillStyle = `rgba(55,214,122,${0.055 * (1 - u)})`;
+      ctx.beginPath();
+      ctx.ellipse(toSX(pr.x), toSY(pr.y), pr.r, pr.r * TILT, 0, 0, TAU);
+      ctx.fill();
+      ctx.strokeStyle = `rgba(55,214,122,${alpha})`;
+      ctx.lineWidth = 6 * (1 - u) + 2;
+      ctx.beginPath();
+      ctx.ellipse(toSX(pr.x), toSY(pr.y), pr.r, pr.r * TILT, 0, 0, TAU);
+      ctx.stroke();
+      ctx.strokeStyle = `rgba(245,247,250,${alpha * 0.42})`;
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.ellipse(toSX(pr.x), toSY(pr.y), Math.max(1, pr.r - 7), Math.max(1, pr.r - 7) * TILT, 0, 0, TAU);
+      ctx.stroke();
+      const maxPressure = sim.abilityLevel('pressure') >= 5;
+      const arrows = pr.r > 42 ? 8 : 4;
+      ctx.lineWidth = 2;
+      for (let arrow = 0; arrow < arrows; arrow++) {
+        const angle = (arrow / arrows) * TAU + time * 0.18;
+        const x = toSX(pr.x + Math.cos(angle) * pr.r);
+        const y = toSY(pr.y + Math.sin(angle) * pr.r);
+        ctx.save();
+        ctx.translate(x, y);
+        ctx.rotate(Math.atan2(Math.sin(angle) * TILT, Math.cos(angle)));
+        ctx.strokeStyle = `rgba(229,255,238,${alpha * 0.72})`;
+        ctx.beginPath();
+        ctx.moveTo(-7, -5);
+        ctx.lineTo(1, 0);
+        ctx.lineTo(-7, 5);
+        ctx.stroke();
+        if (maxPressure) {
+          ctx.strokeStyle = `rgba(128,237,153,${alpha * 0.42})`;
+          ctx.beginPath();
+          ctx.moveTo(-15, -4);
+          ctx.lineTo(-21, 0);
+          ctx.lineTo(-15, 4);
+          ctx.stroke();
+        }
+        ctx.restore();
+      }
+    }
+
     // AERIAL aim/landing markers belong to the pitch decal layer. Drawing
     // them here guarantees that every enemy billboard, health bar and combat
     // pose is painted over the marker instead of being obscured by it.
@@ -1521,8 +2814,8 @@ export class Renderer {
     if (p.moving && p.dashT <= 0 && p.kickT <= 0) {
       const step = playerStepCue(p.animT);
       if (step.strength > 0.01) {
-        const dx = p.dashDx;
-        const dy = p.dashDy * TILT;
+        const dx = p.moveDx;
+        const dy = p.moveDy * TILT;
         const length = Math.hypot(dx, dy) || 1;
         const forwardX = dx / length;
         const forwardY = dy / length;
@@ -1547,7 +2840,40 @@ export class Renderer {
       }
     }
 
-    // pickups
+    /* corpses: fallen enemies topple sideways, sink and fade (under live entities) */
+    for (const c of sim.corpses) {
+      if (!c.active) continue;
+      const u = c.t / c.max;
+      const atlas = this.enemyAtlasFor({ def: ENEMIES[c.enemyId as keyof typeof ENEMIES] ?? ENEMIES.invader, boss: c.boss, variant: c.variant });
+      // Generated strips are 4x the procedural atlas resolution. Normalize by
+      // source height so swapping art never changes the enemy's world size.
+      const sc = ENEMY_ENTITY_SCALE * (80 / atlas.fh) * (c.boss ? BOSSES[c.boss].scale : (ENEMIES[c.enemyId as keyof typeof ENEMIES]?.scale ?? 1)) * (c.elite ? 1.22 : 1) * (this.hybridDepth ? hybridEntityDepthScale(c.y) : 1);
+      const collapse = corpseCollapseVisual(u);
+      const x = toSX(c.x);
+      const y = toSY(c.y);
+      const knockoutFrame = Math.min(5, Math.floor(clamp(u / 0.72, 0, 0.999) * 6));
+      const knockoutSize = c.boss ? 178 : c.elite ? 132 : 104;
+      this.drawVfxFrame(ctx, this.knockoutSpr, knockoutFrame, x, y - 11, knockoutSize, 0, collapse.alpha * 0.82, false);
+      ctx.save();
+      ctx.globalAlpha = collapse.alpha * 0.28;
+      ctx.fillStyle = '#06100a';
+      ctx.beginPath();
+      ctx.ellipse(x + c.face * collapse.sink * 0.42, y + 2, 18 + collapse.sink * 0.72, 5 + collapse.sink * 0.18, 0, 0, TAU);
+      ctx.fill();
+      ctx.globalAlpha = collapse.alpha;
+      ctx.translate(x + c.face * collapse.sink * 0.35, y - 3 + collapse.sink);
+      ctx.rotate(c.face * collapse.rotation);
+      ctx.scale(collapse.scaleX, collapse.scaleY);
+      const dw = atlas.fw * sc;
+      const dh = atlas.fh * sc;
+      const frame = atlas.frames >= 4 ? 3 : 0;
+      ctx.drawImage(atlas.canvas, frame * atlas.fw, 0, atlas.fw, atlas.fh, -dw / 2, -atlas.feetY * sc, dw, dh);
+      ctx.restore();
+    }
+    ctx.globalAlpha = 1;
+
+    // Loot is painted after fallen bodies so rewards remain collectible and
+    // readable instead of disappearing underneath the corpse billboard.
     for (const pk of sim.pickups) {
       if (!pk.active) continue;
       const img = pk.kind === 'coin' ? this.coinSpr
@@ -1564,71 +2890,38 @@ export class Renderer {
               : pk.kind === 'heal' ? 42
                 : pk.kind === 'coin' ? 30
                   : pk.tier === 3 ? 38 : pk.tier === 2 ? 32 : 27;
-      // Pickups are physical objects resting on the turf. Keep the world point
-      // as the sprite's bottom contact instead of centering/bobbing it above
-      // the grass; all identity and rarity lighting lives in the asset itself.
       const groundX = toSX(pk.x);
       const groundY = toSY(pk.y) + 4;
-      ctx.drawImage(img, groundX - baseSize / 2, groundY - baseSize, baseSize, baseSize);
+      const depthScale = this.hybridDepth ? hybridEntityDepthScale(pk.y) : 1;
+      const visibleBounds = pickupVisibleBounds(pk.kind, pk.tier);
+      const sourceWidth = img.width;
+      const sourceHeight = img.height;
+      const sourceX = visibleBounds.x * sourceWidth;
+      const sourceY = visibleBounds.y * sourceHeight;
+      const sourceVisibleWidth = visibleBounds.width * sourceWidth;
+      const sourceVisibleHeight = visibleBounds.height * sourceHeight;
+      const visibleAspect = sourceVisibleWidth / Math.max(1, sourceVisibleHeight);
+      const visibleHeight = baseSize * depthScale;
+      const visibleWidth = visibleHeight * visibleAspect;
+      if (this.hybridDepth) this.drawHybridEntityShadow(ctx, groundX, groundY - 1, visibleWidth * 0.18, 'pickup');
+      ctx.drawImage(img, sourceX, sourceY, sourceVisibleWidth, sourceVisibleHeight, groundX - visibleWidth / 2, groundY - visibleHeight, visibleWidth, visibleHeight);
     }
 
-    /* corpses: fallen enemies topple sideways, sink and fade (under live entities) */
-    for (const c of sim.corpses) {
-      if (!c.active) continue;
-      const u = c.t / c.max;
-      const atlas = this.enemyAtlasFor({ def: ENEMIES[c.enemyId as keyof typeof ENEMIES] ?? ENEMIES.invader, boss: c.boss, variant: c.variant });
-      // Generated strips are 4x the procedural atlas resolution. Normalize by
-      // source height so swapping art never changes the enemy's world size.
-      const sc = ENEMY_ENTITY_SCALE * (80 / atlas.fh) * (c.boss ? BOSSES[c.boss].scale : (ENEMIES[c.enemyId as keyof typeof ENEMIES]?.scale ?? 1)) * (c.elite ? 1.22 : 1);
-      const fall = Math.min(1, u * 2.4); // topple quickly, then fade
-      const alpha = u < 0.5 ? 1 : Math.max(0, 1 - (u - 0.5) / 0.5);
-      const x = toSX(c.x);
-      const y = toSY(c.y);
-      const knockoutFrame = Math.min(5, Math.floor(clamp(u / 0.72, 0, 0.999) * 6));
-      const knockoutSize = c.boss ? 178 : c.elite ? 132 : 104;
-      this.drawVfxFrame(ctx, this.knockoutSpr, knockoutFrame, x, y - 11, knockoutSize, 0, alpha * 0.92, false);
-      ctx.save();
-      ctx.globalAlpha = alpha;
-      ctx.translate(x, y - 3);
-      ctx.rotate(c.face * fall * 1.35); // topple toward the facing side
-      const dw = atlas.fw * sc;
-      const dh = atlas.fh * sc;
-      const frame = atlas.frames >= 4 ? 3 : 0;
-      ctx.drawImage(atlas.canvas, frame * atlas.fw, 0, atlas.fw, atlas.fh, -dw / 2, -atlas.feetY * sc, dw, dh);
-      ctx.restore();
-    }
-    ctx.globalAlpha = 1;
-
-    // Orbiting Press is intentionally a rear gameplay layer. The balls still
-    // use their true simulation positions for contact, but every live actor —
-    // especially the hero — is painted over them so they can never unnaturally
-    // cross in front of a body.
+    // Orbit balls retain their exact simulation/contact position, but every
+    // visual is capped behind the hero's painter depth. The near half therefore
+    // never crosses over the player's face or kick pose.
     const orbitLvl = sim.abilityLevel('orbit');
-    if (orbitLvl > 0) {
-      const count = [0, 2, 3, 3, 4, 5][orbitLvl] + (def.id === 'yamal' ? 1 : 0);
-      const radius = [0, 90, 90, 115, 115, 140][orbitLvl];
-      for (let b = 0; b < count; b++) {
-        const a = p.orbitAngle + (b / count) * TAU;
-        const ox = toSX(p.x + Math.cos(a) * radius);
-        const oy = toSY(p.y + Math.sin(a) * radius);
-        const lift = 12 + Math.sin(time * 7 + b * 1.7) * 3;
-        ctx.fillStyle = 'rgba(4,10,6,0.24)';
-        ctx.beginPath();
-        ctx.ellipse(ox, oy + 2, 8, 3.4, 0, 0, TAU);
-        ctx.fill();
-        ctx.save();
-        ctx.translate(ox, oy - lift);
-        const orbitFrame = Math.floor(time * 14 + b * 1.7);
-        ctx.rotate(Math.sin(time * 5 + b) * 0.12);
-        this.drawMatchBall(ctx, 0, 0, 28, orbitFrame);
-        ctx.restore();
-      }
-    }
+    const orbitCount = orbitLvl > 0 ? [0, 2, 3, 3, 4, 5][orbitLvl] + (def.id === 'yamal' ? 1 : 0) : 0;
+    const orbitRadius = orbitLvl > 0 ? [0, 90, 90, 115, 115, 140][orbitLvl] : 0;
+    const orbitDepthScale = this.hybridDepth ? hybridEntityDepthScale(p.y) : 1;
+    const keeperLvl = sim.abilityLevel('keeperhalo');
+    const keeperCount = keeperLvl > 0 ? [0, 2, 3, 3, 4, 5][keeperLvl] : 0;
+    const keeperRadius = keeperLvl > 0 ? [0, 82, 88, 94, 102, 110][keeperLvl] : 0;
 
     /* depth-sorted draw list */
     interface Item {
       y: number;
-      kind: number; // 0 enemy, 1 player, 2 guard
+      kind: number; // 0 enemy, 1 player, 2 guard, 3 orbit ball, 4 keeper halo
       idx: number;
     }
     const items: Item[] = [];
@@ -1638,11 +2931,134 @@ export class Renderer {
     }
     for (let i = 0; i < sim.guards.length; i++) items.push({ y: sim.guards[i].y, kind: 2, idx: i });
     if (p) items.push({ y: p.y, kind: 1, idx: 0 });
+    for (let ball = 0; ball < orbitCount; ball++) {
+      const angle = p.orbitAngle + (ball / orbitCount) * TAU;
+      const ballWorldY = p.y + Math.sin(angle) * orbitRadius;
+      items.push({ y: orbitPainterDepthY(p.y, ballWorldY), kind: 3, idx: ball });
+    }
+    for (let shield = 0; shield < keeperCount; shield++) {
+      const angle = p.keeperAngle + (shield / keeperCount) * TAU;
+      const shieldWorldY = p.y + Math.sin(angle) * keeperRadius;
+      items.push({ y: orbitPainterDepthY(p.y, shieldWorldY), kind: 4, idx: shield });
+    }
     items.sort((a, b) => a.y - b.y);
+    const activeEnemyCount = items.reduce((count, item) => count + (item.kind === 0 ? 1 : 0), 0);
+    const basePresentationBudget = combatPresentationBudget(activeEnemyCount);
+    const presentationBudget = this.reducedVfx
+      ? reducedCombatPresentationBudget(basePresentationBudget)
+      : basePresentationBudget;
+    this.healthBarVisibleScratch.fill(0);
+    this.healthBarCandidateScratch.length = 0;
+    for (let index = 0; index < sim.enemies.length; index++) {
+      const enemy = sim.enemies[index];
+      if (!enemy.active || enemy.boss) continue;
+      const priority = enemyHealthBarPriority(
+        enemy,
+        Math.hypot(enemy.x - p.x, enemy.y - p.y),
+        activeEnemyCount,
+      );
+      if (priority === Number.POSITIVE_INFINITY) {
+        if (index < this.healthBarVisibleScratch.length) this.healthBarVisibleScratch[index] = 1;
+      } else if (priority >= 0) {
+        this.healthBarCandidateScratch.push({ index, score: priority });
+      }
+    }
+    this.healthBarCandidateScratch.sort((a, b) => b.score - a.score || a.index - b.index);
+    for (let rank = 0; rank < Math.min(presentationBudget.maxOrdinaryHealthBars, this.healthBarCandidateScratch.length); rank++) {
+      const index = this.healthBarCandidateScratch[rank].index;
+      if (index < this.healthBarVisibleScratch.length) this.healthBarVisibleScratch[index] = 1;
+    }
+    this.lastPresentationMetrics = {
+      activeEnemies: activeEnemyCount,
+      visibleHealthBars: 0,
+      renderedParticles: 0,
+      renderedImpacts: 0,
+      renderedSeekerTrails: 0,
+      renderedDamageNumbers: 0,
+    };
+    const occupiedHealthBars: HealthBarCollisionRect[] = [];
+    const reservedHealthBarZones = this.reservedHealthBarZones;
+    if (this.hybridDepth) {
+      const heroZone = reservedHealthBarZones[0];
+      heroZone.left = toSX(p.x) - 30;
+      heroZone.right = toSX(p.x) + 30;
+      heroZone.top = toSY(p.y) - 118 * hybridEntityDepthScale(p.y);
+      heroZone.bottom = toSY(p.y) + 5;
+    }
+
+    // One underlay pass keeps every cast shadow below every body. Drawing a
+    // shadow immediately before each sprite made a near actor's shadow crawl
+    // over a farther actor in dense crowds, breaking the painter illusion.
+    if (this.hybridDepth) {
+      for (const it of items) {
+        if (it.kind === 0) {
+          const e = sim.enemies[it.idx];
+          const shadowX = toSX(e.x);
+          const shadowY = toSY(e.y);
+          if (shadowX < -90 || shadowX > vw + 90 || shadowY < -120 || shadowY > vh + 120) continue;
+          const aerialHeight = aerialOverheatHeightScale(e.aerialGroundT);
+          const elevation = e.def.behavior === 'aerial'
+            ? (38 + Math.sin(e.animT * 7.5) * 4) * aerialHeight
+            : enemyAirLift(e.airT, e.airMaxT);
+          this.drawHybridEntityShadow(
+            ctx,
+            shadowX,
+            shadowY,
+            e.radius * hybridEntityDepthScale(e.y),
+            e.def.behavior === 'aerial' && aerialHeight > 0.05 ? 'aerial' : e.boss ? 'boss' : 'enemy',
+            elevation,
+            e.boss && e === sim.bossAlive && sim.bossIntroT > 0
+              ? bossArrivalVisual(sim.bossIntroT).alpha
+              : 1,
+          );
+        } else if (it.kind === 1) {
+          this.drawHybridEntityShadow(ctx, toSX(p.x), toSY(p.y), 20 * hybridEntityDepthScale(p.y), 'player');
+        } else if (it.kind === 2) {
+          const g = sim.guards[it.idx];
+          const radius = g.variant === 2 ? 22 : g.variant === 0 ? 16 : 18;
+          this.drawHybridEntityShadow(ctx, toSX(g.x), toSY(g.y), radius * hybridEntityDepthScale(g.y), 'guard');
+        } else if (it.kind === 3) {
+          const angle = p.orbitAngle + (it.idx / orbitCount) * TAU;
+          const worldX = p.x + Math.cos(angle) * orbitRadius;
+          const worldY = p.y + Math.sin(angle) * orbitRadius;
+          const lift = (12 + Math.sin(time * 7 + it.idx * 1.7) * 3) * orbitDepthScale;
+          this.drawHybridEntityShadow(ctx, toSX(worldX), toSY(worldY) + 2, 7 * orbitDepthScale, 'aerial', lift);
+        } else {
+          const angle = p.keeperAngle + (it.idx / keeperCount) * TAU;
+          const worldX = p.x + Math.cos(angle) * keeperRadius;
+          const worldY = p.y + Math.sin(angle) * keeperRadius;
+          const depthScale = this.hybridDepth ? hybridEntityDepthScale(worldY) : 1;
+          const lift = (22 + Math.sin(time * 6.4 + it.idx * 1.9) * 2.5) * depthScale;
+          this.drawHybridEntityShadow(ctx, toSX(worldX), toSY(worldY) + 2, 8 * depthScale, 'aerial', lift);
+        }
+      }
+    }
+
+    const playerDepthScale = this.hybridDepth ? hybridEntityDepthScale(p.y) : 1;
+    const playerScreenX = toSX(p.x);
+    const playerScreenY = toSY(p.y);
+    const playerReadableRect: ScreenOcclusionRect = {
+      left: playerScreenX - 27 * playerDepthScale,
+      right: playerScreenX + 27 * playerDepthScale,
+      top: playerScreenY - 96 * playerDepthScale,
+      bottom: playerScreenY + 3,
+    };
+    let playerOcclusion = 0;
+    let playerOcclusionPose: {
+      atlas: Atlas;
+      frame: number;
+      x: number;
+      y: number;
+      scale: number;
+      bobY: number;
+      flip: boolean;
+    } | null = null;
 
     for (const it of items) {
       if (it.kind === 0) {
         const e = sim.enemies[it.idx];
+        const arriving = !!e.boss && e === sim.bossAlive && sim.bossIntroT > 0;
+        const arrival = arriving ? bossArrivalVisual(sim.bossIntroT) : null;
         const semanticAtlas = this.enemyAtlasFor(e);
         const locomoting = e.moving && e.windup <= 0 && e.lungeT <= 0 && e.attackAnimT <= 0 && e.telegraph <= 0 && e.hurtT <= 0;
         const runAtlas = locomoting ? this.enemyRunAtlasFor(e) : null;
@@ -1652,14 +3068,60 @@ export class Renderer {
         // Semantic lobber frames are already height-normalized in the source
         // strip (idle 233px, throw 232px). A previous 0.87 multiplier made the
         // whole character shrink during its cast despite matching source art.
-        const sc = ENEMY_ENTITY_SCALE * (80 / atlas.fh) * (e.boss ? BOSSES[e.boss].scale : e.def.scale) * (e.elite ? 1.22 : 1) * bossBreath;
+        const sc = ENEMY_ENTITY_SCALE * (80 / atlas.fh) * (e.boss ? BOSSES[e.boss].scale : e.def.scale) * (e.elite ? 1.22 : 1) * bossBreath * (this.hybridDepth ? hybridEntityDepthScale(e.y) : 1);
         const x = toSX(e.x);
         const y = toSY(e.y);
         // Permanent aerial troops hover; temporarily launched mobs follow an arc.
         const lift = e.def.behavior === 'aerial'
-          ? 38 + Math.sin(e.animT * 7.5) * 4
-          : e.airT > 0 ? Math.sin(Math.PI * (1 - e.airT / 0.38)) * 22 : 0;
+          ? (ART_DIRECTION_PROFILE.aerial.baseLift + Math.sin(e.animT * 7.5) * ART_DIRECTION_PROFILE.aerial.bobAmplitude)
+            * aerialOverheatHeightScale(e.aerialGroundT)
+          : enemyAirLift(e.airT, e.airMaxT);
+        const dw = atlas.fw * sc;
+        const dh = atlas.fh * sc;
+        const actorBodyWidth = Math.max(e.radius * 2.3 * (this.hybridDepth ? hybridEntityDepthScale(e.y) : 1), dw * 0.58);
+        const actorBottom = y - lift + 3;
+        const actorTop = actorBottom - atlas.feetY * sc;
+        const occlusion = playerOcclusionStrength(
+          playerReadableRect,
+          {
+            left: x - actorBodyWidth / 2,
+            right: x + actorBodyWidth / 2,
+            top: actorTop,
+            bottom: actorBottom,
+          },
+          e.y > p.y + 0.5,
+        );
+        playerOcclusion = Math.max(playerOcclusion, occlusion);
+        // Preserve the threat's mass: the exact pose contour carries most of
+        // the readability gain, while only a restrained amount of the large
+        // body is lifted. Full-body transparency looked washed out on bosses.
+        const bodyOcclusionFade = e.boss ? 0.28 : e.elite || e.radius >= 24 ? 0.18 : 0;
+        const bodyAlpha = (1 - occlusion * bodyOcclusionFade) * (arrival?.alpha ?? 1);
         const hitAngle = Math.atan2(e.hurtDy * TILT, e.hurtDx || e.face);
+        if (arrival) {
+          const beamWidth = clamp(dw * 0.82, 110, 260);
+          const beamHeight = clamp(dh * 0.86, 180, 410);
+          ctx.save();
+          ctx.globalCompositeOperation = 'screen';
+          ctx.lineCap = 'round';
+          // Separate feathered shafts carry the arrival light without the
+          // rectangular translucent patch produced by one filled polygon.
+          for (let stripe = -2; stripe <= 2; stripe++) {
+            const edge = Math.abs(stripe) / 2;
+            const shaft = ctx.createLinearGradient(x, y - beamHeight, x, y + 3);
+            shaft.addColorStop(0, 'rgba(255,226,124,0)');
+            shaft.addColorStop(0.48, `rgba(255,226,124,${arrival.beamAlpha * (0.08 - edge * 0.025)})`);
+            shaft.addColorStop(0.9, `rgba(255,244,204,${arrival.beamAlpha * (0.2 - edge * 0.06)})`);
+            shaft.addColorStop(1, 'rgba(255,244,204,0)');
+            ctx.strokeStyle = shaft;
+            ctx.lineWidth = beamWidth * (0.13 - edge * 0.025);
+            ctx.beginPath();
+            ctx.moveTo(x + stripe * beamWidth * 0.17, y - beamHeight);
+            ctx.lineTo(x + stripe * beamWidth * 0.1, y + 2);
+            ctx.stroke();
+          }
+          ctx.restore();
+        }
         if (e.orbitHitT > 0 && this.orbitSkidSpr) {
           const u = clamp(1 - e.orbitHitT / 0.38, 0, 1);
           const skidSize = clamp(78 + e.radius * 1.35, 92, e.boss ? 154 : 124);
@@ -1671,17 +3133,26 @@ export class Renderer {
           ctx.drawImage(this.orbitSkidSpr, -skidSize * 0.82, -skidSize / 2, skidSize, skidSize);
           ctx.restore();
         }
-        // Characters are grounded by their delivered feet baseline. Extra
-        // drop shadows and elite foot-rings made the cutouts appear to hover.
-        if (e.telegraph > 0) {
+        // Grounding is supplied by the shared underlay pass in the hybrid
+        // arena. Gameplay telegraphs remain separate and cannot read as feet.
+        const captainChargeLane = e.boss === 'captain' && (e.chargeWindupT > 0 || e.chargeLaneFadeT > 0);
+        if (e.telegraph > 0 || captainChargeLane) {
           const pulse = 0.55 + Math.sin(time * 18) * 0.25;
-          if (e.def.behavior === 'charger') {
-            const ex = toSX(e.x + e.chargeDx * 520);
-            const ey = toSY(e.y + e.chargeDy * 520);
+          const captainCharge = captainChargeLane;
+          if (e.def.behavior === 'charger' || captainCharge) {
+            const laneReach = captainCharge ? 600 : 520;
+            const telegraphDuration = captainCharge ? 0.5 : 0.72;
+            const ex = toSX(e.x + e.chargeDx * laneReach);
+            const ey = toSY(e.y + e.chargeDy * laneReach);
             const laneDx = ex - x;
             const laneDy = ey - y;
             const laneLength = Math.hypot(laneDx, laneDy);
-            const laneFrame = Math.min(5, Math.floor(clamp(1 - e.telegraph / 0.72, 0, 0.999) * 6));
+            const laneFrame = Math.min(5, Math.floor(clamp(1 - e.telegraph / telegraphDuration, 0, 0.999) * 6));
+            const chargeLaneAlpha = captainCharge
+              ? e.chargeWindupT > 0
+                ? 1
+                : clamp(e.chargeLaneFadeT / 0.1, 0, 1)
+              : 1;
             this.drawVfxFrameRect(
               ctx,
               this.bullChargeLaneSpr,
@@ -1689,15 +3160,18 @@ export class Renderer {
               x + laneDx / 2,
               y + laneDy / 2,
               laneLength + 64,
-              92,
+              captainCharge ? 132 : 92,
               Math.atan2(laneDy, laneDx),
-              0.68 + pulse * 0.25,
+              (0.68 + pulse * 0.25) * chargeLaneAlpha,
               false,
             );
-          } else if (e.def.behavior === 'aerial' && p) {
-            ctx.strokeStyle = `rgba(112,231,255,${pulse})`;
+          } else if (e.def.behavior === 'aerial' && e.aerialGroundT <= 0 && p) {
+            const varScan = e.def.id === 'varcam';
+            ctx.strokeStyle = varScan
+              ? `rgba(255,66,93,${pulse})`
+              : `rgba(112,231,255,${pulse})`;
             ctx.lineWidth = 2.5;
-            ctx.setLineDash([7, 7]);
+            ctx.setLineDash(varScan ? [3, 8] : [7, 7]);
             ctx.beginPath();
             ctx.moveTo(x, y - lift);
             ctx.lineTo(toSX(p.x), toSY(p.y) - 12);
@@ -1712,55 +3186,100 @@ export class Renderer {
           ctx.strokeStyle = `rgba(255,61,85,${pulse})`;
           ctx.lineWidth = 4;
           ctx.lineCap = 'round';
+          const attackAngle = Math.atan2(e.meleeDy * TILT, e.meleeDx);
+          const intentOffset = e.boss ? hybridBossBodyContact(e.boss) * 0.72 : 20;
           ctx.beginPath();
-          ctx.arc(x + e.face * 20, y - 3, 25 + e.radius * 0.22, e.face > 0 ? -1.05 : Math.PI - 2.1, e.face > 0 ? 1.05 : Math.PI + 2.1);
+          ctx.arc(
+            x + Math.cos(attackAngle) * intentOffset,
+            y - 3 + Math.sin(attackAngle) * intentOffset * 0.8,
+            25 + e.radius * 0.22,
+            attackAngle - 1.05,
+            attackAngle + 1.05,
+          );
           ctx.stroke();
         }
         // Six-frame locomotion plays only while the simulation reports real
         // movement. Idle, attack and hurt remain explicit semantic poses.
-        const runFps = directionalBossRun ? 14 : e.def.behavior === 'aerial' ? 8 : 10.5;
-        const frame = runAtlas ? Math.floor(e.animT * runFps) % runAtlas.frames : enemyPoseFrame(e, atlas.frames);
+        const runCycleDistance = runAtlas ? enemyRunCycleDistance(e, runAtlas.frames) : 1;
+        const runPhase = runAtlas ? (e.runDistance / runCycleDistance) * runAtlas.frames : 0;
+        const frame = runAtlas ? Math.floor(runPhase) % runAtlas.frames : enemyPoseFrame(e, atlas.frames);
+        const frameAnchor = runAtlas && !e.boss
+          ? enemyFrameAnchorAdjustment(e.def.id, frame)
+          : { x: 0, y: 0 };
         const useFlash = e.flash > 0;
-        const img = useFlash ? atlas.flash : atlas.canvas;
-        const dw = atlas.fw * sc;
-        const dh = atlas.fh * sc;
+        const img = atlas.canvas;
+        const usesChargeVector = (
+          e.def.behavior === 'charger'
+          || (e.boss === 'captain' && (e.chargeWindupT > 0 || e.casting === 'captain-charge'))
+        ) && (e.windup > 0 || e.chargeWindupT > 0 || e.lungeT > 0 || e.chargeBrakeT > 0);
+        const usesMeleeVector = e.casting === ''
+          && (e.windup > 0 || e.lungeT > 0 || (e.attackAnimT > 0 && e.meleeHit));
+        const attackWorldDx = usesChargeVector ? e.chargeDx : usesMeleeVector ? e.meleeDx : e.face;
+        const attackWorldDy = usesChargeVector ? e.chargeDy : usesMeleeVector ? e.meleeDy : 0;
+        const meleeScreenLength = Math.hypot(attackWorldDx, attackWorldDy * TILT) || 1;
+        const meleeScreenDx = attackWorldDx / meleeScreenLength;
+        const meleeScreenDy = (attackWorldDy * TILT) / meleeScreenLength;
         ctx.save();
+        ctx.globalAlpha = bodyAlpha;
         ctx.translate(x, y - lift);
+        if (arrival) {
+          ctx.translate(0, -arrival.lift);
+          ctx.scale(arrival.scale, arrival.scale);
+        }
         if (locomoting && !directionalBossRun) {
-          const gait = Math.sin(e.animT * 12);
+          const gait = Math.sin((e.runDistance / runCycleDistance) * TAU);
           ctx.translate(e.face * gait * 1.5, 0);
           ctx.rotate(e.face * gait * 0.018);
           ctx.scale(1 + Math.abs(gait) * 0.008, 1 - Math.abs(gait) * 0.012);
         }
-        if (e.windup > 0) {
-          const windupMax = e.def.behavior === 'charger' ? 0.72 : e.def.behavior === 'aerial' ? 0.46 : 0.34;
+        if (e.chargeWindupT > 0) {
+          const windup = clamp(1 - e.chargeWindupT / 0.5, 0, 1);
+          const ease = windup * windup * (3 - 2 * windup);
+          ctx.translate(-e.chargeDx * (5 + ease * 12), -e.chargeDy * TILT * (3 + ease * 7) + ease * 5);
+          ctx.rotate(-e.face * ease * 0.11);
+          ctx.scale(1 - ease * 0.055, 1 + ease * 0.045);
+        } else if (e.windup > 0) {
+          const windupMax = e.def.behavior === 'charger'
+            ? 0.72
+            : e.def.id === 'varcam'
+              ? 0.72
+              : e.def.behavior === 'aerial'
+                ? 0.46
+                : 0.34;
           const w = clamp(1 - e.windup / windupMax, 0, 1);
           const ease = w * w * (3 - 2 * w);
-          ctx.translate(-e.face * (3 + ease * 9), ease * 3);
+          ctx.translate(-meleeScreenDx * (3 + ease * 9), -meleeScreenDy * (3 + ease * 7) + ease * 3);
           ctx.rotate(-e.face * 0.13 * ease);
           ctx.scale(1 - ease * 0.035, 1 + ease * 0.025);
         } else if (e.lungeT > 0) {
-          if (e.def.behavior === 'charger') {
+          if (e.def.behavior === 'charger' || e.casting === 'captain-charge') {
             const charge = 0.5 + Math.sin(e.animT * 22) * 0.5;
             ctx.translate(e.chargeDx * 7, e.chargeDy * 3);
             ctx.rotate(e.face * 0.025 * charge);
             ctx.scale(1.07, 0.94);
           } else {
-            const progress = clamp(1 - e.lungeT / 0.14, 0, 1);
+            const lungeDuration = e.boss ? BOSS_MELEE_LUNGE_DURATION : ENEMY_MELEE_LUNGE_DURATION;
+            const progress = clamp(1 - e.lungeT / lungeDuration, 0, 1);
             const strike = Math.sin(Math.PI * progress);
-            ctx.translate(e.face * strike * 18, -strike * 2);
+            ctx.translate(meleeScreenDx * strike * 18, meleeScreenDy * strike * 14 - strike * 2);
             ctx.rotate(e.face * strike * 0.1);
             ctx.scale(1 + strike * 0.08, 1 - strike * 0.07);
           }
+        } else if (e.chargeBrakeT > 0) {
+          const brakeDuration = e.boss === 'captain' ? 0.2 : 0.15;
+          const brake = clamp(e.chargeBrakeT / brakeDuration, 0, 1);
+          ctx.translate(-e.chargeDx * (1 - brake) * 3, -e.chargeDy * TILT * (1 - brake) * 2);
+          ctx.rotate(-e.face * (1 - brake) * 0.045);
+          ctx.scale(1 + brake * 0.055, 1 - brake * 0.035);
         } else if (e.telegraph > 0) {
           const cast = 0.5 + 0.5 * Math.sin(e.animT * 18);
           ctx.translate(e.face * cast * 3, -cast * 4);
           ctx.rotate(e.face * (cast - 0.5) * 0.045);
           ctx.scale(1 + cast * 0.035, 1 - cast * 0.02);
         } else if (e.attackAnimT > 0) {
-          const recover = clamp(e.attackAnimT / 0.32, 0, 1);
-          const follow = Math.sin(Math.PI * recover);
-          ctx.translate(e.face * follow * 9, -follow * 2);
+          const recover = clamp(e.attackAnimT / MELEE_RECOVERY_DURATION, 0, 1);
+          const follow = Math.sin(recover * Math.PI / 2);
+          ctx.translate(meleeScreenDx * follow * 9, meleeScreenDy * follow * 7 - follow * 2);
           ctx.rotate(e.face * follow * 0.07);
           ctx.scale(1 + follow * 0.035, 1 - follow * 0.025);
         }
@@ -1773,13 +3292,19 @@ export class Renderer {
           ctx.rotate(e.hurtDx * recoil * 0.1);
           ctx.scale(1 + recoil * 0.07, 1 - recoil * 0.1);
         }
-        if (e.def.behavior === 'aerial') {
+        if (e.def.behavior === 'aerial' && e.aerialGroundT <= 0) {
           const hover = Math.sin(e.animT * 10);
           ctx.rotate(hover * 0.018);
           ctx.scale(1 + Math.abs(hover) * 0.012, 1 - Math.abs(hover) * 0.008);
         }
         if (e.face < 0 && !directionalBossRun) ctx.scale(-1, 1);
-        ctx.drawImage(img, frame * atlas.fw, 0, atlas.fw, atlas.fh, -dw / 2, -atlas.feetY * sc, dw, dh);
+        ctx.drawImage(img, frame * atlas.fw, 0, atlas.fw, atlas.fh, -dw / 2 + frameAnchor.x * sc, -atlas.feetY * sc + frameAnchor.y * sc, dw, dh);
+        if (useFlash) {
+          const heavyLift = e.hurtStrength > 0.75 ? 1.28 : 1;
+          ctx.globalAlpha = bodyAlpha * clamp(e.flash / 0.13, 0, 1) * presentationBudget.hitFlashAlpha * e.flashStrength * heavyLift;
+          ctx.drawImage(atlas.flash, frame * atlas.fw, 0, atlas.fw, atlas.fh, -dw / 2 + frameAnchor.x * sc, -atlas.feetY * sc + frameAnchor.y * sc, dw, dh);
+          ctx.globalAlpha = bodyAlpha;
+        }
         if (sim.freezeT > 0) {
           // The precomputed material is clipped to this atlas and exact pose;
           // the old one-size ice shell made bulls, drones and humans identical.
@@ -1787,9 +3312,9 @@ export class Renderer {
             ? Math.max(0, FREEZE_DURATION - sim.freezeT)
             : 0.72;
           const flicker = 0.92 + Math.sin(elapsed * 12 + it.idx * 0.71) * 0.04;
-          ctx.globalAlpha = flicker;
+          ctx.globalAlpha = flicker * bodyAlpha;
           ctx.globalCompositeOperation = 'source-over';
-          ctx.drawImage(atlas.frost, frame * atlas.fw, 0, atlas.fw, atlas.fh, -dw / 2, -atlas.feetY * sc, dw, dh);
+          ctx.drawImage(atlas.frost, frame * atlas.fw, 0, atlas.fw, atlas.fh, -dw / 2 + frameAnchor.x * sc, -atlas.feetY * sc + frameAnchor.y * sc, dw, dh);
         }
         ctx.restore();
         if (e.orbitHitT > 0 && this.orbitImpactSpr) {
@@ -1805,15 +3330,18 @@ export class Renderer {
           ctx.restore();
         }
         if (e.lungeT > 0 && e.def.behavior !== 'charger') {
-          const strikeProgress = clamp(1 - e.lungeT / 0.16, 0, 0.999);
+          const lungeDuration = e.boss ? BOSS_MELEE_LUNGE_DURATION : ENEMY_MELEE_LUNGE_DURATION;
+          const strikeProgress = clamp(1 - e.lungeT / lungeDuration, 0, 0.999);
+          const strikeAngle = Math.atan2(e.meleeDy * TILT, e.meleeDx);
+          const contactOffset = e.boss ? hybridBossBodyContact(e.boss) : 28;
           this.drawVfxFrame(
             ctx,
             this.playerHurtSpr,
             Math.floor(strikeProgress * 6),
-            x + e.face * 28,
-            y - lift - 26,
+            x + Math.cos(strikeAngle) * contactOffset,
+            y - lift - 26 + Math.sin(strikeAngle) * contactOffset * 0.75,
             clamp(82 + e.radius, 92, 132),
-            e.face < 0 ? Math.PI : 0,
+            strikeAngle,
             0.76,
             true,
             0.7,
@@ -1826,10 +3354,45 @@ export class Renderer {
         const healthY = y - lift - atlas.feetY * sc + (e.boss ? 8 : e.elite ? 8 : 12);
         // Boss HP already has a large persistent screen-space plate; omitting
         // the duplicate billboard prevents it clipping above giant bosses.
-        if (!e.boss) this.drawEnemyHealthBar(ctx, e, x, healthY, time);
+        const showHealthBar = it.idx < this.healthBarVisibleScratch.length && this.healthBarVisibleScratch[it.idx] === 1;
+        if (!e.boss && showHealthBar && this.hybridDepth) {
+          const healthStyle = enemyHealthBarStyle(e);
+          const importantBar = e.elite || e.stun > 0 || e.slow > 0 || e.airT > 0;
+          const placement = placeEnemyHealthBar(
+            x,
+            healthY,
+            healthStyle.width,
+            healthStyle.height,
+            importantBar,
+            healthStyle.ratio >= 0.999,
+            occupiedHealthBars,
+            reservedHealthBarZones,
+          );
+          if (!placement.hidden) {
+            this.lastPresentationMetrics.visibleHealthBars++;
+            this.drawEnemyHealthBar(
+              ctx,
+              e,
+              placement.x,
+              placement.y,
+              time,
+              placement.widthScale,
+              placement.alpha,
+              x,
+              healthY,
+            );
+          }
+        } else if (!e.boss && showHealthBar) {
+          this.lastPresentationMetrics.visibleHealthBars++;
+          this.drawEnemyHealthBar(ctx, e, x, healthY, time);
+        }
       } else if (it.kind === 1) {
-        const running = p.moving || p.dashT > 0;
-        const direction = movementDirection(p.dashDx, p.dashDy);
+        const dashPose = p.dashWindupT > 0 || p.dashT > 0 || p.dashRecoveryT > 0;
+        const running = p.moving || dashPose;
+        const direction = movementDirection(
+          dashPose ? p.dashDx : p.visualDx,
+          dashPose ? p.dashDy : p.visualDy,
+        );
         const vis = this.heroVisual(def, save, running, p.kickT > 0, direction);
         const heroSkinId = save.equippedSkin(def.id);
         const heroSkin = heroSkinId ? SKINS.find((skin) => skin.id === heroSkinId) : undefined;
@@ -1839,17 +3402,40 @@ export class Renderer {
         const atlas = semanticAtlas ?? vis.atlas;
         const x = toSX(p.x);
         const y = toSY(p.y);
+        // Keep the authored cleat dust visible during the complete 360 ms kick,
+        // not only after the ball has already left. Anchoring it ahead of the
+        // body at the committed aim vector prevents the character art from
+        // hiding it while retaining a grounded, football-specific contact cue.
+        if (p.kickT > 0 && this.kickDustSpr?.complete && this.kickDustSpr.naturalWidth > 0) {
+          const kickElapsed = clamp(KICK_DURATION - p.kickT, 0, KICK_DURATION);
+          const contactDistance = Math.abs(kickElapsed - KICK_CONTACT_DELAY);
+          const contactPulse = 1 - clamp(contactDistance / 0.16, 0, 1);
+          const anticipation = clamp(kickElapsed / KICK_AIM_LOCK_DELAY, 0, 1);
+          const dustAlpha = (0.24 + contactPulse * 0.36) * anticipation;
+          const dustSize = 70 + contactPulse * 20;
+          const screenAngle = Math.atan2(p.aimDy * TILT, p.aimDx);
+          ctx.save();
+          ctx.globalAlpha = this.reducedVfx ? dustAlpha * 0.6 : dustAlpha;
+          ctx.globalCompositeOperation = 'screen';
+          ctx.filter = 'brightness(1.7) contrast(1.08)';
+          ctx.translate(x + p.aimDx * 42, y + p.aimDy * TILT * 42 - 2);
+          ctx.rotate(screenAngle * 0.1);
+          ctx.drawImage(this.kickDustSpr, -dustSize / 2, -dustSize / 2, dustSize, dustSize);
+          ctx.restore();
+        }
         // Two tight cleat occlusion marks visually pin the authored foot
         // baseline to the turf. They are deliberately tiny and independent —
         // never a selection disc or character ring — so the player reads as
         // standing on detailed grass without looking like a floating token.
-        ctx.save();
-        ctx.fillStyle = 'rgba(2, 18, 8, 0.24)';
-        ctx.beginPath();
-        ctx.ellipse(x - 5.2, y + 0.8, 6.8, 2.05, -0.14, 0, TAU);
-        ctx.ellipse(x + 5.2, y + 0.8, 6.8, 2.05, 0.14, 0, TAU);
-        ctx.fill();
-        ctx.restore();
+        if (!this.hybridDepth) {
+          ctx.save();
+          ctx.fillStyle = 'rgba(2, 18, 8, 0.24)';
+          ctx.beginPath();
+          ctx.ellipse(x - 5.2, y + 0.8, 6.8, 2.05, -0.14, 0, TAU);
+          ctx.ellipse(x + 5.2, y + 0.8, 6.8, 2.05, 0.14, 0, TAU);
+          ctx.fill();
+          ctx.restore();
+        }
         // dash trail
         if (p.dashT > 0) {
           const dashAngle = Math.atan2(p.dashDy * TILT, p.dashDx);
@@ -1905,10 +3491,22 @@ export class Renderer {
         // Lift only between planted poses. Contact frames retain the exact
         // delivered feet baseline, so the runner reads as stepping, not sliding.
         const bobY = step ? -(1 - step.strength) * 1.5 : 0;
-        const sc = PLAYER_ENTITY_SCALE * (80 / atlas.fh);
+        const sc = PLAYER_ENTITY_SCALE * (80 / atlas.fh) * (this.hybridDepth ? hybridEntityDepthScale(p.y) : 1);
         const dw = atlas.fw * sc;
         const dh = atlas.fh * sc;
-        const blink = p.iframes > 0 && Math.floor(time * 20) % 2 === 0;
+        playerOcclusionPose = {
+          atlas,
+          frame: directionalBlend && directionalBlend.mix >= 0.5 ? directionalBlend.nextFrame : frame,
+          x,
+          y,
+          scale: sc,
+          bobY,
+          flip: p.face < 0 && atlas.flippable,
+        };
+        // Boss arrival has its own explicit fair-play language. Do not reuse
+        // the damage iframe blink here: it made the hero disappear while the
+        // player was meant to read the new threat and reposition.
+        const blink = p.iframes > 0 && sim.bossIntroT <= 0 && Math.floor(time * 20) % 2 === 0;
         ctx.save();
         ctx.translate(x, y);
         if (sim.over === 'lost') {
@@ -1923,6 +3521,49 @@ export class Renderer {
           ctx.translate(p.hurtDx * recoil * 11, p.hurtDy * recoil * 11 * TILT - recoil * 3);
           ctx.rotate(p.hurtDx * recoil * 0.07);
           ctx.scale(1 + recoil * 0.05, 1 - recoil * 0.08);
+        }
+        // The active dash reads as three authored body beats around one locked
+        // vector: plant back, explode forward, then settle. The feet remain on
+        // their delivered baseline and the transforms are intentionally small
+        // enough to preserve the generated directional silhouette.
+        if (p.dashWindupT > 0) {
+          const u = clamp(1 - p.dashWindupT / DASH_ANTICIPATION_DURATION, 0, 1);
+          ctx.translate(-p.dashDx * (2.5 + u * 3.5), -p.dashDy * TILT * (1.5 + u * 1.5));
+          ctx.rotate(-p.dashDx * (0.035 + u * 0.025));
+          ctx.scale(0.96 - u * 0.018, 1.035 + u * 0.025);
+        } else if (p.dashT > 0) {
+          ctx.translate(p.dashDx * 2.4, p.dashDy * TILT * 1.2);
+          ctx.rotate(p.dashDx * 0.055);
+          ctx.scale(1.055, 0.965);
+        } else if (p.dashRecoveryT > 0) {
+          const u = clamp(p.dashRecoveryT / DASH_RECOVERY_DURATION, 0, 1);
+          ctx.translate(p.dashDx * u * 2.2, p.dashDy * TILT * u);
+          ctx.rotate(p.dashDx * u * 0.032);
+          ctx.scale(1 + u * 0.028, 1 - u * 0.022);
+        }
+        if (p.kickT > 0) {
+          const elapsed = clamp(KICK_DURATION - p.kickT, 0, KICK_DURATION);
+          if (elapsed < KICK_AIM_LOCK_DELAY) {
+            const u = elapsed / KICK_AIM_LOCK_DELAY;
+            ctx.translate(-p.aimDx * (1.5 + u * 2.5), -p.aimDy * TILT * (0.8 + u));
+            ctx.rotate(-p.aimDx * (0.018 + u * 0.022));
+          } else if (elapsed < KICK_CONTACT_DELAY + 0.055) {
+            const contactU = clamp((elapsed - KICK_AIM_LOCK_DELAY) / (KICK_CONTACT_DELAY + 0.055 - KICK_AIM_LOCK_DELAY), 0, 1);
+            ctx.translate(p.aimDx * contactU * 3.8, p.aimDy * TILT * contactU * 1.8);
+            ctx.rotate(p.aimDx * contactU * 0.045);
+            ctx.scale(1 + contactU * 0.035, 1 - contactU * 0.025);
+          } else {
+            const recoveryU = clamp((KICK_DURATION - elapsed) / (KICK_DURATION - KICK_CONTACT_DELAY - 0.055), 0, 1);
+            ctx.translate(p.aimDx * recoveryU * 2.2, p.aimDy * TILT * recoveryU);
+            ctx.rotate(p.aimDx * recoveryU * 0.024);
+          }
+        }
+        // A restrained acceleration lean gives the first 130 ms physical
+        // weight without shifting the planted foot baseline or delaying input.
+        if (running && p.dashT <= 0 && p.kickT <= 0 && p.accelLean > 0.01) {
+          const lean = p.accelLean;
+          ctx.translate(p.visualDx * lean * 1.5, p.visualDy * TILT * lean * 0.8);
+          ctx.rotate(p.visualDx * lean * 0.032);
         }
         if (p.face < 0 && atlas.flippable) ctx.scale(-1, 1);
         const visibleAlpha = blink ? 0.45 : 1;
@@ -1946,6 +3587,25 @@ export class Renderer {
           ctx.drawImage(atlas.canvas, frame * atlas.fw, 0, atlas.fw, atlas.fh, -dw / 2, -atlas.feetY * sc + bobY, dw, dh);
         }
         ctx.restore();
+        if (this.abilityUpgradeStartedAt >= 0) {
+          const age = time - this.abilityUpgradeStartedAt;
+          if (age >= 0 && age < 0.96) {
+            const progress = clamp(age / 0.96, 0, 0.999);
+            const framePosition = progress * 5;
+            const currentFrame = Math.floor(framePosition);
+            const nextFrame = Math.min(5, currentFrame + 1);
+            const mix = framePosition - currentFrame;
+            const fade = Math.min(1, age * 7) * clamp((0.96 - age) * 3.2, 0, 1);
+            const size = (this.abilityUpgradeMax ? 184 : 148) * playerDepthScale;
+            const effectY = y - 42 * playerDepthScale;
+            this.drawVfxFrame(ctx, this.abilityUpgradeSpr, currentFrame, x, effectY, size, 0, fade * (1 - mix), true);
+            if (nextFrame !== currentFrame) {
+              this.drawVfxFrame(ctx, this.abilityUpgradeSpr, nextFrame, x, effectY, size, 0, fade * mix, true);
+            }
+          } else if (age >= 0.96) {
+            this.abilityUpgradeStartedAt = -1;
+          }
+        }
         if (p.heartFxT > 0) {
           const age = Number.isFinite(p.heartFxT) ? clamp(1 - p.heartFxT / 0.9, 0, 0.999) : 0.72;
           const heartFrame = Math.min(5, Math.floor(age * 6));
@@ -1956,6 +3616,65 @@ export class Renderer {
           const hurtProgress = clamp(1 - p.hurtT / 0.32, 0, 0.999);
           this.drawVfxFrame(ctx, this.playerHurtSpr, Math.floor(hurtProgress * 6), x, y - 30, 118, 0, 0.96, true);
         }
+      } else if (it.kind === 3) {
+        const angle = p.orbitAngle + (it.idx / orbitCount) * TAU;
+        const worldX = p.x + Math.cos(angle) * orbitRadius;
+        const worldY = p.y + Math.sin(angle) * orbitRadius;
+        const x = toSX(worldX);
+        const y = toSY(worldY);
+        const lift = (12 + Math.sin(time * 7 + it.idx * 1.7) * 3) * orbitDepthScale;
+        if (!this.hybridDepth) {
+          ctx.fillStyle = 'rgba(4,10,6,0.24)';
+          ctx.beginPath();
+          ctx.ellipse(x, y + 2, 8, 3.4, 0, 0, TAU);
+          ctx.fill();
+        }
+        ctx.save();
+        ctx.translate(x, y - lift);
+        // A single AI-authored crescent follows the real orbital tangent. Its
+        // curved silhouette preserves the circular wake and avoids the square
+        // chain created by repeating straight texture fragments.
+        if (this.orbitTrailSpr?.complete && this.orbitTrailSpr.naturalWidth > 0) {
+          const geometry = orbitTrailArcGeometry(orbitRadius, orbitCount);
+          const tangentAngle = Math.atan2(Math.cos(angle) * TILT, -Math.sin(angle));
+          const trailWidth = clamp(orbitRadius * geometry.arcRadians * 1.32, 88, 132) * orbitDepthScale;
+          const trailHeight = trailWidth * 0.5;
+          ctx.save();
+          ctx.globalCompositeOperation = 'screen';
+          ctx.rotate(tangentAngle);
+          ctx.globalAlpha = this.reducedVfx ? 0.48 : 0.82;
+          ctx.drawImage(
+            this.orbitTrailSpr,
+            -trailWidth * 0.96,
+            -trailHeight / 2,
+            trailWidth,
+            trailHeight,
+          );
+          ctx.restore();
+        }
+        ctx.rotate(Math.sin(time * 5 + it.idx) * 0.12);
+        this.drawMatchBall(ctx, 0, 0, 28 * orbitDepthScale, Math.floor(time * 14 + it.idx * 1.7));
+        ctx.restore();
+      } else if (it.kind === 4) {
+        const angle = p.keeperAngle + (it.idx / keeperCount) * TAU;
+        const worldX = p.x + Math.cos(angle) * keeperRadius;
+        const worldY = p.y + Math.sin(angle) * keeperRadius;
+        const x = toSX(worldX);
+        const y = toSY(worldY);
+        const depthScale = this.hybridDepth ? hybridEntityDepthScale(worldY) : 1;
+        const lift = (22 + Math.sin(time * 6.4 + it.idx * 1.9) * 2.5) * depthScale;
+        const frame = Math.floor(time * (keeperLvl >= 4 ? 11 : 8) + it.idx * 1.4) % 6;
+        this.drawVfxFrame(
+          ctx,
+          this.keeperHaloSpr,
+          frame,
+          x,
+          y - lift,
+          (keeperLvl >= 5 ? 72 : 64) * depthScale,
+          angle + Math.PI / 2,
+          this.reducedVfx ? 0.72 : 0.94,
+          true,
+        );
       } else {
         const g = sim.guards[it.idx];
         const guardIds = ['ally-bodyguard-rookie', 'ally-bodyguard', 'ally-bodyguard-heavy', 'ally-bodyguard-scout'] as const;
@@ -1964,28 +3683,35 @@ export class Renderer {
         const runAtlas = locomoting ? getStripAtlas(`${guardIds[g.variant]}-run`) : null;
         const atlas = runAtlas ?? semanticAtlas;
         const variantScale = g.variant === 0 ? 0.92 : g.variant === 2 ? 1.14 : g.variant === 3 ? 1.02 : 0.87;
-        const sc = ALLY_ENTITY_SCALE * (80 / atlas.fh) * variantScale;
+        const sc = ALLY_ENTITY_SCALE * (80 / atlas.fh) * variantScale * (this.hybridDepth ? hybridEntityDepthScale(g.y) : 1);
         const x = toSX(g.x);
         const y = toSY(g.y);
         if (g.strikeT > 0) {
           const strikeProgress = clamp(1 - g.strikeT / 0.24, 0, 0.999);
-          this.drawVfxFrame(
-            ctx,
-            this.guardSlamSpr,
-            Math.floor(strikeProgress * 6),
-            x + g.face * (g.variant === 2 ? 34 : 28),
-            y - 18,
-            g.variant === 2 ? 112 : 90,
-            g.face < 0 ? Math.PI : 0,
-            0.82,
-            true,
-          );
+          const contactAlpha = clamp(1 - Math.abs(strikeProgress - 0.55) / 0.34, 0, 1);
+          if (contactAlpha > 0) {
+            this.drawVfxFrame(
+              ctx,
+              this.guardSlamSpr,
+              Math.floor(strikeProgress * 6),
+              x + g.face * (g.variant === 2 ? 34 : 28),
+              y - 18,
+              g.variant === 2 ? 112 : 90,
+              g.face < 0 ? Math.PI : 0,
+              0.58 * contactAlpha,
+              true,
+            );
+          }
         }
         const frame = runAtlas
-          ? Math.floor(g.animT * (g.variant === 3 ? 11.5 : g.variant === 0 ? 11 : 10.5)) % runAtlas.frames
+          ? Math.floor((g.runDistance / guardRunCycleDistance(g.variant)) * runAtlas.frames) % runAtlas.frames
           : guardPoseFrame(g, semanticAtlas.frames);
         ctx.save();
         ctx.translate(x, y);
+        if (locomoting) {
+          const runPresentation = guardRunPresentation(g.vx, g.vy, g.face);
+          ctx.rotate(runPresentation.tilt);
+        }
         if (g.strikeT > 0) {
           const punch = Math.sin(Math.PI * (1 - g.strikeT / 0.24));
           ctx.translate(g.face * punch * 7, -punch);
@@ -2000,10 +3726,11 @@ export class Renderer {
       }
     }
 
-    // The net and anchor hardware belong to the pitch layer, but the elevated
-    // front bar must occlude actors crossing beneath it. Redrawing only that
-    // narrow bar prevents the player from looking pasted over the whole goal.
-    this.drawGoalForeground(ctx, toSX, toSY);
+    // Preserve the original Showpiece painter order exactly. The hybrid route
+    // delays its physical foreground until projectiles and ground abilities
+    // are drawn, allowing real goal tubing and the near fascia to occlude the
+    // world without ever covering hit feedback or damage numbers.
+    if (!this.hybridDepth) this.drawGoalForeground(ctx, toSX, toSY);
 
     // balls (AERIAL lobs: height via z, moving ground shadow sells the arc)
     for (const b of sim.balls) {
@@ -2011,20 +3738,28 @@ export class Renderer {
       const x = toSX(b.x);
       const y = toSY(b.y);
       const hFrac = clamp(b.z / 240, 0, 1);
+      const launchVisual = aerialLaunchVisual(b.flightT);
+      const depthScale = this.hybridDepth ? hybridEntityDepthScale(b.y) : 1;
       // ground shadow tracks the landing point, shrinking/fading with height
-      ctx.fillStyle = `rgba(4,10,6,${0.3 * (1 - hFrac * 0.6)})`;
-      ctx.beginPath();
-      ctx.ellipse(x, y + 2, 7 * (1 - hFrac * 0.45), 3 * (1 - hFrac * 0.45), 0, 0, TAU);
-      ctx.fill();
+      if (this.hybridDepth) {
+        this.drawHybridEntityShadow(ctx, x, y, 7 * depthScale, 'aerial', Math.max(8, b.z));
+      } else {
+        ctx.fillStyle = `rgba(4,10,6,${0.3 * (1 - hFrac * 0.6)})`;
+        ctx.beginPath();
+        ctx.ellipse(x, y + 2, 7 * (1 - hFrac * 0.45), 3 * (1 - hFrac * 0.45), 0, 0, TAU);
+        ctx.fill();
+      }
       ctx.save();
+      ctx.globalAlpha = launchVisual.bodyAlpha;
       ctx.translate(x, y - 16 - b.z);
       ctx.rotate(Math.sin(b.flightT * 9) * 0.1);
       const bs = 1 + hFrac * 0.12; // slight forced perspective near the apex
-      this.drawMatchBall(ctx, 0, 0, 24 * bs, Math.floor(b.flightT * 16 * Math.max(0.6, Math.abs(b.spin))));
+      this.drawMatchBall(ctx, 0, 0, 24 * bs * depthScale * launchVisual.scale, Math.floor(b.flightT * 16 * Math.max(0.6, Math.abs(b.spin))));
       ctx.restore();
     }
     // Homing AERIAL seekers: physical airborne sprites paired with generated
     // six-frame wakes. The wake anchor follows the projectile through turns.
+    let seekerTrails = 0;
     for (const s of sim.seekers) {
       if (!s.active) continue;
       const x = toSX(s.x);
@@ -2033,57 +3768,130 @@ export class Renderer {
       const size = s.kind === 'curveball' ? 40 : 48;
       const screenAngle = Math.atan2(s.vy * TILT, s.vx);
       const age = s.maxLife - s.life;
+      const launchVisual = aerialLaunchVisual(age);
+      const depthScale = this.hybridDepth ? hybridEntityDepthScale(s.y) : 1;
 
-      ctx.fillStyle = 'rgba(4,10,6,0.24)';
-      ctx.beginPath();
-      ctx.ellipse(x, y + 2, s.kind === 'curveball' ? 8 : 11, s.kind === 'curveball' ? 3.5 : 4.5, 0, 0, TAU);
-      ctx.fill();
+      if (this.hybridDepth) {
+        this.drawHybridEntityShadow(ctx, x, y, (s.kind === 'curveball' ? 8 : 11) * depthScale, 'aerial', lift);
+      } else {
+        ctx.fillStyle = 'rgba(4,10,6,0.24)';
+        ctx.beginPath();
+        ctx.ellipse(x, y + 2, s.kind === 'curveball' ? 8 : 11, s.kind === 'curveball' ? 3.5 : 4.5, 0, 0, TAU);
+        ctx.fill();
+      }
 
       // A ping-pong frame order keeps the generated wake breathing without a
       // visible jump from its dissipated final cell back to the full burst.
       const wakeOrder = [0, 1, 2, 3, 2, 1];
       const wakeFrame = wakeOrder[Math.floor(age * 15 + s.phase * 2) % wakeOrder.length];
       const wakeSprite = s.kind === 'curveball' ? this.curveTrailSpr : this.goldenBootTrailSpr;
-      this.drawVfxFrame(
-        ctx,
-        wakeSprite,
-        wakeFrame,
-        x,
-        y - lift,
-        s.kind === 'curveball' ? 112 : 134,
-        screenAngle,
-        s.kind === 'curveball' ? 0.86 : 0.98,
-        true,
-        0.82,
-      );
+      if (seekerTrails < presentationBudget.maxSeekerTrails) {
+        this.drawVfxFrame(
+          ctx,
+          wakeSprite,
+          wakeFrame,
+          x,
+          y - lift,
+          s.kind === 'curveball' ? 112 : 134,
+          screenAngle,
+          (s.kind === 'curveball' ? 0.86 : 0.98) * launchVisual.wakeAlpha,
+          true,
+          0.82,
+        );
+        seekerTrails++;
+        this.lastPresentationMetrics.renderedSeekerTrails++;
+      }
 
       const sprite = s.kind === 'curveball' ? this.curveballSpr : this.goldenBootSpr;
       ctx.save();
+      ctx.globalAlpha = launchVisual.bodyAlpha;
       ctx.translate(x, y - lift);
       const pulse = 1 + Math.sin(age * 14 + s.phase) * (s.kind === 'curveball' ? 0.035 : 0.025);
       ctx.rotate(s.kind === 'curveball'
         ? age * 13 + s.phase
         : screenAngle + Math.PI / 4 + Math.sin(age * 17 + s.phase) * 0.06);
-      ctx.drawImage(sprite, -size * pulse / 2, -size * pulse / 2, size * pulse, size * pulse);
+      const launchSize = size * pulse * depthScale * launchVisual.scale;
+      ctx.drawImage(sprite, -launchSize / 2, -launchSize / 2, launchSize, launchSize);
       ctx.restore();
     }
     // bottles
     for (const b of sim.bottles) {
       if (!b.active) continue;
       const bx = toSX(b.x);
-      const by = toSY(b.y) - (b.kind === 'electric' ? 28 : 12);
+      const elevation = this.hybridDepth
+        ? hybridHostileProjectileElevation(b.kind, b.life, b.maxLife)
+        : b.kind === 'scan' ? 34 : b.kind === 'electric' ? 28 : 12;
+      const depthScale = this.hybridDepth ? hybridEntityDepthScale(b.y) : 1;
+      const by = toSY(b.y) - elevation;
+      if (this.hybridDepth) {
+        this.drawHybridEntityShadow(
+          ctx,
+          bx,
+          toSY(b.y),
+          (b.kind === 'scan' ? 9 : b.kind === 'electric' ? 8 : 6) * depthScale,
+          'aerial',
+          elevation,
+        );
+      }
       ctx.save();
       ctx.translate(bx, by);
-      if (b.kind === 'electric') {
+      if (b.kind === 'scan') {
+        const a = Math.atan2(b.vy * TILT, b.vx);
+        const age = Math.max(0, b.maxLife - b.life);
+        const shotFrame = age < 0.1 ? 0 : 1 + (Math.floor(age * 17) % 3);
+        this.drawVfxFrame(ctx, this.varScanShotSpr, shotFrame, 0, 0, 92 * depthScale, a, 0.98, true, 0.42);
+      } else if (b.kind === 'electric') {
         const a = Math.atan2(b.vy * TILT, b.vx);
         const age = Math.max(0, 1.45 - b.life);
         const shotFrame = age < 0.08 ? 0 : 1 + (Math.floor(time * 22 + age * 9) % 4);
-        this.drawVfxFrame(ctx, this.droneShotSpr, shotFrame, 0, 0, 72, a, 0.98, true, 0.44);
+        this.drawVfxFrame(ctx, this.droneShotSpr, shotFrame, 0, 0, 72 * depthScale, a, 0.98, true, 0.44);
       } else {
         ctx.rotate(time * 9);
-        ctx.drawImage(this.bottleSpr, -6, -10, 12, 20);
+        ctx.drawImage(this.bottleSpr, -6 * depthScale, -10 * depthScale, 12 * depthScale, 20 * depthScale);
       }
       ctx.restore();
+    }
+
+    if (this.keeperBlockStartedAt >= 0) {
+      const age = time - this.keeperBlockStartedAt;
+      if (age >= 0 && age < 0.48) {
+        const progress = clamp(age / 0.48, 0, 0.999);
+        const frame = Math.min(5, Math.floor(progress * 6));
+        this.drawVfxFrame(
+          ctx,
+          this.keeperHaloSpr,
+          frame,
+          toSX(this.keeperBlockX),
+          toSY(this.keeperBlockY) - 30,
+          this.keeperBlockCounter ? 138 : 108,
+          progress * 0.32,
+          clamp((0.48 - age) * 3.4, 0, 1),
+          true,
+        );
+      } else if (age >= 0.48) {
+        this.keeperBlockStartedAt = -1;
+      }
+    }
+
+    if (this.scanImpactStartedAt >= 0) {
+      const age = time - this.scanImpactStartedAt;
+      if (age >= 0 && age < 0.42) {
+        const progress = clamp(age / 0.42, 0, 0.999);
+        const frame = 4 + Math.min(1, Math.floor(progress * 2));
+        this.drawVfxFrame(
+          ctx,
+          this.varScanShotSpr,
+          frame,
+          toSX(this.scanImpactX),
+          toSY(this.scanImpactY) - 30,
+          112 + progress * 24,
+          0,
+          clamp((0.42 - age) * 3.4, 0, 1),
+          true,
+        );
+      } else if (age >= 0.42) {
+        this.scanImpactStartedAt = -1;
+      }
     }
 
     // rings
@@ -2107,28 +3915,38 @@ export class Renderer {
       }
       const whistle = r.color === '#f5f7fa';
       const pitchBlast = r.color === '#a8ff4d' || r.color === '#f5ff9b';
+      if (pitchBlast && this.firstTouchGroundSpr?.complete) continue;
+      if (whistle) {
+        if (this.captainsWhistleSpr?.complete) {
+          const progress = clamp(1 - r.life / 0.45, 0, 0.999);
+          const framePosition = progress * 5;
+          const currentFrame = Math.floor(framePosition);
+          const nextFrame = Math.min(5, currentFrame + 1);
+          const mix = framePosition - currentFrame;
+          const size = r.maxR * 2.12;
+          const x = toSX(r.x);
+          const y = toSY(r.y);
+          // Cross-fading the authored keyframes makes the generated shockwave
+          // read as continuous expansion instead of a six-step sprite flip.
+          ctx.save();
+          ctx.globalCompositeOperation = 'screen';
+          this.drawVfxFrame(ctx, this.captainsWhistleSpr, currentFrame, x, y, size, 0, (1 - mix) * (this.reducedVfx ? 0.5 : 0.78), false);
+          if (nextFrame !== currentFrame) {
+            this.drawVfxFrame(ctx, this.captainsWhistleSpr, nextFrame, x, y, size, 0, mix * (this.reducedVfx ? 0.5 : 0.78), false);
+          }
+          ctx.restore();
+        }
+        // Captain's Whistle intentionally has no procedural fallback. If its
+        // authored strip is not decoded yet, the pulse waits for the next cast.
+        continue;
+      }
       ctx.globalAlpha = whistle ? a * 0.9 : a;
       ctx.strokeStyle = r.color;
       ctx.lineWidth = 5 * a + 1;
       ctx.beginPath();
       ctx.ellipse(toSX(r.x), toSY(r.y), r.r, r.r * TILT, 0, 0, TAU);
       ctx.stroke();
-      if (whistle) {
-        // Short tangential sound dashes keep Captain's Whistle visually
-        // separate from damage blasts while staying readable in a crowd.
-        ctx.strokeStyle = `rgba(225,248,255,${a * 0.82})`;
-        ctx.lineWidth = 3;
-        ctx.lineCap = 'round';
-        for (let dash = 0; dash < 12; dash++) {
-          const angle = (dash / 12) * TAU + time * 0.35;
-          const inner = r.r - 9;
-          const outer = r.r + 9;
-          ctx.beginPath();
-          ctx.moveTo(toSX(r.x + Math.cos(angle) * inner), toSY(r.y + Math.sin(angle) * inner));
-          ctx.lineTo(toSX(r.x + Math.cos(angle) * outer), toSY(r.y + Math.sin(angle) * outer));
-          ctx.stroke();
-        }
-      } else if (pitchBlast) {
+      if (pitchBlast) {
         // Jagged turf fissures belong to the GROUND layer; the separate cyan
         // airburst impact above it communicates the smaller AERIAL detonation.
         ctx.strokeStyle = `rgba(214,255,140,${a * 0.72})`;
@@ -2148,70 +3966,40 @@ export class Renderer {
     }
     ctx.globalAlpha = 1;
 
-    // pitch pressure rings (GROUND lane: pitch-hugging expanding front)
-    for (const pr of sim.pressures) {
-      if (!pr.active) continue;
-      const u = pr.r / pr.maxR;
-      const a = (1 - u) * 0.8 + 0.15;
-      ctx.fillStyle = `rgba(55,214,122,${0.07 * (1 - u)})`;
-      ctx.beginPath();
-      ctx.ellipse(toSX(pr.x), toSY(pr.y), pr.r, pr.r * TILT, 0, 0, TAU);
-      ctx.fill();
-      ctx.strokeStyle = `rgba(55,214,122,${a})`;
-      ctx.lineWidth = 7 * (1 - u) + 2;
-      ctx.beginPath();
-      ctx.ellipse(toSX(pr.x), toSY(pr.y), pr.r, pr.r * TILT, 0, 0, TAU);
-      ctx.stroke();
-      ctx.strokeStyle = `rgba(245,247,250,${a * 0.5})`;
-      ctx.lineWidth = 1.5;
-      ctx.beginPath();
-      ctx.ellipse(toSX(pr.x), toSY(pr.y), Math.max(1, pr.r - 7), (pr.r - 7) * TILT, 0, 0, TAU);
-      ctx.stroke();
-      // Pitch-facing chevrons point with the shove front. At max level their
-      // reversed inner row also exposes the brief vortex pull before release.
-      const maxPressure = sim.abilityLevel('pressure') >= 5;
-      const arrows = pr.r > 42 ? 8 : 4;
-      ctx.lineWidth = 2;
-      for (let arrow = 0; arrow < arrows; arrow++) {
-        const angle = (arrow / arrows) * TAU + time * 0.18;
-        const ax = toSX(pr.x + Math.cos(angle) * pr.r);
-        const ay = toSY(pr.y + Math.sin(angle) * pr.r);
-        const screenAngle = Math.atan2(Math.sin(angle) * TILT, Math.cos(angle));
-        ctx.save();
-        ctx.translate(ax, ay);
-        ctx.rotate(screenAngle);
-        ctx.strokeStyle = `rgba(229,255,238,${a * 0.78})`;
-        ctx.beginPath();
-        ctx.moveTo(-7, -5);
-        ctx.lineTo(1, 0);
-        ctx.lineTo(-7, 5);
-        ctx.stroke();
-        if (maxPressure) {
-          ctx.strokeStyle = `rgba(128,237,153,${a * 0.5})`;
-          ctx.beginPath();
-          ctx.moveTo(-15, -4);
-          ctx.lineTo(-21, 0);
-          ctx.lineTo(-15, 4);
-          ctx.stroke();
-        }
-        ctx.restore();
-      }
+    if (this.hybridDepth) {
+      this.drawGoalForeground(ctx, toSX, toSY);
+      this.drawHybridPitchRimFront(ctx, toSX, toSY);
     }
 
-    // particles
+    // Decorative particles are the first layer to thin under horde pressure.
+    // This never changes pooled particle physics, only how many are painted.
+    let activeParticleOrdinal = 0;
     for (const pt of sim.particles) {
       if (!pt.active) continue;
+      const particleOrdinal = activeParticleOrdinal++;
+      if (particleOrdinal % presentationBudget.particleStride !== 0) continue;
       const a = clamp(pt.life / pt.maxLife, 0, 1);
       ctx.globalAlpha = a;
       ctx.fillStyle = pt.color;
       ctx.fillRect(toSX(pt.x) - pt.size / 2, toSY(pt.y) - pt.size / 2 - 8, pt.size, pt.size);
+      this.lastPresentationMetrics.renderedParticles++;
     }
     ctx.globalAlpha = 1;
 
     // Generated directional contact, aerial and landing bursts. The source
     // strips carry the exact impact silhouette; no procedural ray scaffolding.
+    let standardImpacts = 0;
+    let priorityImpacts = 0;
     for (const impact of sim.impacts) {
-      if (!impact.active) continue;
+      if (!impact.active || impact.kind === 'kickground') continue;
+      const priorityImpact = impact.kind !== 'contact' || impact.strength >= 1.18;
+      if (priorityImpact) {
+        if (priorityImpacts >= presentationBudget.maxPriorityImpacts) continue;
+        priorityImpacts++;
+      } else {
+        if (standardImpacts >= presentationBudget.maxStandardImpacts) continue;
+        standardImpacts++;
+      }
       const remaining = clamp(impact.life / impact.maxLife, 0, 1);
       const age = 1 - remaining;
       const x = toSX(impact.x);
@@ -2220,23 +4008,65 @@ export class Renderer {
       const frame = Math.min(5, Math.floor(clamp(age, 0, 0.999) * 6));
       const landing = impact.kind === 'landing';
       const airburst = impact.kind === 'airburst';
-      const sprite = landing ? this.knockoutSpr : this.contactHitSpr;
-      const impactY = groundY - (landing ? 10 : airburst ? 78 : 24);
-      const size = (landing ? 108 : airburst ? 98 : 76) * impact.strength;
-      this.drawVfxFrame(ctx, sprite, frame, x, impactY, size, landing ? 0 : angle, Math.min(1, remaining * 1.8), true);
+      const blastAir = impact.kind === 'blastair';
+      const sprite = blastAir ? this.firstTouchAirSpr : landing ? this.knockoutSpr : this.contactHitSpr;
+      const impactY = groundY - (landing ? 10 : blastAir ? 128 : airburst ? 78 : 24);
+      const size = (landing ? 108 : blastAir ? 142 : airburst ? 98 : 76) * impact.strength;
+      this.drawVfxFrame(
+        ctx,
+        sprite,
+        frame,
+        x,
+        impactY,
+        size,
+        landing || blastAir ? 0 : angle,
+        Math.min(1, remaining * 1.8),
+        !blastAir,
+      );
+      this.lastPresentationMetrics.renderedImpacts++;
     }
     ctx.globalAlpha = 1;
+
+    // Re-ink only the collision boundary of active danger after decorative
+    // impacts. The ground fill remains correctly underneath bodies, while the
+    // final two-pixel edge cannot be erased by friendly max-level spectacle.
+    for (const telegraph of sim.telegraphs) {
+      if (!telegraph.active || telegraph.kind === 'chant') continue;
+      const progress = clamp(1 - telegraph.t / telegraph.max, 0, 1);
+      const x = toSX(telegraph.x);
+      const y = toSY(telegraph.y);
+      const danger = telegraph.dmg > 0 || telegraph.kind === 'cone' || telegraph.kind === 'card' || telegraph.kind === 'shock';
+      ctx.save();
+      ctx.globalAlpha = 0.72 + progress * 0.28;
+      ctx.strokeStyle = danger ? '#ff3855' : '#ffd65a';
+      ctx.lineWidth = 2.4;
+      ctx.lineCap = 'round';
+      ctx.setLineDash([8, 6]);
+      ctx.lineDashOffset = -time * 18;
+      ctx.beginPath();
+      if (telegraph.kind === 'cone' || telegraph.kind === 'card') {
+        const radius = telegraph.r * (0.25 + progress * 0.75);
+        const coneHalfAngle = telegraph.kind === 'card' ? Math.PI / 6 : 0.55;
+        ctx.moveTo(x, y);
+        ctx.ellipse(x, y, radius, radius * TILT, 0, telegraph.dir - coneHalfAngle, telegraph.dir + coneHalfAngle);
+        ctx.closePath();
+      } else {
+        ctx.ellipse(x, y, telegraph.r, telegraph.r * TILT, 0, 0, TAU);
+      }
+      ctx.stroke();
+      ctx.restore();
+    }
 
     // Matchday Wipeout is authored as a six-stage, full-pitch explosion. It
     // replaces the old oversized procedural ring and remains below HUD text.
     if (this.matchdayWipeoutStartedAt >= 0) {
       const age = time - this.matchdayWipeoutStartedAt;
-      const duration = 1.05;
+      const duration = 0.72;
       if (age < duration) {
         const progress = clamp(age / duration, 0, 0.999);
         const frame = Math.min(5, Math.floor(progress * 6));
         const fade = progress < 0.72 ? 1 : 1 - (progress - 0.72) / 0.28;
-        const size = Math.max(vw, vh * 1.45) * 1.34;
+        const size = Math.max(vw, vh * 1.35) * 1.08;
         this.drawVfxFrame(
           ctx,
           this.matchdayWipeoutSpr,
@@ -2245,7 +4075,7 @@ export class Renderer {
           toSY(sim.player.y) - 20,
           size,
           0,
-          clamp(fade, 0, 1),
+          clamp(fade, 0, 1) * (this.reducedVfx ? 0.3 : 0.68),
           false,
         );
       } else {
@@ -2273,10 +4103,37 @@ export class Renderer {
       this.lossStartedAt = -1;
     }
 
+    // The contour is intentionally delayed until all world-space effects have
+    // rendered. It appears only while another living body covers the player,
+    // preserving normal painter depth everywhere else.
+    if (playerOcclusionPose && playerOcclusion > 0.04 && sim.over !== 'lost') {
+      this.drawPlayerOcclusionLocator(
+        ctx,
+        playerOcclusionPose.atlas,
+        playerOcclusionPose.frame,
+        playerOcclusionPose.x,
+        playerOcclusionPose.y,
+        playerOcclusionPose.scale,
+        playerOcclusionPose.bobY,
+        playerOcclusionPose.flip,
+        playerOcclusion,
+      );
+    }
+    this.lastPlayerOcclusion = playerOcclusion;
+
     // damage numbers
     ctx.textAlign = 'center';
+    let standardDamageNumbers = 0;
+    let criticalDamageNumbers = 0;
     for (const d of sim.dmgNums) {
       if (!d.active) continue;
+      if (d.crit) {
+        if (criticalDamageNumbers >= presentationBudget.maxCriticalDamageNumbers) continue;
+        criticalDamageNumbers++;
+      } else {
+        if (standardDamageNumbers >= presentationBudget.maxStandardDamageNumbers) continue;
+        standardDamageNumbers++;
+      }
       const a = clamp(d.life / 0.7, 0, 1);
       ctx.globalAlpha = a;
       ctx.font = `bold ${d.crit ? 21 : 15}px system-ui, sans-serif`;
@@ -2287,6 +4144,7 @@ export class Renderer {
       ctx.strokeText(d.value, x, y);
       ctx.fillStyle = d.crit ? '#ffd23f' : '#f5f7fa';
       ctx.fillText(d.value, x, y);
+      this.lastPresentationMetrics.renderedDamageNumbers++;
     }
     ctx.globalAlpha = 1;
 
@@ -2311,7 +4169,7 @@ export class Renderer {
 
     // hurt flash
     if (this.flashWarn > 0) {
-      this.flashWarn -= 1 / 60;
+      this.flashWarn -= renderDt;
       const hurtStrength = clamp(this.flashWarn / 0.42, 0, 1);
       ctx.fillStyle = `rgba(178,0,28,${hurtStrength * 0.2})`;
       ctx.fillRect(0, 0, vw, vh);
@@ -2324,7 +4182,7 @@ export class Renderer {
     }
     // paparazzo white flash
     if (this.flashWhiteT > 0) {
-      this.flashWhiteT -= 1 / 60;
+      this.flashWhiteT -= renderDt;
       ctx.fillStyle = `rgba(245,247,250,${Math.max(0, this.flashWhiteT) * 2.4})`;
       ctx.fillRect(0, 0, vw, vh);
     }
@@ -2375,6 +4233,195 @@ export class Renderer {
       ctx.fillStyle = colors[i % colors.length];
       ctx.fillRect(toSX(x), toSY(y) - jump, 6, 6);
     }
+  }
+
+  /** Subtle pitch-clipped spill from the stadium's upper-left floodlight bank.
+   *
+   * The Showpiece plate already contains detailed grass exposure. This pass
+   * only unifies the newly live 2.5D construction and cast shadows under one
+   * dominant light direction. Values stay below combat/VFX contrast and use
+   * neutral-warm white rather than a coloured gameplay overlay. */
+  private drawHybridFloodlightSpill(
+    ctx: CanvasRenderingContext2D,
+    toSX: (wx: number) => number,
+    toSY: (wy: number) => number,
+  ): void {
+    const left = toSX(0);
+    const right = toSX(ARENA_W);
+    const top = toSY(0);
+    const bottom = toSY(ARENA_H);
+    const width = Math.max(1, right - left);
+    const height = Math.max(1, bottom - top);
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(left, top, width, height);
+    ctx.clip();
+
+    // Broad neutral floodlight pool follows the same upper-left source that
+    // sends every object shadow down-right. The far edge remains brighter than
+    // the near-right corner, but the maximum delta is only a few percent.
+    const sourceX = left + width * 0.12;
+    const sourceY = top - height * 0.34;
+    const radius = Math.max(width * 0.95, height * 1.45);
+    const flood = ctx.createRadialGradient(sourceX, sourceY, radius * 0.16, sourceX, sourceY, radius);
+    flood.addColorStop(0, 'rgba(255,252,230,0.032)');
+    flood.addColorStop(0.42, 'rgba(255,250,221,0.018)');
+    flood.addColorStop(0.78, 'rgba(236,244,220,0.007)');
+    flood.addColorStop(1, 'rgba(236,244,220,0)');
+    ctx.fillStyle = flood;
+    ctx.fillRect(left, top, width, height);
+
+    // Narrow oblique shafts are fixed in world/screen projection and never
+    // animate, so they cannot be read as attacks. Screen blending lifts only
+    // highlights in the existing grass texture instead of tinting dark fibres.
+    ctx.globalCompositeOperation = 'screen';
+    for (let shaft = 0; shaft < 3; shaft++) {
+      const startX = left - width * 0.09 + shaft * width * 0.36;
+      const shaftW = width * (0.20 + shaft * 0.015);
+      const shaftGradient = ctx.createLinearGradient(startX, top, startX + width * 0.32, bottom);
+      shaftGradient.addColorStop(0, 'rgba(255,252,231,0.016)');
+      shaftGradient.addColorStop(0.46, 'rgba(255,252,231,0.008)');
+      shaftGradient.addColorStop(1, 'rgba(255,252,231,0)');
+      ctx.fillStyle = shaftGradient;
+      ctx.beginPath();
+      ctx.moveTo(startX, top);
+      ctx.lineTo(startX + shaftW, top);
+      ctx.lineTo(startX + shaftW + width * 0.30, bottom);
+      ctx.lineTo(startX + width * 0.30, bottom);
+      ctx.closePath();
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  /** Structural rear tier for the optional hybrid stadium.
+   *
+   * The arena plate already supplies detailed supporters. This pass adds only
+   * architecture that benefits from a separate depth plane: portal shadows,
+   * aisle spines, rear safety rails and section breaks. A tiny inverse camera
+   * offset makes those fixed elements lag behind the pitch while the even-odd
+   * clip guarantees they never enter gameplay turf. */
+  private drawHybridStadiumParallax(
+    ctx: CanvasRenderingContext2D,
+    bounds: { x0: number; y0: number; x1: number; y1: number },
+    sx: number,
+    sy: number,
+    vw: number,
+    vh: number,
+  ): void {
+    const left = -bounds.x0 - sx;
+    const right = ARENA_W - bounds.x0 - sx;
+    const top = (-bounds.y0 * TILT) - sy;
+    const bottom = ((ARENA_H - bounds.y0) * TILT) - sy;
+    const pitchWidth = Math.max(1, right - left);
+    const pitchHeight = Math.max(1, bottom - top);
+    const offsetX = -hybridStadiumParallax(this.camX, ARENA_W / 2);
+    const offsetY = -hybridStadiumParallax(this.camY, ARENA_H / 2) * TILT;
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(0, 0, vw, vh);
+    ctx.rect(left, top, pitchWidth, pitchHeight);
+    ctx.clip('evenodd');
+    ctx.translate(offsetX, offsetY);
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+
+    // Six deep vomitory portals sit behind the lower bowl. Their inner bevel
+    // and floor line retain readability without resembling dark HUD panels.
+    for (let section = 0; section < 6; section++) {
+      const centerX = left + ((section + 0.5) / 6) * pitchWidth;
+      const portalW = 40 + (section % 2) * 6;
+      for (const side of [-1, 1] as const) {
+        const edgeY = side < 0 ? top - 73 : bottom + 73;
+        const outerY = edgeY + side * 23;
+        const portal = ctx.createLinearGradient(0, edgeY, 0, outerY);
+        portal.addColorStop(0, 'rgba(15,25,27,0.76)');
+        portal.addColorStop(0.32, 'rgba(3,9,13,0.92)');
+        portal.addColorStop(1, 'rgba(0,4,7,0.98)');
+        ctx.fillStyle = portal;
+        ctx.beginPath();
+        ctx.moveTo(centerX - portalW / 2, edgeY);
+        ctx.lineTo(centerX + portalW / 2, edgeY);
+        ctx.lineTo(centerX + portalW * 0.39, outerY);
+        ctx.lineTo(centerX - portalW * 0.39, outerY);
+        ctx.closePath();
+        ctx.fill();
+        ctx.strokeStyle = 'rgba(150,167,164,0.27)';
+        ctx.lineWidth = 1.05;
+        ctx.beginPath();
+        ctx.moveTo(centerX - portalW / 2, edgeY);
+        ctx.lineTo(centerX - portalW * 0.39, outerY);
+        ctx.lineTo(centerX + portalW * 0.39, outerY);
+        ctx.lineTo(centerX + portalW / 2, edgeY);
+        ctx.stroke();
+        ctx.strokeStyle = 'rgba(222,230,221,0.16)';
+        ctx.lineWidth = 0.72;
+        ctx.beginPath();
+        ctx.moveTo(centerX - portalW * 0.31, edgeY + side * 5);
+        ctx.lineTo(centerX + portalW * 0.31, edgeY + side * 5);
+        ctx.stroke();
+      }
+    }
+
+    // Rear aluminium rail is offset from the baked front barrier. Posts and
+    // twin bars expose a second physical tier under lateral camera movement.
+    const drawLongRail = (y: number, direction: -1 | 1): void => {
+      const railY = y + direction * 106;
+      ctx.strokeStyle = 'rgba(188,203,200,0.26)';
+      ctx.lineWidth = 1.4;
+      ctx.beginPath();
+      ctx.moveTo(left - 12, railY);
+      ctx.lineTo(right + 12, railY);
+      ctx.moveTo(left - 9, railY + direction * 5.5);
+      ctx.lineTo(right + 9, railY + direction * 5.5);
+      ctx.stroke();
+      ctx.strokeStyle = 'rgba(7,15,17,0.42)';
+      ctx.lineWidth = 2.6;
+      for (let postX = left + 26; postX < right - 18; postX += 94) {
+        ctx.beginPath();
+        ctx.moveTo(postX + 1.4, railY - direction * 1.5);
+        ctx.lineTo(postX + 1.4, railY + direction * 15);
+        ctx.stroke();
+        ctx.strokeStyle = 'rgba(181,198,195,0.24)';
+        ctx.lineWidth = 0.8;
+        ctx.beginPath();
+        ctx.moveTo(postX, railY);
+        ctx.lineTo(postX, railY + direction * 14);
+        ctx.stroke();
+        ctx.strokeStyle = 'rgba(7,15,17,0.42)';
+        ctx.lineWidth = 2.6;
+      }
+    };
+    drawLongRail(top, -1);
+    drawLongRail(bottom, 1);
+
+    // Side-bowl aisle spines converge slightly toward the pitch, mirroring the
+    // stepped concrete geometry visible in a modern World Cup stadium.
+    for (const [edgeX, direction] of [[left, -1], [right, 1]] as const) {
+      for (let aisle = 0; aisle < 5; aisle++) {
+        const anchorY = top + ((aisle + 0.5) / 5) * pitchHeight;
+        ctx.strokeStyle = 'rgba(180,194,191,0.19)';
+        ctx.lineWidth = 3.4;
+        ctx.beginPath();
+        ctx.moveTo(edgeX + direction * 56, anchorY - 16);
+        ctx.lineTo(edgeX + direction * 123, anchorY - 27 + (aisle - 2) * 3.2);
+        ctx.stroke();
+        ctx.strokeStyle = 'rgba(241,218,151,0.15)';
+        ctx.lineWidth = 0.85;
+        for (let step = 0; step < 6; step++) {
+          const t = (step + 0.5) / 6;
+          const x = edgeX + direction * (59 + t * 61);
+          const y = anchorY - 17 + t * (-9 + (aisle - 2) * 3.2);
+          ctx.beginPath();
+          ctx.moveTo(x, y - 2.1);
+          ctx.lineTo(x, y + 2.1);
+          ctx.stroke();
+        }
+      }
+    }
+    ctx.restore();
   }
 
   /** Restrained runtime life for the detailed Showpiece plate.
@@ -2730,11 +4777,12 @@ export class Renderer {
     toSX: (wx: number) => number,
     toSY: (wy: number) => number,
     time: number,
+    fibreBudget: number,
   ): void {
     ctx.save();
     ctx.lineCap = 'round';
     ctx.lineWidth = 0.7;
-    for (let fibre = 0; fibre < 86; fibre++) {
+    for (let fibre = 0; fibre < fibreBudget; fibre++) {
       const seedA = this.crowdSeed[(fibre * 4 + 17) % this.crowdSeed.length] ?? 0.5;
       const seedB = this.crowdSeed[(fibre * 4 + 18) % this.crowdSeed.length] ?? 0.5;
       const seedC = this.crowdSeed[(fibre * 4 + 19) % this.crowdSeed.length] ?? 0.5;
@@ -2758,6 +4806,278 @@ export class Renderer {
     ctx.restore();
   }
 
+  /** Four physical corner assemblies with deterministic cloth motion. */
+  private drawHybridPitchMarkings(
+    ctx: CanvasRenderingContext2D,
+    toSX: (wx: number) => number,
+    toSY: (wy: number) => number,
+  ): void {
+    interface MarkPoint { x: number; y: number }
+    const project = (x: number, y: number): MarkPoint => ({ x: toSX(x), y: toSY(y) });
+    const noise = (seed: number): number => {
+      const value = Math.sin(seed * 12.9898 + 31.173) * 43758.5453;
+      return value - Math.floor(value);
+    };
+    const strokeWornPolyline = (points: MarkPoint[], seed: number): void => {
+      if (points.length < 2) return;
+      const path = (): void => {
+        ctx.beginPath();
+        ctx.moveTo(points[0].x, points[0].y);
+        for (let index = 1; index < points.length; index++) ctx.lineTo(points[index].x, points[index].y);
+      };
+      ctx.strokeStyle = 'rgba(8,28,14,0.18)';
+      ctx.lineWidth = 3.8;
+      path();
+      ctx.stroke();
+      ctx.strokeStyle = 'rgba(248,247,232,0.59)';
+      ctx.lineWidth = 1.85;
+      path();
+      ctx.stroke();
+      ctx.strokeStyle = 'rgba(255,255,250,0.22)';
+      ctx.lineWidth = 0.55;
+      path();
+      ctx.stroke();
+
+      // Olive interruptions and loose pigment remove the vector-clean edge.
+      for (let segment = 0; segment < points.length - 1; segment++) {
+        const start = points[segment];
+        const end = points[segment + 1];
+        const dx = end.x - start.x;
+        const dy = end.y - start.y;
+        const length = Math.hypot(dx, dy) || 1;
+        const tangentX = dx / length;
+        const tangentY = dy / length;
+        const count = Math.max(1, Math.floor(length / 39));
+        for (let chip = 0; chip < count; chip++) {
+          const chipSeed = seed + segment * 97 + chip * 19;
+          if (noise(chipSeed + 23) < 0.31) continue;
+          const t = (chip + 0.3 + noise(chipSeed) * 0.45) / count;
+          const x = start.x + dx * t;
+          const y = start.y + dy * t;
+          const chipLength = 0.9 + noise(chipSeed + 4) * 2.2;
+          ctx.strokeStyle = `rgba(67,87,37,${0.20 + noise(chipSeed + 9) * 0.17})`;
+          ctx.lineWidth = 0.62 + noise(chipSeed + 13) * 0.66;
+          ctx.beginPath();
+          ctx.moveTo(x - tangentX * chipLength / 2, y - tangentY * chipLength / 2);
+          ctx.lineTo(x + tangentX * chipLength / 2, y + tangentY * chipLength / 2);
+          ctx.stroke();
+          if (noise(chipSeed + 31) > 0.72) {
+            ctx.fillStyle = 'rgba(255,253,227,0.20)';
+            ctx.fillRect(x - tangentY * 2.2, y + tangentX * 2.2, 0.9, 0.7);
+          }
+        }
+      }
+    };
+
+    const erodeChalkPolyline = (points: MarkPoint[], seed: number, spacing = 18): void => {
+      for (let segment = 0; segment < points.length - 1; segment++) {
+        const start = points[segment];
+        const end = points[segment + 1];
+        const dx = end.x - start.x;
+        const dy = end.y - start.y;
+        const length = Math.hypot(dx, dy) || 1;
+        const tangentX = dx / length;
+        const tangentY = dy / length;
+        const count = Math.max(1, Math.floor(length / spacing));
+        for (let chip = 0; chip < count; chip++) {
+          const chipSeed = seed + segment * 151 + chip * 29;
+          if (noise(chipSeed + 7) < 0.70) continue;
+          const t = clamp((chip + 0.16 + noise(chipSeed) * 0.68) / count, 0, 1);
+          const x = start.x + dx * t;
+          const y = start.y + dy * t;
+          const halfLength = 0.7 + noise(chipSeed + 3) * 2.35;
+          ctx.strokeStyle = noise(chipSeed + 17) > 0.82
+            ? `rgba(105,111,54,${0.20 + noise(chipSeed + 21) * 0.12})`
+            : `rgba(54,76,31,${0.26 + noise(chipSeed + 21) * 0.16})`;
+          ctx.lineWidth = 1.45 + noise(chipSeed + 11) * 1.15;
+          ctx.beginPath();
+          ctx.moveTo(x - tangentX * halfLength, y - tangentY * halfLength);
+          ctx.lineTo(x + tangentX * halfLength, y + tangentY * halfLength);
+          ctx.stroke();
+
+          // A few kicked-off grains beside the line keep the damage physical
+          // instead of reading as a regular dashed gameplay indicator.
+          if (noise(chipSeed + 31) > 0.42) {
+            const side = noise(chipSeed + 37) > 0.5 ? 1 : -1;
+            const offset = 2.4 + noise(chipSeed + 41) * 3.8;
+            ctx.fillStyle = `rgba(245,242,216,${0.16 + noise(chipSeed + 43) * 0.14})`;
+            ctx.fillRect(
+              x - tangentY * offset * side,
+              y + tangentX * offset * side,
+              0.65 + noise(chipSeed + 47) * 0.9,
+              0.55 + noise(chipSeed + 53) * 0.65,
+            );
+          }
+        }
+      }
+    };
+
+    ctx.save();
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+
+    // The generated Showpiece plate provides the registered base geometry,
+    // but its middle line and circle are deliberately clean. Rebuild that
+    // centre as physical chalk over asymmetric boot wear, then abrade it in
+    // screen space. The result remains grounded under the 2.5D projection and
+    // avoids the look of a bright target ring behind the player.
+    const centre = hybridCentreMarkingGeometry();
+    const centreX = toSX(centre.circleX);
+    const centreY = toSY(centre.circleY);
+    ctx.save();
+    ctx.translate(centreX + 9, centreY - 2);
+    ctx.scale(1, 0.54);
+    const centreWear = ctx.createRadialGradient(-16, 4, 4, 0, 0, 118);
+    centreWear.addColorStop(0, 'rgba(82,83,39,0.15)');
+    centreWear.addColorStop(0.46, 'rgba(68,79,34,0.10)');
+    centreWear.addColorStop(1, 'rgba(48,70,28,0)');
+    ctx.fillStyle = centreWear;
+    ctx.beginPath();
+    ctx.ellipse(0, 0, 118, 97, -0.08, 0, TAU);
+    ctx.fill();
+    ctx.restore();
+
+    for (let scuff = 0; scuff < 34; scuff++) {
+      const scuffSeed = 1901 + scuff * 23;
+      const angle = noise(scuffSeed) * TAU;
+      const radius = Math.sqrt(noise(scuffSeed + 3)) * 111;
+      const x = centreX + Math.cos(angle) * radius + 9;
+      const y = centreY + Math.sin(angle) * radius * 0.50 - 2;
+      const sweep = (noise(scuffSeed + 5) > 0.48 ? 1 : -1) * (2.2 + noise(scuffSeed + 7) * 5.2);
+      ctx.strokeStyle = scuff % 7 === 0
+        ? `rgba(132,128,65,${0.12 + noise(scuffSeed + 9) * 0.09})`
+        : `rgba(40,64,26,${0.12 + noise(scuffSeed + 9) * 0.12})`;
+      ctx.lineWidth = 0.68 + noise(scuffSeed + 11) * 0.72;
+      ctx.beginPath();
+      ctx.moveTo(x - sweep, y + 1.8);
+      ctx.quadraticCurveTo(x, y - 1.4, x + sweep * 0.82, y - 2.1);
+      ctx.stroke();
+    }
+
+    const halfwayPoints: MarkPoint[] = [];
+    const halfwaySteps = 38;
+    for (let step = 0; step <= halfwaySteps; step++) {
+      halfwayPoints.push(project(
+        centre.lineX + (noise(2101 + step * 13) - 0.5) * 0.46,
+        centre.top + (centre.bottom - centre.top) * step / halfwaySteps,
+      ));
+    }
+    const circlePoints: MarkPoint[] = [];
+    const circleSteps = 72;
+    for (let step = 0; step <= circleSteps; step++) {
+      const angle = step / circleSteps * TAU;
+      const radius = centre.radius + (noise(2503 + step * 17) - 0.5) * 0.68;
+      circlePoints.push(project(
+        centre.circleX + Math.cos(angle) * radius,
+        centre.circleY + Math.sin(angle) * radius,
+      ));
+    }
+    strokeWornPolyline(halfwayPoints, 2203);
+    strokeWornPolyline(circlePoints, 2609);
+    erodeChalkPolyline(halfwayPoints, 2801, 17);
+    erodeChalkPolyline(circlePoints, 3203, 16);
+
+    // The centre spot is a ragged paint deposit with cleat cuts, not a smooth
+    // floating disc. The source spot remains underneath for perfect register.
+    for (let fibre = 0; fibre < 17; fibre++) {
+      const fibreSeed = 3607 + fibre * 19;
+      const angle = noise(fibreSeed) * TAU;
+      const radius = 2 + noise(fibreSeed + 5) * 8.6;
+      const x = centreX + Math.cos(angle) * radius;
+      const y = centreY + Math.sin(angle) * radius * 0.52;
+      ctx.strokeStyle = fibre % 5 === 0
+        ? 'rgba(247,243,216,0.22)'
+        : `rgba(45,69,28,${0.17 + noise(fibreSeed + 11) * 0.17})`;
+      ctx.lineWidth = 0.55 + noise(fibreSeed + 13) * 0.54;
+      ctx.beginPath();
+      ctx.moveTo(x - 1.2, y + 1.3);
+      ctx.lineTo(x + 1.4 + noise(fibreSeed + 17) * 1.8, y - 1.1);
+      ctx.stroke();
+    }
+
+    for (const side of ['left', 'right'] as const) {
+      const geometry = hybridPitchMarkingGeometry(side);
+      const direction = side === 'left' ? 1 : -1;
+
+      // Layered keeper-box wear belongs below the chalk. Its broken ovals and
+      // cleat cuts read as disturbed turf, never a gameplay selection ring.
+      const wearX = toSX(geometry.goalLineX + direction * 72);
+      const wearY = toSY(ARENA_H / 2);
+      const wearGradient = ctx.createRadialGradient(wearX, wearY, 3, wearX, wearY, 88);
+      wearGradient.addColorStop(0, 'rgba(83,82,36,0.18)');
+      wearGradient.addColorStop(0.55, 'rgba(68,76,32,0.12)');
+      wearGradient.addColorStop(1, 'rgba(55,74,31,0)');
+      ctx.fillStyle = wearGradient;
+      ctx.save();
+      ctx.translate(wearX, wearY);
+      ctx.scale(1, 0.58);
+      ctx.beginPath();
+      ctx.arc(0, 0, 88, 0, TAU);
+      ctx.fill();
+      ctx.restore();
+      for (let scuff = 0; scuff < 22; scuff++) {
+        const scuffSeed = (side === 'left' ? 701 : 907) + scuff * 17;
+        const x = wearX + (noise(scuffSeed) - 0.5) * 132;
+        const y = wearY + (noise(scuffSeed + 3) - 0.5) * 66;
+        const lean = direction * (2.5 + noise(scuffSeed + 5) * 4.5);
+        ctx.strokeStyle = `rgba(45,61,25,${0.13 + noise(scuffSeed + 7) * 0.11})`;
+        ctx.lineWidth = 0.75 + noise(scuffSeed + 11) * 0.65;
+        ctx.beginPath();
+        ctx.moveTo(x - lean, y + 2.2);
+        ctx.quadraticCurveTo(x, y - 1.8, x + lean, y - 2.6);
+        ctx.stroke();
+      }
+
+      strokeWornPolyline([
+        project(geometry.goalLineX, geometry.penaltyTop),
+        project(geometry.penaltyLineX, geometry.penaltyTop),
+        project(geometry.penaltyLineX, geometry.penaltyBottom),
+        project(geometry.goalLineX, geometry.penaltyBottom),
+      ], side === 'left' ? 101 : 211);
+      strokeWornPolyline([
+        project(geometry.goalLineX, geometry.goalAreaTop),
+        project(geometry.goalAreaLineX, geometry.goalAreaTop),
+        project(geometry.goalAreaLineX, geometry.goalAreaBottom),
+        project(geometry.goalLineX, geometry.goalAreaBottom),
+      ], side === 'left' ? 307 : 419);
+
+      const arcPoints: MarkPoint[] = [];
+      const arcSteps = 34;
+      for (let step = 0; step <= arcSteps; step++) {
+        const angle = geometry.arcStart + (geometry.arcEnd - geometry.arcStart) * step / arcSteps;
+        arcPoints.push(project(
+          geometry.penaltySpotX + Math.cos(angle) * HYBRID_PENALTY_ARC_RADIUS,
+          ARENA_H / 2 + Math.sin(angle) * HYBRID_PENALTY_ARC_RADIUS,
+        ));
+      }
+      strokeWornPolyline(arcPoints, side === 'left' ? 521 : 631);
+
+      const spotX = toSX(geometry.penaltySpotX);
+      const spotY = toSY(ARENA_H / 2);
+      const spotSeed = side === 'left' ? 1301 : 1709;
+      // The Showpiece source already contains the painted spot. Do not stack a
+      // second white mark on top; integrate it with short disturbed fibres.
+      ctx.lineCap = 'round';
+      for (let fibre = 0; fibre < 13; fibre++) {
+        const angle = noise(spotSeed + fibre * 17) * TAU;
+        const radius = 5.4 + noise(spotSeed + fibre * 17 + 5) * 6.8;
+        const x = spotX + Math.cos(angle) * radius;
+        const y = spotY + Math.sin(angle) * radius * 0.56;
+        const lean = Math.cos(angle) * (1.2 + noise(spotSeed + fibre * 17 + 11) * 2.4);
+        const length = 0.8 + noise(spotSeed + fibre * 17 + 19) * 1.25;
+        ctx.strokeStyle = fibre % 4 === 0
+          ? 'rgba(123,125,65,0.20)'
+          : `rgba(42,67,29,${0.15 + noise(spotSeed + fibre * 17 + 23) * 0.13})`;
+        ctx.lineWidth = 0.52 + noise(spotSeed + fibre * 17 + 29) * 0.42;
+        ctx.beginPath();
+        ctx.moveTo(x - lean * 0.25, y + length * 0.35);
+        ctx.lineTo(x + lean, y - length * 0.65);
+        ctx.stroke();
+      }
+    }
+    ctx.restore();
+  }
+
   /** Small deterministic cloth motion for the four physical corner poles. */
   private drawLiveCornerFlags(
     ctx: CanvasRenderingContext2D,
@@ -2774,28 +5094,140 @@ export class Renderer {
     ctx.save();
     for (let index = 0; index < corners.length; index++) {
       const [worldX, worldY, inwardX, inwardY] = corners[index];
-      const x = toSX(worldX);
-      const groundY = toSY(worldY);
+      const screenX = toSX(worldX);
+      const screenGroundY = toSY(worldY);
+      const hybrid = this.hybridDepth;
+      const flagDepthScale = hybrid ? hybridCornerFlagDepthScale(worldY) : 1;
+      ctx.save();
+      ctx.translate(screenX, screenGroundY);
+      ctx.scale(flagDepthScale, flagDepthScale);
+      const x = 0;
+      const groundY = 0;
       const wave = Math.sin(time * 1.65 + index * 1.37);
       const flutter = Math.sin(time * 3.4 + index * 2.11) * 0.85;
       const direction = inwardX;
-      const poleTop = groundY - 34 * TILT;
+      const poleHeight = hybrid ? 48 : 34 * TILT;
+      const poleTopX = x + (hybrid ? -2.4 : 0);
+      const poleTop = groundY - poleHeight;
       const tailX = x + direction * (20.5 + wave * 2.1);
-      const centerY = poleTop + 7.2 * TILT + inwardY * flutter * 0.24;
-      const controlX = x + direction * (9.5 + wave * 1.15);
-      ctx.fillStyle = '#e8283f';
-      ctx.beginPath();
-      ctx.moveTo(x, poleTop);
-      ctx.quadraticCurveTo(controlX, poleTop + 2.7 * TILT - flutter * 0.25, tailX, centerY);
-      ctx.quadraticCurveTo(controlX + direction * 0.9, poleTop + 12.5 * TILT + flutter * 0.18, x, poleTop + 14 * TILT);
-      ctx.closePath();
+      const centerY = poleTop + (hybrid ? 9.2 : 7.2 * TILT) + inwardY * flutter * 0.24;
+      const controlX = poleTopX + direction * (hybrid ? 12.2 : 9.5 + wave * 1.15);
+
+      if (hybrid) {
+        // Directional cast and tight contact mark establish the pole's exact
+        // turf insertion point without adding a selection-style ring.
+        ctx.fillStyle = 'rgba(2,11,7,0.10)';
+        ctx.beginPath();
+        ctx.moveTo(x - 1.5, groundY + 1.2);
+        ctx.quadraticCurveTo(x + 15, groundY + 8.5, x + 31, groundY + 18.4);
+        ctx.quadraticCurveTo(x + 15, groundY + 12.1, x - 1.5, groundY + 3.2);
+        ctx.closePath();
+        ctx.fill();
+        ctx.fillStyle = 'rgba(1,9,6,0.31)';
+        ctx.beginPath();
+        ctx.ellipse(x + 1.2, groundY + 1.5, 4.5, 1.8, 0.04, 0, TAU);
+        ctx.fill();
+
+        // Silver ground socket, rubber collar and two anchor tabs make the
+        // flag belong to the pitch instead of hovering over it.
+        const socket = ctx.createLinearGradient(x - 4, 0, x + 4, 0);
+        socket.addColorStop(0, 'rgba(74,86,82,0.96)');
+        socket.addColorStop(0.43, 'rgba(231,237,230,0.94)');
+        socket.addColorStop(0.7, 'rgba(131,147,140,0.96)');
+        socket.addColorStop(1, 'rgba(34,48,44,0.98)');
+        ctx.fillStyle = 'rgba(3,12,9,0.92)';
+        ctx.beginPath();
+        ctx.ellipse(x, groundY + 0.5, 4.2, 2, 0, 0, TAU);
+        ctx.fill();
+        ctx.fillStyle = socket;
+        ctx.beginPath();
+        ctx.roundRect(x - 2.35, groundY - 5.4, 4.7, 6.2, 1.4);
+        ctx.fill();
+        ctx.strokeStyle = 'rgba(221,229,219,0.44)';
+        ctx.lineWidth = 0.75;
+        for (const tabX of [x - 5.2, x + 5.2]) {
+          ctx.beginPath();
+          ctx.moveTo(tabX, groundY + 0.3);
+          ctx.lineTo(x + Math.sign(tabX - x) * 2.7, groundY - 1.6);
+          ctx.stroke();
+        }
+
+        // Flexible fibreglass pole: dark cast, warm core and fine highlight.
+        const drawPole = (): void => {
+          ctx.beginPath();
+          ctx.moveTo(x, groundY - 3.6);
+          ctx.quadraticCurveTo(x - 0.9 + wave * 0.24, groundY - poleHeight * 0.54, poleTopX, poleTop);
+        };
+        ctx.save();
+        ctx.translate(1.8, 2.1);
+        ctx.strokeStyle = 'rgba(1,9,7,0.62)';
+        ctx.lineWidth = 4.3;
+        drawPole();
+        ctx.stroke();
+        ctx.restore();
+        ctx.strokeStyle = 'rgba(244,226,169,0.96)';
+        ctx.lineWidth = 2.55;
+        drawPole();
+        ctx.stroke();
+        ctx.save();
+        ctx.translate(-0.62, -0.38);
+        ctx.strokeStyle = 'rgba(255,252,228,0.68)';
+        ctx.lineWidth = 0.72;
+        drawPole();
+        ctx.stroke();
+        ctx.restore();
+
+        // Two dark rope loops visibly attach the cloth at mobile scale.
+        ctx.strokeStyle = 'rgba(20,29,25,0.78)';
+        ctx.lineWidth = 0.92;
+        for (const tetherY of [poleTop + 2.3, poleTop + 14.3]) {
+          ctx.beginPath();
+          ctx.ellipse(poleTopX + direction * 0.2, tetherY, 1.65, 1.05, 0, 0, TAU);
+          ctx.stroke();
+        }
+      }
+
+      const drawCloth = (): void => {
+        ctx.beginPath();
+        ctx.moveTo(poleTopX, poleTop);
+        ctx.quadraticCurveTo(controlX, poleTop + (hybrid ? 3.4 : 2.7 * TILT) - flutter * 0.25, tailX, centerY);
+        ctx.quadraticCurveTo(controlX + direction * 0.9, poleTop + (hybrid ? 16.8 : 12.5 * TILT) + flutter * 0.18, poleTopX, poleTop + (hybrid ? 17.5 : 14 * TILT));
+        ctx.closePath();
+      };
+      if (hybrid) {
+        ctx.save();
+        ctx.translate(1.7, 2.1);
+        ctx.fillStyle = 'rgba(91,8,25,0.52)';
+        drawCloth();
+        ctx.fill();
+        ctx.restore();
+      }
+      const cloth = ctx.createLinearGradient(poleTopX, poleTop, tailX, centerY);
+      cloth.addColorStop(0, '#ff4055');
+      cloth.addColorStop(0.5, '#e52642');
+      cloth.addColorStop(1, '#a90d2c');
+      ctx.fillStyle = hybrid ? cloth : '#e8283f';
+      drawCloth();
       ctx.fill();
+      if (hybrid) {
+        ctx.strokeStyle = 'rgba(104,7,24,0.72)';
+        ctx.lineWidth = 0.85;
+        drawCloth();
+        ctx.stroke();
+        ctx.strokeStyle = 'rgba(255,125,131,0.34)';
+        ctx.lineWidth = 0.7;
+        ctx.beginPath();
+        ctx.moveTo(poleTopX + direction * 2.5, poleTop + 6.1);
+        ctx.quadraticCurveTo(controlX, centerY - flutter * 0.32, tailX - direction * 3.1, centerY + 0.5);
+        ctx.stroke();
+      }
       ctx.strokeStyle = 'rgba(255,244,208,0.44)';
       ctx.lineWidth = 0.9;
       ctx.beginPath();
-      ctx.moveTo(x + direction * 1.6, poleTop + 2 * TILT);
-      ctx.quadraticCurveTo(controlX, poleTop + 4.2 * TILT, tailX - direction * 2.4, centerY);
+      ctx.moveTo(poleTopX + direction * 1.6, poleTop + (hybrid ? 2.4 : 2 * TILT));
+      ctx.quadraticCurveTo(controlX, poleTop + (hybrid ? 5.2 : 4.2 * TILT), tailX - direction * 2.4, centerY);
       ctx.stroke();
+      ctx.restore();
     }
     ctx.restore();
   }
@@ -2898,6 +5330,1109 @@ export class Renderer {
     ctx.restore();
   }
 
+  /** Back half of the optional hybrid arena rim.
+   *
+   * The arena stays a lightweight Canvas 2D game, but the far touchline gains
+   * a real raised profile: turf lip, dark vertical fascia, retaining rail and
+   * inset fasteners. Drawing this before actors lets entities naturally pass
+   * in front of the far construction without introducing a 3D engine. */
+  private drawHybridPitchRimBack(
+    ctx: CanvasRenderingContext2D,
+    toSX: (wx: number) => number,
+    toSY: (wy: number) => number,
+  ): void {
+    const left = toSX(0);
+    const right = toSX(ARENA_W);
+    const top = toSY(0);
+    const depth = 11;
+    ctx.save();
+    const fascia = ctx.createLinearGradient(0, top, 0, top - depth);
+    fascia.addColorStop(0, 'rgba(17,32,24,0.94)');
+    fascia.addColorStop(0.52, 'rgba(9,19,17,0.96)');
+    fascia.addColorStop(1, 'rgba(3,9,11,0.98)');
+    ctx.fillStyle = fascia;
+    ctx.beginPath();
+    ctx.moveTo(left, top);
+    ctx.lineTo(right, top);
+    ctx.lineTo(right - 7, top - depth);
+    ctx.lineTo(left + 7, top - depth);
+    ctx.closePath();
+    ctx.fill();
+    // The far retaining wall receives the same material stack as the near
+    // edge, compressed by perspective: dark fascia, cut soil, then the bright
+    // rolled-turf lip. It stays behind actors and subtler than the near rim.
+    const farSoil = ctx.createLinearGradient(0, top - 5, 0, top - 1);
+    farSoil.addColorStop(0, 'rgba(25,34,22,0.72)');
+    farSoil.addColorStop(0.55, 'rgba(59,56,28,0.56)');
+    farSoil.addColorStop(1, 'rgba(99,91,43,0.40)');
+    ctx.fillStyle = farSoil;
+    ctx.fillRect(left + 2, top - 4.2, right - left - 4, 2.8);
+    ctx.strokeStyle = 'rgba(188,202,132,0.24)';
+    ctx.lineWidth = 1.05;
+    ctx.beginPath();
+    ctx.moveTo(left + 1, top - 1.2);
+    ctx.lineTo(right - 1, top - 1.2);
+    ctx.stroke();
+    ctx.strokeStyle = 'rgba(166,185,165,0.44)';
+    ctx.lineWidth = 1.6;
+    ctx.beginPath();
+    ctx.moveTo(left + 7, top - depth);
+    ctx.lineTo(right - 7, top - depth);
+    ctx.stroke();
+    ctx.strokeStyle = 'rgba(218,231,193,0.28)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(left + 1, top - 1.5);
+    ctx.lineTo(right - 1, top - 1.5);
+    ctx.stroke();
+    for (let x = left + 18, index = 0; x < right - 14; x += 34, index++) {
+      ctx.strokeStyle = index % 3 === 0 ? 'rgba(151,169,158,0.31)' : 'rgba(73,91,86,0.32)';
+      ctx.lineWidth = 0.8;
+      ctx.beginPath();
+      ctx.moveTo(x, top - 3);
+      ctx.lineTo(x + 2.5, top - depth + 2);
+      ctx.stroke();
+      if (index % 4 === 1) {
+        ctx.fillStyle = 'rgba(220,224,198,0.46)';
+        ctx.beginPath();
+        ctx.arc(x + 1.2, top - 6.7, 0.85, 0, TAU);
+        ctx.fill();
+      }
+    }
+    ctx.restore();
+  }
+
+  /** Physical low-profile LED boards for the optional hybrid arena.
+   *
+   * The baked stadium already supplies colour and crowd density, but its
+   * touchline ads share the same flat image plane as the turf. These live
+   * boards add a dark cabinet, bevel, feet and restrained diode motion behind
+   * every actor. Short side returns finish the construction without boxing in
+   * the combat field or resembling a collision wall. */
+  private drawHybridTouchlineBoards(
+    ctx: CanvasRenderingContext2D,
+    toSX: (wx: number) => number,
+    toSY: (wy: number) => number,
+    time: number,
+  ): void {
+    const left = toSX(0);
+    const right = toSX(ARENA_W);
+    const top = toSY(0);
+    const boardTop = top - 31;
+    const boardBottom = top - 12;
+    const panelWidth = 108;
+    const panelCount = Math.max(1, Math.ceil((right - left) / panelWidth));
+    const palette = [
+      [58, 137, 197],
+      [220, 54, 73],
+      [235, 183, 49],
+      [221, 229, 225],
+    ] as const;
+    ctx.save();
+    ctx.lineJoin = 'round';
+
+    // Cast shadow, cabinet face and angled top cap establish measurable depth.
+    ctx.fillStyle = 'rgba(2,10,9,0.25)';
+    ctx.fillRect(left + 5, boardBottom + 5, right - left - 10, 6);
+    const cabinet = ctx.createLinearGradient(0, boardTop, 0, boardBottom);
+    cabinet.addColorStop(0, 'rgba(23,34,36,0.98)');
+    cabinet.addColorStop(0.32, 'rgba(10,19,23,0.99)');
+    cabinet.addColorStop(1, 'rgba(3,10,13,0.99)');
+    ctx.fillStyle = cabinet;
+    ctx.fillRect(left + 2, boardTop, right - left - 4, boardBottom - boardTop);
+    const cap = ctx.createLinearGradient(0, boardTop - 4.5, 0, boardTop + 2);
+    cap.addColorStop(0, 'rgba(178,191,185,0.48)');
+    cap.addColorStop(0.44, 'rgba(72,91,91,0.58)');
+    cap.addColorStop(1, 'rgba(9,20,23,0.82)');
+    ctx.fillStyle = cap;
+    ctx.beginPath();
+    ctx.moveTo(left + 7, boardTop);
+    ctx.lineTo(right - 7, boardTop);
+    ctx.lineTo(right - 3, boardTop - 4.5);
+    ctx.lineTo(left + 3, boardTop - 4.5);
+    ctx.closePath();
+    ctx.fill();
+
+    for (let panel = 0; panel < panelCount; panel++) {
+      const x0 = left + panel * panelWidth;
+      const x1 = Math.min(right, x0 + panelWidth);
+      if (x1 - x0 < 3) continue;
+      const color = palette[panel % palette.length];
+      const localPulse = 0.5 + 0.5 * Math.sin(time * (0.42 + (panel % 3) * 0.07) + panel * 1.31);
+      const diodeAlpha = 0.22 + localPulse * 0.13;
+      const face = ctx.createLinearGradient(x0, 0, x1, 0);
+      face.addColorStop(0, `rgba(${color[0]},${color[1]},${color[2]},${diodeAlpha * 0.46})`);
+      face.addColorStop(0.5, `rgba(${color[0]},${color[1]},${color[2]},${diodeAlpha})`);
+      face.addColorStop(1, `rgba(${color[0]},${color[1]},${color[2]},${diodeAlpha * 0.42})`);
+      ctx.fillStyle = face;
+      ctx.fillRect(x0 + 5, boardTop + 4.5, Math.max(0, x1 - x0 - 10), 7.5);
+
+      // Two dim diode rows and one slow, short scan reflection imply a real
+      // display surface without text, logos or combat-coloured flashes.
+      ctx.fillStyle = `rgba(${color[0]},${color[1]},${color[2]},${0.18 + localPulse * 0.08})`;
+      for (let diode = x0 + 8; diode < x1 - 7; diode += 8) {
+        ctx.fillRect(diode, boardTop + 5.8, 1.1, 1.1);
+        ctx.fillRect(diode + 3.1, boardTop + 9.1, 0.9, 0.9);
+      }
+      const travel = ((time * 7.5 + panel * 19) % Math.max(12, x1 - x0 - 20));
+      ctx.strokeStyle = 'rgba(239,247,242,0.11)';
+      ctx.lineWidth = 1.25;
+      ctx.beginPath();
+      ctx.moveTo(x0 + 8 + travel, boardTop + 4.6);
+      ctx.lineTo(Math.min(x1 - 7, x0 + 16 + travel), boardTop + 11.5);
+      ctx.stroke();
+
+      // Cabinet seams, hinge screws and dark ventilation slot.
+      ctx.strokeStyle = 'rgba(157,174,170,0.32)';
+      ctx.lineWidth = 0.8;
+      ctx.beginPath();
+      ctx.moveTo(x0 + 1.5, boardTop + 1.5);
+      ctx.lineTo(x0 + 1.5, boardBottom - 1.5);
+      ctx.stroke();
+      if (panel % 2 === 0) {
+        ctx.fillStyle = 'rgba(207,216,207,0.46)';
+        ctx.beginPath();
+        ctx.arc(x0 + 5, boardBottom - 3.1, 0.75, 0, TAU);
+        ctx.fill();
+      }
+      ctx.fillStyle = 'rgba(0,5,8,0.54)';
+      ctx.fillRect(x0 + panelWidth * 0.35, boardBottom - 3.3, Math.min(27, panelWidth * 0.3), 1.25);
+    }
+
+    ctx.strokeStyle = 'rgba(223,230,224,0.34)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(left + 3, boardTop + 1);
+    ctx.lineTo(right - 3, boardTop + 1);
+    ctx.stroke();
+
+    // Low steel feet are offset from the drainage seam, creating a thin air
+    // gap under the cabinets. Their asymmetry avoids a decorative fence read.
+    for (let foot = left + 44, index = 0; foot < right - 28; foot += 126, index++) {
+      ctx.strokeStyle = 'rgba(148,163,158,0.60)';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(foot, boardBottom);
+      ctx.lineTo(foot + (index % 2 ? -1.5 : 1.5), top - 1.5);
+      ctx.stroke();
+      ctx.fillStyle = 'rgba(4,13,12,0.55)';
+      ctx.beginPath();
+      ctx.ellipse(foot + (index % 2 ? -1.5 : 1.5), top - 0.8, 3.6, 1.35, 0, 0, TAU);
+      ctx.fill();
+    }
+
+    // Short side returns taper down the touchlines and terminate well before
+    // either penalty area, so they add corner depth without enclosing play.
+    const drawReturn = (x: number, outward: -1 | 1): void => {
+      const length = Math.min(188, Math.max(118, (right - left) * 0.085));
+      const outerX = x + outward * 18;
+      const endY = top + length;
+      const footX = x + outward * 13.5;
+      const returnGradient = ctx.createLinearGradient(x, 0, outerX, 0);
+      returnGradient.addColorStop(0, 'rgba(18,29,31,0.97)');
+      returnGradient.addColorStop(1, 'rgba(4,11,14,0.99)');
+      ctx.fillStyle = returnGradient;
+      ctx.beginPath();
+      ctx.moveTo(x, top - 8);
+      ctx.lineTo(outerX, top - 12);
+      ctx.lineTo(outerX, endY - 10);
+      ctx.lineTo(x, endY);
+      ctx.closePath();
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(171,187,181,0.38)';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(outerX - outward, top - 9);
+      ctx.lineTo(outerX - outward, endY - 12);
+      ctx.stroke();
+      // The return cabinet needs the same raised-underlay cues as the long
+      // board: paired steel feet, a narrow cast shadow and a drainage grate.
+      // These details are small but break the vertical black-stripe read at
+      // the corner and explain how the cabinet meets the pitch apron.
+      const returnShadow = ctx.createLinearGradient(x, 0, outerX, 0);
+      returnShadow.addColorStop(0, 'rgba(2,10,9,0.14)');
+      returnShadow.addColorStop(1, 'rgba(2,8,9,0.31)');
+      ctx.fillStyle = returnShadow;
+      ctx.beginPath();
+      ctx.moveTo(x + outward * 3, top + 31);
+      ctx.lineTo(outerX - outward * 2, top + 27);
+      ctx.lineTo(outerX - outward * 2, endY - 5);
+      ctx.lineTo(x + outward * 3, endY + 2);
+      ctx.closePath();
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(137,154,150,0.58)';
+      ctx.lineWidth = 1.7;
+      for (const footT of [0.27, 0.73]) {
+        const footY = top + length * footT;
+        ctx.beginPath();
+        ctx.moveTo(footX, footY - 2.5);
+        ctx.lineTo(x + outward * 3.5, footY + 0.5);
+        ctx.stroke();
+        ctx.fillStyle = 'rgba(3,11,11,0.62)';
+        ctx.beginPath();
+        ctx.ellipse(x + outward * 3.2, footY + 1.3, 3.2, 1.15, outward * -0.08, 0, TAU);
+        ctx.fill();
+      }
+      ctx.strokeStyle = 'rgba(112,129,125,0.36)';
+      ctx.lineWidth = 0.8;
+      for (let slot = 0; slot < 5; slot++) {
+        const slotY = top + 43 + slot * Math.max(12, (length - 73) / 4);
+        ctx.beginPath();
+        ctx.moveTo(x + outward * 2, slotY);
+        ctx.lineTo(x + outward * 7.5, slotY - 1.1);
+        ctx.stroke();
+      }
+      for (let segment = 0; segment < 4; segment++) {
+        const y = top + 14 + segment * (length - 30) / 4;
+        const color = palette[(segment + (outward > 0 ? 1 : 3)) % palette.length];
+        const alpha = 0.12 + (0.5 + 0.5 * Math.sin(time * 0.48 + segment * 1.9)) * 0.08;
+        ctx.strokeStyle = `rgba(${color[0]},${color[1]},${color[2]},${alpha})`;
+        ctx.lineWidth = 3.2;
+        ctx.beginPath();
+        ctx.moveTo(x + outward * 4, y);
+        ctx.lineTo(outerX - outward * 4, y - 2.2);
+        ctx.stroke();
+      }
+
+      // Chamfered corner service module bridges the horizontal cabinet and
+      // the side return. It hides the impossible razor-sharp 90-degree seam
+      // and gives the live construction a believable removable corner cover.
+      const innerX = x + outward * 1.5;
+      const outerCornerX = x + outward * 19.5;
+      ctx.fillStyle = 'rgba(5,13,16,0.98)';
+      ctx.beginPath();
+      ctx.moveTo(innerX, boardTop - 3.5);
+      ctx.lineTo(outerCornerX, top - 11.5);
+      ctx.lineTo(outerCornerX, top + 26);
+      ctx.lineTo(innerX, top + 31);
+      ctx.closePath();
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(184,198,191,0.46)';
+      ctx.lineWidth = 1.15;
+      ctx.beginPath();
+      ctx.moveTo(innerX, boardTop - 3.5);
+      ctx.lineTo(outerCornerX, top - 11.5);
+      ctx.lineTo(outerCornerX, top + 26);
+      ctx.stroke();
+      // Recessed cable hatch and two captive bolts communicate maintenance
+      // scale without any lettering or bright iconography.
+      ctx.fillStyle = 'rgba(0,6,9,0.72)';
+      ctx.fillRect(
+        outward < 0 ? outerCornerX + 4.2 : innerX + 4.2,
+        top + 2.5,
+        10.8,
+        13.5,
+      );
+      ctx.strokeStyle = 'rgba(117,137,132,0.34)';
+      ctx.lineWidth = 0.75;
+      ctx.strokeRect(
+        outward < 0 ? outerCornerX + 4.2 : innerX + 4.2,
+        top + 2.5,
+        10.8,
+        13.5,
+      );
+      ctx.fillStyle = 'rgba(212,219,209,0.44)';
+      for (const boltY of [top + 5.3, top + 13.7]) {
+        ctx.beginPath();
+        ctx.arc(outward < 0 ? outerCornerX + 6.3 : innerX + 13.1, boltY, 0.66, 0, TAU);
+        ctx.fill();
+      }
+      ctx.fillStyle = 'rgba(2,9,10,0.68)';
+      ctx.beginPath();
+      ctx.ellipse(footX, top + 29.5, 5.4, 1.75, outward * 0.06, 0, TAU);
+      ctx.fill();
+
+      // A mitred cap links the far turf lip to the return cabinet. It removes
+      // the last right-angle gap without introducing a bright gameplay mark.
+      const turfJoint = ctx.createLinearGradient(x, top - 7, outerCornerX, top - 13);
+      turfJoint.addColorStop(0, 'rgba(142,162,102,0.30)');
+      turfJoint.addColorStop(0.5, 'rgba(72,99,62,0.34)');
+      turfJoint.addColorStop(1, 'rgba(14,30,25,0.72)');
+      ctx.fillStyle = turfJoint;
+      ctx.beginPath();
+      ctx.moveTo(x + outward * 0.5, top - 7.2);
+      ctx.lineTo(outerCornerX - outward * 0.7, top - 12.3);
+      ctx.lineTo(outerCornerX - outward * 0.7, top - 8.7);
+      ctx.lineTo(x + outward * 1.5, top - 3.6);
+      ctx.closePath();
+      ctx.fill();
+    };
+    drawReturn(left, -1);
+    drawReturn(right, 1);
+    ctx.restore();
+  }
+
+  /** Two live dugouts and a broadcast camera behind the far LED cabinets.
+   *
+   * The structures occupy only the stadium apron and are rendered before the
+   * boards and every actor. Transparent acrylic, individual seats, tubular
+   * braces and tripod feet add real-world scale without introducing gameplay
+   * collision, text, logos or image assets. */
+  private drawHybridTechnicalZone(
+    ctx: CanvasRenderingContext2D,
+    toSX: (wx: number) => number,
+    toSY: (wy: number) => number,
+    time: number,
+  ): void {
+    const left = toSX(0);
+    const right = toSX(ARENA_W);
+    const top = toSY(0);
+    const width = right - left;
+    ctx.save();
+    const drawDugout = (centerX: number, accent: readonly [number, number, number], mirror: -1 | 1): void => {
+      const dugoutWidth = Math.min(390, width * 0.25);
+      const x0 = centerX - dugoutWidth / 2;
+      const x1 = centerX + dugoutWidth / 2;
+      const roofY = top - 72;
+      const shoulderY = top - 63;
+      const baseY = top - 34;
+      const depthLean = mirror * 7;
+
+      // Platform contact and recessed rubber plinth sit behind the LED board.
+      const platformShadow = ctx.createLinearGradient(0, baseY - 2, 0, top - 19);
+      platformShadow.addColorStop(0, 'rgba(1,8,8,0.34)');
+      platformShadow.addColorStop(1, 'rgba(1,8,8,0)');
+      ctx.fillStyle = platformShadow;
+      ctx.fillRect(x0 - 7, baseY - 2, dugoutWidth + 14, 18);
+      ctx.fillStyle = 'rgba(5,13,15,0.92)';
+      ctx.beginPath();
+      ctx.moveTo(x0 - 2, baseY - 4);
+      ctx.lineTo(x1 + 2, baseY - 4);
+      ctx.lineTo(x1 + 8, baseY + 2);
+      ctx.lineTo(x0 - 8, baseY + 2);
+      ctx.closePath();
+      ctx.fill();
+
+      // Smoke-tinted acrylic back wall. The centre is more transparent than
+      // its graphite frame so the baked crowd still contributes natural depth.
+      const glass = ctx.createLinearGradient(x0, 0, x1, 0);
+      glass.addColorStop(0, 'rgba(118,151,154,0.15)');
+      glass.addColorStop(0.48, 'rgba(195,220,216,0.095)');
+      glass.addColorStop(1, 'rgba(89,121,127,0.18)');
+      ctx.fillStyle = glass;
+      ctx.beginPath();
+      ctx.moveTo(x0 + depthLean, shoulderY);
+      ctx.quadraticCurveTo(x0 + 22 + depthLean, roofY, x0 + 42 + depthLean, roofY);
+      ctx.lineTo(x1 - 38 + depthLean, roofY);
+      ctx.quadraticCurveTo(x1 - 16 + depthLean, roofY + 1, x1 + depthLean, shoulderY);
+      ctx.lineTo(x1, baseY);
+      ctx.lineTo(x0, baseY);
+      ctx.closePath();
+      ctx.fill();
+
+      // A separate roof slab and rear lower panel make the canopy volumetric.
+      const roof = ctx.createLinearGradient(0, roofY - 5, 0, roofY + 5);
+      roof.addColorStop(0, 'rgba(218,231,227,0.52)');
+      roof.addColorStop(0.38, 'rgba(92,118,120,0.48)');
+      roof.addColorStop(1, 'rgba(10,23,28,0.78)');
+      ctx.fillStyle = roof;
+      ctx.beginPath();
+      ctx.moveTo(x0 + 35 + depthLean, roofY - 4.5);
+      ctx.lineTo(x1 - 32 + depthLean, roofY - 4.5);
+      ctx.lineTo(x1 - 37 + depthLean, roofY + 2.2);
+      ctx.lineTo(x0 + 40 + depthLean, roofY + 2.2);
+      ctx.closePath();
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(232,241,237,0.25)';
+      ctx.lineWidth = 0.85;
+      ctx.beginPath();
+      ctx.moveTo(x0 + 36 + depthLean, roofY - 3.5);
+      ctx.lineTo(x1 - 33 + depthLean, roofY - 3.5);
+      ctx.stroke();
+      ctx.strokeStyle = 'rgba(2,10,13,0.48)';
+      ctx.lineWidth = 2.1;
+      ctx.beginPath();
+      ctx.moveTo(x0 + 41 + depthLean, roofY + 2.5);
+      ctx.lineTo(x1 - 38 + depthLean, roofY + 2.5);
+      ctx.stroke();
+      ctx.fillStyle = 'rgba(4,13,17,0.73)';
+      ctx.fillRect(x0 + 5, baseY - 10, dugoutWidth - 10, 8);
+
+      // Tubular outer frame, vertical ribs and diagonal end braces.
+      const drawFrame = (): void => {
+        ctx.beginPath();
+        ctx.moveTo(x0, baseY);
+        ctx.lineTo(x0 + depthLean, shoulderY);
+        ctx.quadraticCurveTo(x0 + 22 + depthLean, roofY, x0 + 42 + depthLean, roofY);
+        ctx.lineTo(x1 - 38 + depthLean, roofY);
+        ctx.quadraticCurveTo(x1 - 16 + depthLean, roofY + 1, x1 + depthLean, shoulderY);
+        ctx.lineTo(x1, baseY);
+      };
+      ctx.save();
+      ctx.translate(1.7, 2.1);
+      ctx.strokeStyle = 'rgba(2,9,10,0.62)';
+      ctx.lineWidth = 4.8;
+      drawFrame();
+      ctx.stroke();
+      ctx.restore();
+      ctx.strokeStyle = 'rgba(178,194,190,0.78)';
+      ctx.lineWidth = 2.55;
+      drawFrame();
+      ctx.stroke();
+      ctx.strokeStyle = 'rgba(244,248,244,0.38)';
+      ctx.lineWidth = 0.72;
+      ctx.save();
+      ctx.translate(-mirror * 0.55, -0.55);
+      drawFrame();
+      ctx.stroke();
+      ctx.restore();
+
+      const ribCount = 6;
+      for (let rib = 1; rib < ribCount; rib++) {
+        const t = rib / ribCount;
+        const ribX = x0 + dugoutWidth * t + depthLean * (1 - Math.abs(t - 0.5) * 1.2);
+        ctx.strokeStyle = 'rgba(151,172,170,0.39)';
+        ctx.lineWidth = 1.15;
+        ctx.beginPath();
+        ctx.moveTo(ribX, roofY + 1.5);
+        ctx.lineTo(ribX - depthLean * 0.16, baseY - 1.5);
+        ctx.stroke();
+      }
+      ctx.strokeStyle = 'rgba(173,190,186,0.34)';
+      ctx.lineWidth = 1.15;
+      for (const endX of [x0 + 4, x1 - 4]) {
+        ctx.beginPath();
+        ctx.moveTo(endX, baseY - 2);
+        ctx.lineTo(endX + mirror * 9, shoulderY + 5);
+        ctx.stroke();
+      }
+
+      // Seven individual moulded seats: back shell, cushion, metal pedestal
+      // and small footplate. Alternating highlights prevent a flat colour bar.
+      const seats = 7;
+      for (let seat = 0; seat < seats; seat++) {
+        const seatX = x0 + 29 + seat * (dugoutWidth - 58) / (seats - 1);
+        const seatY = baseY - 11;
+        const [r, g, b] = accent;
+        const shell = ctx.createLinearGradient(seatX - 8, 0, seatX + 8, 0);
+        shell.addColorStop(0, `rgba(${Math.max(0, r - 35)},${Math.max(0, g - 35)},${Math.max(0, b - 35)},0.96)`);
+        shell.addColorStop(0.45, `rgba(${r},${g},${b},0.94)`);
+        shell.addColorStop(1, `rgba(${Math.max(0, r - 48)},${Math.max(0, g - 48)},${Math.max(0, b - 48)},0.98)`);
+        ctx.fillStyle = shell;
+        ctx.beginPath();
+        ctx.roundRect(seatX - 8.2, seatY - 14.5, 16.4, 13.5, 3.2);
+        ctx.fill();
+        ctx.fillStyle = `rgba(${Math.min(255, r + 28)},${Math.min(255, g + 28)},${Math.min(255, b + 28)},0.74)`;
+        ctx.beginPath();
+        ctx.roundRect(seatX - 8.6, seatY - 2.5, 17.2, 5.6, 2.3);
+        ctx.fill();
+        ctx.strokeStyle = 'rgba(169,184,179,0.58)';
+        ctx.lineWidth = 1.15;
+        ctx.beginPath();
+        ctx.moveTo(seatX, seatY + 2.5);
+        ctx.lineTo(seatX, baseY - 2);
+        ctx.stroke();
+        ctx.fillStyle = 'rgba(2,9,10,0.68)';
+        ctx.fillRect(seatX - 4.4, baseY - 2.5, 8.8, 1.7);
+      }
+
+      // Fixed glass reflections stay subdued; one slow moving highlight sells
+      // acrylic rather than a glowing screen or animated gameplay element.
+      ctx.strokeStyle = 'rgba(229,244,242,0.13)';
+      ctx.lineWidth = 1.1;
+      for (let pane = 0; pane < 3; pane++) {
+        const reflectionX = x0 + 55 + pane * (dugoutWidth - 110) / 2;
+        ctx.beginPath();
+        ctx.moveTo(reflectionX - 10, roofY + 8);
+        ctx.lineTo(reflectionX + 4, baseY - 14);
+        ctx.stroke();
+      }
+      const glint = ((time * 9 + (mirror > 0 ? 23 : 0)) % Math.max(1, dugoutWidth - 110));
+      ctx.strokeStyle = 'rgba(241,250,247,0.10)';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(x0 + 50 + glint, roofY + 7);
+      ctx.lineTo(x0 + 62 + glint, baseY - 10);
+      ctx.stroke();
+    };
+
+    drawDugout(left + width * 0.31, [36, 107, 165], -1);
+    drawDugout(left + width * 0.69, [193, 43, 61], 1);
+
+    // Central broadcast camera: low tripod, pan head, lens hood, tally lamp
+    // and two coiled cables. It remains behind the board and cannot obscure
+    // the centre line or player silhouette.
+    const cameraX = left + width * 0.5 + Math.min(86, width * 0.06);
+    const cameraY = top - 47;
+    ctx.strokeStyle = 'rgba(142,156,153,0.64)';
+    ctx.lineWidth = 2.1;
+    for (const footX of [cameraX - 18, cameraX, cameraX + 18]) {
+      ctx.beginPath();
+      ctx.moveTo(cameraX, cameraY + 6);
+      ctx.lineTo(footX, top - 27);
+      ctx.stroke();
+      ctx.fillStyle = 'rgba(2,8,10,0.72)';
+      ctx.beginPath();
+      ctx.ellipse(footX, top - 26, 4.2, 1.5, 0, 0, TAU);
+      ctx.fill();
+    }
+    const cameraBody = ctx.createLinearGradient(cameraX - 20, 0, cameraX + 16, 0);
+    cameraBody.addColorStop(0, 'rgba(20,31,35,0.99)');
+    cameraBody.addColorStop(0.42, 'rgba(66,79,81,0.98)');
+    cameraBody.addColorStop(0.68, 'rgba(15,25,30,0.99)');
+    cameraBody.addColorStop(1, 'rgba(2,9,13,1)');
+    ctx.fillStyle = cameraBody;
+    ctx.beginPath();
+    ctx.roundRect(cameraX - 20, cameraY - 11, 36, 19, 3.5);
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(194,207,202,0.68)';
+    ctx.lineWidth = 1.25;
+    ctx.beginPath();
+    ctx.roundRect(cameraX - 20, cameraY - 11, 36, 19, 3.5);
+    ctx.stroke();
+    ctx.fillStyle = 'rgba(209,219,214,0.58)';
+    ctx.fillRect(cameraX - 15, cameraY - 9, 18, 1.35);
+    ctx.fillStyle = 'rgba(1,7,10,0.78)';
+    ctx.fillRect(cameraX - 15.5, cameraY - 5.5, 15, 9.5);
+    // Articulated operator monitor: dark bezel, blue-black glass and hinge.
+    ctx.strokeStyle = 'rgba(157,173,169,0.66)';
+    ctx.lineWidth = 1.4;
+    ctx.beginPath();
+    ctx.moveTo(cameraX - 17, cameraY - 2);
+    ctx.lineTo(cameraX - 26, cameraY - 3.5);
+    ctx.stroke();
+    ctx.fillStyle = 'rgba(7,15,20,0.98)';
+    ctx.beginPath();
+    ctx.roundRect(cameraX - 35, cameraY - 10, 12.5, 14, 1.8);
+    ctx.fill();
+    const monitorGlass = ctx.createLinearGradient(cameraX - 34, cameraY - 9, cameraX - 24, cameraY + 2);
+    monitorGlass.addColorStop(0, 'rgba(45,92,112,0.48)');
+    monitorGlass.addColorStop(0.45, 'rgba(13,39,51,0.68)');
+    monitorGlass.addColorStop(1, 'rgba(1,11,17,0.92)');
+    ctx.fillStyle = monitorGlass;
+    ctx.fillRect(cameraX - 33, cameraY - 8, 8.7, 10);
+    ctx.strokeStyle = 'rgba(207,220,215,0.36)';
+    ctx.lineWidth = 0.7;
+    ctx.strokeRect(cameraX - 33, cameraY - 8, 8.7, 10);
+    const lens = ctx.createLinearGradient(cameraX + 10, 0, cameraX + 31, 0);
+    lens.addColorStop(0, 'rgba(37,51,55,0.98)');
+    lens.addColorStop(0.58, 'rgba(8,17,22,0.99)');
+    lens.addColorStop(1, 'rgba(1,7,10,1)');
+    ctx.fillStyle = lens;
+    ctx.beginPath();
+    ctx.moveTo(cameraX + 10, cameraY - 6);
+    ctx.lineTo(cameraX + 32, cameraY - 4.5);
+    ctx.lineTo(cameraX + 32, cameraY + 4.5);
+    ctx.lineTo(cameraX + 10, cameraY + 6);
+    ctx.closePath();
+    ctx.fill();
+    // Cool glass objective nested inside the matte hood makes the camera read
+    // at gameplay scale without a glowing light source.
+    const objective = ctx.createRadialGradient(cameraX + 31, cameraY, 0.5, cameraX + 31, cameraY, 4.2);
+    objective.addColorStop(0, 'rgba(142,215,225,0.64)');
+    objective.addColorStop(0.34, 'rgba(35,111,137,0.62)');
+    objective.addColorStop(0.72, 'rgba(5,32,46,0.86)');
+    objective.addColorStop(1, 'rgba(0,5,8,0.96)');
+    ctx.fillStyle = objective;
+    ctx.beginPath();
+    ctx.ellipse(cameraX + 31, cameraY, 3.4, 4.15, 0, 0, TAU);
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(184,204,200,0.42)';
+    ctx.lineWidth = 0.8;
+    ctx.beginPath();
+    ctx.ellipse(cameraX + 31, cameraY, 3.6, 4.35, 0, 0, TAU);
+    ctx.stroke();
+    ctx.fillStyle = 'rgba(219,38,52,0.48)';
+    ctx.beginPath();
+    ctx.arc(cameraX - 13, cameraY - 7, 1.35, 0, TAU);
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(4,10,13,0.52)';
+    ctx.lineWidth = 1.3;
+    for (const offset of [-8, 8]) {
+      ctx.beginPath();
+      ctx.arc(cameraX + offset, top - 26, 6, 0.2, Math.PI * 1.65);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  /** Near half of the optional hybrid rim.
+   *
+   * It is intentionally drawn after actors and the goal foreground so the
+   * near lip can occlude feet by a few pixels. That small, consistent overlap
+   * is the depth cue a flat arena lacks; side returns connect it to the far rim
+   * while remaining outside the combat field. */
+  private drawHybridPitchRimFront(
+    ctx: CanvasRenderingContext2D,
+    toSX: (wx: number) => number,
+    toSY: (wy: number) => number,
+  ): void {
+    const left = toSX(0);
+    const right = toSX(ARENA_W);
+    const top = toSY(0);
+    const bottom = toSY(ARENA_H);
+    const depth = 18;
+    ctx.save();
+
+    const sideReturn = (x: number, direction: -1 | 1): void => {
+      const lip = 8;
+      const gradient = ctx.createLinearGradient(x, 0, x + direction * lip, 0);
+      gradient.addColorStop(0, 'rgba(18,35,25,0.93)');
+      gradient.addColorStop(1, 'rgba(4,12,13,0.97)');
+      const goalGapTop = toSY(ARENA_H / 2 - 130) - HYBRID_GOAL_RIM_GAP_PAD;
+      const goalGapBottom = toSY(ARENA_H / 2 + 130) + HYBRID_GOAL_RIM_GAP_PAD;
+      const drawSegment = (y0: number, y1: number): void => {
+        if (y1 <= y0) return;
+        ctx.fillStyle = gradient;
+        ctx.beginPath();
+        ctx.moveTo(x, y0);
+        ctx.lineTo(x, y1);
+        ctx.lineTo(x + direction * lip, y1 + 5);
+        ctx.lineTo(x + direction * lip, y0 - 5);
+        ctx.closePath();
+        ctx.fill();
+        ctx.strokeStyle = 'rgba(181,199,175,0.28)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(x, y0 + 2);
+        ctx.lineTo(x, y1 - 2);
+        ctx.stroke();
+      };
+      // Leave a real opening through the raised side fascia for each goal.
+      // Previously the wall continued behind the mesh and made the cage look
+      // pasted onto a black stripe. Two capped segments let the base rails
+      // pass naturally beyond the goal line while retaining the raised rim.
+      drawSegment(top, goalGapTop);
+      drawSegment(goalGapBottom, bottom);
+      for (const [capY, capDirection] of [[goalGapTop, 1], [goalGapBottom, -1]] as const) {
+        ctx.fillStyle = 'rgba(8,19,17,0.98)';
+        ctx.beginPath();
+        ctx.moveTo(x, capY);
+        ctx.lineTo(x + direction * lip, capY + capDirection * 5);
+        ctx.lineTo(x + direction * (lip + 3.5), capY + capDirection * 1.5);
+        ctx.lineTo(x + direction * 2, capY - capDirection * 2);
+        ctx.closePath();
+        ctx.fill();
+        ctx.strokeStyle = 'rgba(202,214,196,0.38)';
+        ctx.lineWidth = 0.9;
+        ctx.beginPath();
+        ctx.moveTo(x + direction, capY);
+        ctx.lineTo(x + direction * lip, capY + capDirection * 4.2);
+        ctx.stroke();
+      }
+    };
+    sideReturn(left, -1);
+    sideReturn(right, 1);
+
+    const fascia = ctx.createLinearGradient(0, bottom, 0, bottom + depth);
+    fascia.addColorStop(0, 'rgba(38,61,38,0.95)');
+    fascia.addColorStop(0.24, 'rgba(22,41,29,0.97)');
+    fascia.addColorStop(0.62, 'rgba(12,26,22,0.98)');
+    fascia.addColorStop(1, 'rgba(3,11,13,0.99)');
+    ctx.fillStyle = fascia;
+    ctx.beginPath();
+    ctx.moveTo(left, bottom);
+    ctx.lineTo(right, bottom);
+    ctx.lineTo(right + 8, bottom + depth);
+    ctx.lineTo(left - 8, bottom + depth);
+    ctx.closePath();
+    ctx.fill();
+    // A shallow apron compression shadow remains on the turf, not under it.
+    // This grounds objects before the sod lip occludes their bottom pixels.
+    const apronShadow = ctx.createLinearGradient(0, bottom - 24, 0, bottom + 1);
+    apronShadow.addColorStop(0, 'rgba(4,17,10,0)');
+    apronShadow.addColorStop(0.62, 'rgba(4,17,10,0.055)');
+    apronShadow.addColorStop(1, 'rgba(2,10,8,0.16)');
+    ctx.fillStyle = apronShadow;
+    ctx.fillRect(left, bottom - 24, right - left, 25);
+
+    // Rolled turf edge catches light above the fascia and makes the grass read
+    // as a physical sod layer instead of a texture ending at a black bar.
+    const turfBevel = ctx.createLinearGradient(0, bottom - 3, 0, bottom + 4);
+    turfBevel.addColorStop(0, 'rgba(157,177,83,0.22)');
+    turfBevel.addColorStop(0.45, 'rgba(84,116,44,0.46)');
+    turfBevel.addColorStop(1, 'rgba(22,51,25,0.66)');
+    ctx.fillStyle = turfBevel;
+    ctx.beginPath();
+    ctx.moveTo(left, bottom - 2.6);
+    ctx.lineTo(right, bottom - 2.6);
+    ctx.lineTo(right + 2.2, bottom + 4.2);
+    ctx.lineTo(left - 2.2, bottom + 4.2);
+    ctx.closePath();
+    ctx.fill();
+    // Irregular individual blade tips break the unnaturally perfect horizontal
+    // edge. The deterministic spacing prevents sparkle and is cheap enough for
+    // mobile while retaining the authored close-up grass texture.
+    ctx.lineCap = 'round';
+    for (let tuftX = left + 4, tuft = 0; tuftX < right - 3; tuftX += 8.5, tuft++) {
+      const bend = ((tuft * 17) % 7 - 3) * 0.32;
+      const height = 1.2 + (tuft % 4) * 0.48;
+      ctx.strokeStyle = tuft % 5 === 0 ? 'rgba(200,210,128,0.34)' : 'rgba(104,137,65,0.38)';
+      ctx.lineWidth = tuft % 3 === 0 ? 0.75 : 0.55;
+      ctx.beginPath();
+      ctx.moveTo(tuftX, bottom - 0.3);
+      ctx.quadraticCurveTo(tuftX + bend * 0.4, bottom - height * 0.62, tuftX + bend, bottom - height);
+      ctx.stroke();
+    }
+    // Expose a thin cut-soil seam under the sod. This materially separates
+    // the physical pitch slab from the dark retaining modules below; without
+    // it the whole front edge reads like a flat black letterbox bar.
+    const soilSeam = ctx.createLinearGradient(0, bottom + 2.6, 0, bottom + 7.2);
+    soilSeam.addColorStop(0, 'rgba(82,72,34,0.64)');
+    soilSeam.addColorStop(0.46, 'rgba(47,45,24,0.72)');
+    soilSeam.addColorStop(1, 'rgba(18,27,18,0.74)');
+    ctx.fillStyle = soilSeam;
+    ctx.fillRect(left - 1, bottom + 3.4, right - left + 2, 3.4);
+    ctx.strokeStyle = 'rgba(203,192,115,0.17)';
+    ctx.lineWidth = 0.65;
+    for (let clump = left + 8, index = 0; clump < right - 4; clump += 19, index++) {
+      const length = 2.1 + (index % 3) * 0.7;
+      ctx.beginPath();
+      ctx.moveTo(clump, bottom + 3.8);
+      ctx.lineTo(clump + (index % 2 ? 1.2 : -0.8), bottom + 3.8 + length);
+      ctx.stroke();
+    }
+    ctx.strokeStyle = 'rgba(228,235,203,0.34)';
+    ctx.lineWidth = 1.35;
+    ctx.beginPath();
+    ctx.moveTo(left + 1, bottom + 1.4);
+    ctx.lineTo(right - 1, bottom + 1.4);
+    ctx.stroke();
+
+    // Recessed linear drain separates wet sod from the structural modules.
+    // Slotted steel and a narrow cavity create measurable depth without a
+    // bright border that could be mistaken for an arena hazard.
+    const drainY = bottom + 7.4;
+    const drain = ctx.createLinearGradient(0, drainY, 0, drainY + 4.8);
+    drain.addColorStop(0, 'rgba(2,8,10,0.96)');
+    drain.addColorStop(0.52, 'rgba(17,29,29,0.98)');
+    drain.addColorStop(1, 'rgba(5,14,15,0.98)');
+    ctx.fillStyle = drain;
+    ctx.fillRect(left - 2, drainY, right - left + 4, 4.8);
+    ctx.strokeStyle = 'rgba(151,167,159,0.33)';
+    ctx.lineWidth = 0.65;
+    for (let slotX = left + 8, slot = 0; slotX < right - 5; slotX += 14, slot++) {
+      const lean = slot % 2 === 0 ? 1.3 : -1.3;
+      ctx.beginPath();
+      ctx.moveTo(slotX - lean, drainY + 1.15);
+      ctx.lineTo(slotX + lean, drainY + 3.65);
+      ctx.stroke();
+    }
+    ctx.strokeStyle = 'rgba(215,222,208,0.22)';
+    ctx.lineWidth = 0.75;
+    ctx.beginPath();
+    ctx.moveTo(left, drainY + 0.55);
+    ctx.lineTo(right, drainY + 0.55);
+    ctx.stroke();
+    // Alternating inset panels give the retaining face a believable modular
+    // scale. They remain dark and textless so they cannot resemble pickups.
+    const panelWidth = 92;
+    for (let panelX = left - 3, panel = 0; panelX < right; panelX += panelWidth, panel++) {
+      const width = Math.min(panelWidth - 3, right - panelX + 5);
+      ctx.fillStyle = panel % 2 === 0 ? 'rgba(74,91,73,0.26)' : 'rgba(9,21,18,0.23)';
+      ctx.fillRect(panelX + 2, drainY + 4.8, width, Math.max(1, bottom + depth - drainY - 4.8));
+      ctx.strokeStyle = panel % 2 === 0 ? 'rgba(151,169,158,0.32)' : 'rgba(95,116,108,0.25)';
+      ctx.lineWidth = 0.9;
+      ctx.beginPath();
+      ctx.moveTo(panelX + 2, drainY + 5.2);
+      ctx.lineTo(panelX + 4, bottom + depth - 1.4);
+      ctx.stroke();
+      if (panel % 2 === 0) {
+        ctx.fillStyle = 'rgba(216,224,207,0.46)';
+        ctx.beginPath();
+        ctx.arc(panelX + 12, drainY + 7.1, 1.15, 0, TAU);
+        ctx.arc(panelX + panelWidth - 13, drainY + 7.1, 1.15, 0, TAU);
+        ctx.fill();
+      }
+      if (panel % 3 === 1) {
+        ctx.fillStyle = 'rgba(2,8,10,0.58)';
+        ctx.fillRect(panelX + panelWidth * 0.34, bottom + depth - 4.2, panelWidth * 0.32, 1.6);
+      }
+    }
+    ctx.restore();
+  }
+
+  /** Rear goal cage for the hybrid route, drawn before all entities.
+   *
+   * Separating this from drawGoalForeground is essential: players may cross
+   * in front of the rear stanchion and net roof, while only the real front post
+   * is allowed to occlude them later. The result is genuine painter-sorted
+   * 2.5D rather than one bright outline pasted over every actor. */
+  private strokeHybridGoalTube(
+    ctx: CanvasRenderingContext2D,
+    drawPath: () => void,
+    width: number,
+    highlightOffset: { x: number; y: number },
+    alpha = 1,
+  ): void {
+    ctx.save();
+    ctx.translate(2.5, 2.8);
+    ctx.strokeStyle = `rgba(4,14,11,${0.54 * alpha})`;
+    ctx.lineWidth = width + 3.2;
+    drawPath();
+    ctx.stroke();
+    ctx.restore();
+
+    ctx.strokeStyle = `rgba(178,188,184,${0.94 * alpha})`;
+    ctx.lineWidth = width + 0.8;
+    drawPath();
+    ctx.stroke();
+    ctx.strokeStyle = `rgba(247,249,249,${0.98 * alpha})`;
+    ctx.lineWidth = width;
+    drawPath();
+    ctx.stroke();
+
+    ctx.save();
+    ctx.translate(highlightOffset.x, highlightOffset.y);
+    ctx.strokeStyle = `rgba(255,255,255,${0.72 * alpha})`;
+    ctx.lineWidth = Math.max(0.72, width * 0.19);
+    drawPath();
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  private drawHybridGoalDepth(
+    ctx: CanvasRenderingContext2D,
+    toSX: (wx: number) => number,
+    toSY: (wy: number) => number,
+    time: number,
+  ): void {
+    interface NetPoint { x: number; y: number }
+    type NetSurface = (u: number, v: number) => NetPoint;
+    const drawDiamondNet = (
+      surface: NetSurface,
+      columns: number,
+      rows: number,
+      sagX: number,
+      alpha: number,
+    ): void => {
+      const drawCord = (u0: number, v0: number, u1: number, v1: number, phase: number): void => {
+        const samples = 9;
+        ctx.beginPath();
+        for (let sample = 0; sample <= samples; sample++) {
+          const t = sample / samples;
+          const u = u0 + (u1 - u0) * t;
+          const v = v0 + (v1 - v0) * t;
+          const point = surface(u, v);
+          const relaxed = Math.sin(t * Math.PI);
+          const fibreWave = Math.sin((t * 2 + phase) * Math.PI) * 0.24;
+          const x = point.x + sagX * relaxed;
+          const y = point.y + fibreWave * relaxed;
+          if (sample === 0) ctx.moveTo(x, y);
+          else ctx.lineTo(x, y);
+        }
+        ctx.stroke();
+      };
+
+      ctx.save();
+      ctx.lineCap = 'round';
+      ctx.strokeStyle = `rgba(235,241,237,${alpha})`;
+      ctx.lineWidth = 0.72;
+      // Work in integer mesh coordinates before projecting onto the surface.
+      // V-U and V+U families tessellate into diamonds even on perspective
+      // quads, unlike the previous rigid row/column transparency grid.
+      for (let diagonal = -columns; diagonal <= rows; diagonal++) {
+        const startU = Math.max(0, -diagonal);
+        const endU = Math.min(columns, rows - diagonal);
+        if (endU <= startU) continue;
+        drawCord(
+          startU / columns,
+          (startU + diagonal) / rows,
+          endU / columns,
+          (endU + diagonal) / rows,
+          diagonal * 0.17,
+        );
+      }
+      for (let diagonal = 0; diagonal <= columns + rows; diagonal++) {
+        const startU = Math.max(0, diagonal - rows);
+        const endU = Math.min(columns, diagonal);
+        if (endU <= startU) continue;
+        drawCord(
+          startU / columns,
+          (diagonal - startU) / rows,
+          endU / columns,
+          (diagonal - endU) / rows,
+          diagonal * 0.13 + 0.5,
+        );
+      }
+      ctx.restore();
+    };
+
+    const top = toSY(ARENA_H / 2 - 130);
+    const bottom = toSY(ARENA_H / 2 + 130);
+    ctx.save();
+    ctx.lineCap = 'round';
+    for (const gx of [40, ARENA_W - 40]) {
+      const x = toSX(gx);
+      const direction = gx < ARENA_W / 2 ? -1 : 1;
+      const backX = x + direction * HYBRID_GOAL_DEPTH;
+      const lift = HYBRID_GOAL_LIFT;
+      const postHeight = HYBRID_GOAL_POST_HEIGHT;
+      const frontRaisedX = x - HYBRID_GOAL_HEIGHT_SHEAR_X;
+      const rearRaisedX = backX - HYBRID_GOAL_HEIGHT_SHEAR_X;
+      const frontTop = top - postHeight;
+      const frontBottom = bottom - postHeight;
+      const rearTop = top - postHeight - lift;
+      const rearBottom = bottom - postHeight - lift;
+
+      // The elevated cage casts a restrained stadium-light shadow onto the
+      // grass. A two-pass offset avoids the crisp duplicate-frame look that a
+      // single black stroke would create, while remaining far below gameplay
+      // telegraph contrast and entirely behind actors.
+      const drawRaisedCageShadow = (): void => {
+        ctx.beginPath();
+        ctx.moveTo(frontRaisedX, frontTop);
+        ctx.lineTo(rearRaisedX, rearTop);
+        ctx.lineTo(rearRaisedX, rearBottom);
+        ctx.lineTo(frontRaisedX, frontBottom);
+      };
+      ctx.save();
+      // The cage shares the upper-left key light with actors and flags.
+      ctx.translate(10.2, 7.4);
+      ctx.strokeStyle = 'rgba(2,12,8,0.075)';
+      ctx.lineWidth = 10.5;
+      drawRaisedCageShadow();
+      ctx.stroke();
+      ctx.strokeStyle = 'rgba(2,12,8,0.12)';
+      ctx.lineWidth = 4.6;
+      drawRaisedCageShadow();
+      ctx.stroke();
+      ctx.restore();
+
+      // Soft internal floor shadow sells the footprint without adding a ring.
+      const floorShadow = ctx.createLinearGradient(x, 0, backX, 0);
+      floorShadow.addColorStop(0, 'rgba(4,13,9,0.07)');
+      floorShadow.addColorStop(1, 'rgba(3,10,9,0.34)');
+      ctx.fillStyle = floorShadow;
+      ctx.beginPath();
+      ctx.moveTo(x, top + 5);
+      ctx.lineTo(backX, top - lift + 5);
+      ctx.lineTo(backX, bottom - lift + 5);
+      ctx.lineTo(x, bottom + 5);
+      ctx.closePath();
+      ctx.fill();
+
+      // Four small ground sleeves make both real uprights and rear anchors
+      // look bolted into the turf. These are contact shadows, never selection
+      // rings, and remain beneath actors with the rest of the goal floor.
+      for (const [anchorX, anchorY, radiusX] of [
+        [x, top, 5.2],
+        [x, bottom, 5.2],
+        [backX, top - lift, 4.3],
+        [backX, bottom - lift, 4.3],
+      ] as const) {
+        ctx.fillStyle = 'rgba(2,10,7,0.42)';
+        ctx.beginPath();
+        ctx.ellipse(anchorX + direction * 1.4, anchorY + 2.3, radiusX, 2.25, direction * 0.08, 0, TAU);
+        ctx.fill();
+        ctx.fillStyle = 'rgba(191,199,191,0.66)';
+        ctx.beginPath();
+        ctx.ellipse(anchorX, anchorY + 0.8, radiusX * 0.52, 1.4, direction * 0.08, 0, TAU);
+        ctx.fill();
+      }
+
+      // A complete low base frame gives the cage physical contact with the
+      // pitch. It is intentionally behind actors and below the bright mouth:
+      // side rails run away from both front posts and meet a rear ballast bar.
+      const drawGroundBase = (): void => {
+        ctx.beginPath();
+        ctx.moveTo(x, top);
+        ctx.lineTo(backX, top - lift);
+        ctx.lineTo(backX, bottom - lift);
+        ctx.lineTo(x, bottom);
+      };
+      this.strokeHybridGoalTube(ctx, drawGroundBase, 2.45, { x: -direction * 0.55, y: -0.42 }, 0.57);
+
+      const drawRearCage = (): void => {
+        ctx.beginPath();
+        ctx.moveTo(frontRaisedX, frontTop);
+        ctx.lineTo(rearRaisedX, rearTop);
+        ctx.lineTo(rearRaisedX, rearBottom);
+        ctx.lineTo(frontRaisedX, frontBottom);
+      };
+      this.strokeHybridGoalTube(ctx, drawRearCage, 3.7, { x: -direction * 0.85, y: -0.75 }, 0.78);
+
+      // Rear uprights connect the raised roof rectangle to the newly visible
+      // base frame. Without these tubes the net had volume but no believable
+      // load-bearing structure at its back corners.
+      const drawRearUprights = (): void => {
+        ctx.beginPath();
+        ctx.moveTo(backX, top - lift);
+        ctx.lineTo(rearRaisedX, rearTop);
+        ctx.moveTo(backX, bottom - lift);
+        ctx.lineTo(rearRaisedX, rearBottom);
+      };
+      this.strokeHybridGoalTube(ctx, drawRearUprights, 3.15, { x: -direction * 0.68, y: -0.58 }, 0.68);
+
+      const netBreathe = hybridGoalNetBreathe(time, direction > 0 ? 'right' : 'left');
+      const roofSurface: NetSurface = (u, v) => ({
+        x: frontRaisedX + (rearRaisedX - frontRaisedX) * u,
+        y: frontTop + (frontBottom - frontTop) * v
+          + ((rearTop + (rearBottom - rearTop) * v) - (frontTop + (frontBottom - frontTop) * v)) * u
+          + netBreathe * Math.sin(u * Math.PI) * Math.sin(v * Math.PI),
+      });
+      const rearSurface: NetSurface = (u, v) => ({
+        x: rearRaisedX + (backX - rearRaisedX) * u + direction * netBreathe * 0.32 * Math.sin(v * Math.PI),
+        y: rearTop + (rearBottom - rearTop) * v + postHeight * u
+          + netBreathe * 0.45 * Math.sin(u * Math.PI) * Math.sin(v * Math.PI),
+      });
+      const sideSurface = (groundY: number, raisedY: number, rearGroundY: number, rearRaisedY: number): NetSurface => (
+        (u, v) => {
+          const raisedPoint = {
+            x: frontRaisedX + (rearRaisedX - frontRaisedX) * u,
+            y: raisedY + (rearRaisedY - raisedY) * u,
+          };
+          const groundPoint = {
+            x: x + (backX - x) * u,
+            y: groundY + (rearGroundY - groundY) * u,
+          };
+          return {
+            x: raisedPoint.x + (groundPoint.x - raisedPoint.x) * v,
+            y: raisedPoint.y + (groundPoint.y - raisedPoint.y) * v,
+          };
+        }
+      );
+
+      // Three distinct cloth planes make the net occupy space: a taut roof,
+      // a lightly relaxed rear curtain and two darker end panels. Everything
+      // remains behind actors; the bright real goal mouth is drawn later.
+      drawDiamondNet(roofSurface, 4, 12, direction * 0.75, 0.30);
+      drawDiamondNet(rearSurface, 3, 12, -direction * 1.35, 0.25);
+      drawDiamondNet(sideSurface(top, frontTop, top - lift, rearTop), 4, 3, -direction * 0.55, 0.21);
+      drawDiamondNet(sideSurface(bottom, frontBottom, bottom - lift, rearBottom), 4, 3, -direction * 0.55, 0.21);
+
+      // Small rope knots at the rear frame make the mesh look tied to the
+      // stanchion instead of printed over it. Keep them sparse and sub-pixel.
+      for (let knot = 1; knot < 12; knot++) {
+        const t = knot / 12;
+        const knotY = rearTop + (rearBottom - rearTop) * t;
+        ctx.fillStyle = knot % 3 === 0 ? 'rgba(255,255,250,0.58)' : 'rgba(205,217,211,0.39)';
+        ctx.beginPath();
+        ctx.arc(rearRaisedX, knotY, knot % 3 === 0 ? 0.9 : 0.65, 0, TAU);
+        ctx.fill();
+      }
+      // Discrete black clips hold the roof mesh to the front rail. Their
+      // spacing follows the authored mesh cells and survives at mobile scale.
+      for (let clip = 1; clip < 5; clip++) {
+        const t = clip / 5;
+        const clipX = frontRaisedX + (rearRaisedX - frontRaisedX) * t;
+        const clipY = frontTop + (rearTop - frontTop) * t;
+        ctx.fillStyle = 'rgba(51,65,59,0.62)';
+        ctx.beginPath();
+        ctx.ellipse(clipX, clipY + 0.4, 0.92, 0.58, direction * -0.12, 0, TAU);
+        ctx.fill();
+        ctx.fillStyle = 'rgba(225,231,225,0.38)';
+        ctx.beginPath();
+        ctx.arc(clipX - direction * 0.28, clipY + 0.12, 0.29, 0, TAU);
+        ctx.fill();
+      }
+
+      // Paired rear ballast feet and hinge pins give the cage measurable
+      // scale and prevent the lower frame from appearing to float.
+      for (const anchorY of [top - lift, bottom - lift]) {
+        ctx.fillStyle = 'rgba(3,10,9,0.58)';
+        ctx.beginPath();
+        ctx.ellipse(backX + direction * 1.5, anchorY + 3.5, 6.2, 3.1, 0, 0, TAU);
+        ctx.fill();
+        ctx.fillStyle = 'rgba(211,216,198,0.68)';
+        ctx.beginPath();
+        ctx.arc(backX + direction * 1.5, anchorY + 1.6, 1.25, 0, TAU);
+        ctx.fill();
+      }
+    }
+    ctx.restore();
+  }
+
   /** Draw only the goal-mouth bars that physically sit above actors. */
   private drawGoalForeground(
     ctx: CanvasRenderingContext2D,
@@ -2910,6 +6445,51 @@ export class Renderer {
     ctx.lineCap = 'round';
     for (const gx of [40, ARENA_W - 40]) {
       const x = toSX(gx);
+      if (this.hybridDepth) {
+        const postHeight = HYBRID_GOAL_POST_HEIGHT;
+        const direction = gx < ARENA_W / 2 ? -1 : 1;
+        const raisedX = x - HYBRID_GOAL_HEIGHT_SHEAR_X;
+        const raisedTop = top - postHeight;
+        const raisedBottom = bottom - postHeight;
+        const drawGoalMouth = (): void => {
+          ctx.beginPath();
+          ctx.moveTo(x, top);
+          ctx.lineTo(raisedX, raisedTop);
+          ctx.lineTo(raisedX, raisedBottom);
+          ctx.lineTo(x, bottom);
+        };
+        this.strokeHybridGoalTube(ctx, drawGoalMouth, 5.6, { x: -direction * 1.15, y: -0.9 });
+        // Black nylon clips visually attach the mesh to the real crossbar.
+        // They stop short of both post caps so the circular joins stay clear.
+        for (let clip = 1; clip < 8; clip++) {
+          const t = clip / 8;
+          const clipY = raisedTop + (raisedBottom - raisedTop) * t;
+          ctx.fillStyle = 'rgba(48,63,57,0.60)';
+          ctx.beginPath();
+          ctx.ellipse(raisedX + direction * 0.18, clipY, 0.72, 1.12, 0, 0, TAU);
+          ctx.fill();
+          ctx.fillStyle = 'rgba(236,240,236,0.34)';
+          ctx.beginPath();
+          ctx.arc(raisedX - direction * 0.26, clipY - 0.26, 0.28, 0, TAU);
+          ctx.fill();
+        }
+        // Circular post caps distinguish the two uprights from the crossbar.
+        for (const capY of [raisedTop, raisedBottom]) {
+          ctx.fillStyle = 'rgba(10,25,19,0.50)';
+          ctx.beginPath();
+          ctx.ellipse(raisedX + 2.2, capY + 2.2, 3.8, 2.4, 0, 0, TAU);
+          ctx.fill();
+          ctx.fillStyle = '#ffffff';
+          ctx.beginPath();
+          ctx.ellipse(raisedX, capY, 3.25, 2.05, 0, 0, TAU);
+          ctx.fill();
+          ctx.fillStyle = 'rgba(181,194,188,0.62)';
+          ctx.beginPath();
+          ctx.ellipse(raisedX + 0.45, capY + 0.35, 1.35, 0.8, 0, 0, TAU);
+          ctx.fill();
+        }
+        continue;
+      }
       ctx.strokeStyle = 'rgba(13,30,22,0.46)';
       ctx.lineWidth = 8;
       ctx.beginPath();
@@ -2945,22 +6525,35 @@ export class Renderer {
     time: number,
   ): void {
     const p = sim.player;
+    if (p.runStep < this.lastTurfRunStep) {
+      // A new run reuses the renderer but starts a fresh gait clock.
+      this.lastTurfRunStep = p.runStep;
+      this.lastTurfFootprintX = Number.NaN;
+      this.lastTurfFootprintY = Number.NaN;
+    }
     if (p.moving || p.dashT > 0) {
       const travelled = Number.isFinite(this.lastTurfFootprintX)
         ? Math.hypot(p.x - this.lastTurfFootprintX, p.y - this.lastTurfFootprintY)
         : Number.POSITIVE_INFINITY;
-      const cadence = p.dashT > 0 ? 0.075 : 0.145;
-      if (travelled >= (p.dashT > 0 ? 21 : 16) && time - this.lastTurfFootprintAt >= cadence) {
+      const dashPlant = p.dashT > 0 && travelled >= 21 && time - this.lastTurfFootprintAt >= 0.075;
+      const runPlant = p.dashT <= 0 && p.runStep > this.lastTurfRunStep;
+      if (dashPlant || runPlant) {
         const mark = this.turfFootprints[this.turfFootprintCursor];
-        const angle = Math.atan2(p.dashDy, p.dashDx);
-        const lateral = this.nextTurfFoot * 5.2;
+        const directionX = p.dashT > 0 ? p.dashDx : p.moveDx;
+        const directionY = p.dashT > 0 ? p.dashDy : p.moveDy;
+        const angle = Math.atan2(directionY, directionX);
+        const plantedFoot: -1 | 1 = p.dashT > 0
+          ? this.nextTurfFoot
+          : p.runStep % 2 === 1 ? -1 : 1;
+        const lateral = plantedFoot * 5.2;
         mark.active = true;
         mark.x = p.x + Math.cos(angle + Math.PI / 2) * lateral;
         mark.y = p.y + Math.sin(angle + Math.PI / 2) * lateral;
         mark.born = time;
-        mark.side = this.nextTurfFoot;
+        mark.side = plantedFoot;
         mark.angle = angle;
-        this.nextTurfFoot = this.nextTurfFoot === -1 ? 1 : -1;
+        if (p.dashT > 0) this.nextTurfFoot = this.nextTurfFoot === -1 ? 1 : -1;
+        else this.lastTurfRunStep = p.runStep;
         this.turfFootprintCursor = (this.turfFootprintCursor + 1) % this.turfFootprints.length;
         const clippingCount = p.dashT > 0 ? 7 : 3;
         for (let clippingIndex = 0; clippingIndex < clippingCount; clippingIndex++) {

@@ -16,7 +16,7 @@ export default defineConfig({
     launchOptions: executablePath ? { executablePath } : undefined,
   },
   webServer: {
-    command: 'npx vite --port 5199 --strictPort',
+    command: 'node server/community-server.mjs --dev --ephemeral --port 5199 --admin-token test-vip-token-123456789 --no-rate-limit',
     url: 'http://localhost:5199',
     reuseExistingServer: true,
     timeout: 30000,

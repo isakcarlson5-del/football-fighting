@@ -67,6 +67,7 @@ describe('attack lanes', () => {
     expect(sim.player.kickT).toBeGreaterThan(0);
     expect(sim.balls.filter((x) => x.active)).toHaveLength(0); // wind-up precedes contact
     step(sim, 11); // pass the 180ms contact beat
+    expect(sim.impacts.some((impact) => impact.active && impact.kind === 'kickground')).toBe(true);
     const targets = sim.balls.filter((x) => x.active).map((x) => x.targetIdx);
     expect(targets.length).toBe(2);
     expect(new Set(targets).size).toBe(2); // each ball reserved a different enemy
@@ -76,12 +77,12 @@ describe('attack lanes', () => {
     const sim = makeSim(3);
     clearField(sim);
     sim.player.abilities = { curveball: 1 };
-    const a = far(sim, 780, -0.18);
-    const b = far(sim, 820, 0.18);
-    sim.debugSpawn('lobber', a.x, a.y);
-    sim.debugSpawn('lobber', b.x, b.y);
-    const pair = sim.enemies.filter((e) => e.active);
-    for (const e of pair) {
+    for (const [distance, angle] of [[760, -0.24], [790, -0.08], [820, 0.1], [860, 0.25]] as const) {
+      const position = far(sim, distance, angle);
+      sim.debugSpawn('lobber', position.x, position.y);
+    }
+    const targets = sim.enemies.filter((e) => e.active);
+    for (const e of targets) {
       e.speed = 0;
       e.hp = 8; // one reserved curveball projects the kill, forcing target spread
       e.maxHp = 8;
@@ -90,14 +91,16 @@ describe('attack lanes', () => {
     step(sim, 1);
     const active = sim.seekers.filter((s) => s.active);
     expect(active).toHaveLength(3);
-    expect(new Set(active.map((s) => s.targetIdx)).size).toBe(2);
+    expect(new Set(active.map((s) => s.targetIdx)).size).toBe(3);
 
     const seeker = active[0];
     const oldTarget = seeker.targetIdx;
+    const initiallyUnreserved = sim.enemies.findIndex((enemy) => enemy.active && !active.some((entry) => entry.targetIdx === sim.enemies.indexOf(enemy)));
+    expect(initiallyUnreserved).toBeGreaterThanOrEqual(0);
     sim.enemies[oldTarget].active = false;
     step(sim, 1);
     expect(seeker.active).toBe(true);
-    expect(seeker.targetIdx).not.toBe(oldTarget);
+    expect(seeker.targetIdx).toBe(initiallyUnreserved);
   });
 
   it('Golden Boot Seekers home into the back line and splash nearby threats', () => {
@@ -144,6 +147,65 @@ describe('attack lanes', () => {
     expect(d1).toBeGreaterThan(d0);
   });
 
+  it('Pitch Pressure waits for a grounded threat instead of firing on an empty pitch', () => {
+    const sim = makeSim(3);
+    clearField(sim);
+    sim.player.abilities = { pressure: 1 };
+    sim.player.pressureCd = 0;
+    step(sim, 1);
+    expect(sim.pressures.some((ring) => ring.active)).toBe(false);
+    expect(sim.player.pressureCd).toBeCloseTo(0.16, 5);
+
+    sim.debugSpawn('invader', sim.player.x + 120, sim.player.y);
+    const enemy = sim.enemies.find((entry) => entry.active)!;
+    enemy.speed = 0;
+    step(sim, 11);
+    expect(sim.pressures.some((ring) => ring.active)).toBe(true);
+  });
+
+  it('max Pitch Pressure captures cast level and centre for every queued pulse', () => {
+    const sim = makeSim(3);
+    clearField(sim);
+    sim.player.abilities = { pressure: 5 };
+    sim.debugSpawn('steward', sim.player.x + 130, sim.player.y);
+    const enemy = sim.enemies.find((entry) => entry.active)!;
+    enemy.speed = 0;
+    enemy.hp = enemy.maxHp = 9999;
+    const castX = sim.player.x;
+    const castY = sim.player.y;
+    sim.player.pressureCd = 0;
+    step(sim, 1);
+    expect(sim.player.pressureQueue).toBe(2);
+    sim.player.x += 420;
+    sim.player.y += 180;
+    sim.player.abilities.pressure = 1;
+    step(sim, 28);
+    const queued = sim.pressures.find((ring) => ring.active)!;
+    expect(queued).toBeTruthy();
+    expect(queued.x).toBeCloseTo(castX, 5);
+    expect(queued.y).toBeCloseTo(castY, 5);
+    expect(queued.maxR).toBe(225);
+  });
+
+  it('max Pitch Pressure vortex pulls grounded threats once and never pulls aerial drones', () => {
+    const sim = makeSim(3);
+    clearField(sim);
+    sim.player.abilities = { pressure: 5 };
+    sim.debugSpawn('steward', sim.player.x + 150, sim.player.y);
+    const grounded = sim.enemies.find((entry) => entry.active)!;
+    sim.debugSpawn('drone', sim.player.x + 130, sim.player.y - 30);
+    const drone = [...sim.enemies].reverse().find((entry) => entry.active)!;
+    grounded.speed = drone.speed = 0;
+    grounded.hp = grounded.maxHp = drone.hp = drone.maxHp = 9999;
+    sim.player.pressureCd = 0;
+    step(sim, 1);
+    expect(grounded.kx).toBeLessThan(0);
+    expect(drone.kx).toBe(0);
+    const firstPull = grounded.kx;
+    step(sim, 28);
+    expect(grounded.kx).toBeGreaterThan(firstPull);
+  });
+
   it('First Touch Blast damages grounded and airborne threats in separate layers', () => {
     const sim = makeSim(3);
     clearField(sim);
@@ -164,7 +226,87 @@ describe('attack lanes', () => {
     expect(grounded.hp).toBeLessThan(500);
     expect(airborne.hp).toBeLessThan(500);
     expect(sim.rings.some((ring) => ring.active && ring.color === '#a8ff4d')).toBe(true);
-    expect(sim.impacts.some((impact) => impact.active && impact.kind === 'airburst')).toBe(true);
+    expect(sim.impacts.some((impact) => impact.active && impact.kind === 'blastair')).toBe(true);
+  });
+
+  it('First Touch Blast waits when an aerial threat is outside its smaller air radius', () => {
+    const sim = makeSim(3);
+    clearField(sim);
+    sim.debugDirectorPaused = true;
+    sim.player.abilities = { blast: 1 };
+    sim.debugSpawn('drone', sim.player.x + 140, sim.player.y);
+    const drone = sim.enemies.find((entry) => entry.active)!;
+    drone.speed = 0;
+    drone.hp = drone.maxHp = 500;
+    sim.player.blastCd = 0;
+
+    step(sim, 1);
+
+    expect(drone.hp).toBe(500);
+    expect(sim.player.blastCd).toBeCloseTo(0.16, 5);
+    expect(sim.events.some((event) => event.type === 'blast')).toBe(false);
+    expect(sim.impacts.some((impact) => impact.active && impact.kind === 'blastair')).toBe(false);
+  });
+
+  it('First Touch Blast renders only the layer it actually affects', () => {
+    const groundSim = makeSim(3);
+    clearField(groundSim);
+    groundSim.debugDirectorPaused = true;
+    groundSim.player.abilities = { blast: 1 };
+    groundSim.debugSpawn('steward', groundSim.player.x + 100, groundSim.player.y);
+    groundSim.enemies.find((entry) => entry.active)!.speed = 0;
+    groundSim.player.blastCd = 0;
+    step(groundSim, 1);
+    expect(groundSim.rings.some((ring) => ring.active && ring.color === '#a8ff4d')).toBe(true);
+    expect(groundSim.impacts.some((impact) => impact.active && impact.kind === 'blastair')).toBe(false);
+
+    const airSim = makeSim(3);
+    clearField(airSim);
+    airSim.debugDirectorPaused = true;
+    airSim.player.abilities = { blast: 1 };
+    airSim.debugSpawn('drone', airSim.player.x + 90, airSim.player.y);
+    airSim.enemies.find((entry) => entry.active)!.speed = 0;
+    airSim.player.blastCd = 0;
+    step(airSim, 1);
+    expect(airSim.rings.some((ring) => ring.active && ring.color === '#a8ff4d')).toBe(false);
+    expect(airSim.impacts.some((impact) => impact.active && impact.kind === 'blastair')).toBe(true);
+  });
+
+  it('max First Touch Blast omits a fake echo after its only target dies', () => {
+    const sim = makeSim(3);
+    clearField(sim);
+    sim.debugDirectorPaused = true;
+    sim.player.abilities = { blast: 5 };
+    sim.debugSpawn('steward', sim.player.x + 100, sim.player.y);
+    const target = sim.enemies.find((entry) => entry.active)!;
+    target.speed = 0;
+    target.hp = target.maxHp = 1;
+    sim.player.blastCd = 0;
+
+    step(sim, 1);
+    expect(target.active).toBe(false);
+    step(sim, 24);
+
+    expect(sim.events.filter((event) => event.type === 'blast')).toHaveLength(1);
+  });
+
+  it('Pitch Pressure gets visual priority instead of stacking with Blast on one frame', () => {
+    const sim = makeSim(3);
+    clearField(sim);
+    sim.debugDirectorPaused = true;
+    sim.player.abilities = { pressure: 1, blast: 1 };
+    sim.debugSpawn('steward', sim.player.x + 90, sim.player.y);
+    const target = sim.enemies.find((entry) => entry.active)!;
+    target.speed = 0;
+    target.hp = target.maxHp = 9999;
+    sim.player.pressureCd = 0;
+    sim.player.blastCd = 0;
+
+    step(sim, 1);
+
+    expect(sim.pressures.some((ring) => ring.active)).toBe(true);
+    expect(sim.events.some((event) => event.type === 'blast')).toBe(false);
+    expect(sim.player.blastCd).toBeCloseTo(0.22, 5);
   });
 
   it('permanent aerial drones ignore ground rings but take hybrid close-blast damage', () => {

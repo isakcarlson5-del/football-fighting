@@ -5,9 +5,11 @@
   "description": "Football Fighting - a browser arena-survivor roguelite",
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "node server/community-server.mjs --dev",
+    "dev:vite": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
+    "serve": "node server/community-server.mjs",
     "test": "vitest run",
     "test:e2e": "playwright test",
     "check": "tsc --noEmit"

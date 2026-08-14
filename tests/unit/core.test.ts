@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
+import { audioPriorityProfile } from '../../src/core/audio';
 import { Rng, weightedPick } from '../../src/core/rng';
 import { matchClock } from '../../src/core/math';
+import { JOYSTICK_DEADZONE, remapRadialDeadzone } from '../../src/core/input';
+import { consumeFixedSteps, exponentialSmoothing } from '../../src/core/timing';
+import { opaqueFrameBaselineOffset } from '../../src/core/sprites';
 import {
   ABILITIES,
   ABILITY_IDS,
@@ -23,7 +27,7 @@ import {
   spawnRate,
   xpForLevel,
 } from '../../src/game/data';
-import { Save } from '../../src/game/meta';
+import { SAVE_VERSION, Save } from '../../src/game/meta';
 
 describe('rng', () => {
   it('is deterministic for the same seed', () => {
@@ -49,6 +53,72 @@ describe('rng', () => {
   });
 });
 
+describe('virtual joystick', () => {
+  it('remaps the radial deadzone continuously instead of jumping to 18% speed', () => {
+    expect(remapRadialDeadzone(0.17, 0)).toEqual({ x: 0, y: 0 });
+    expect(remapRadialDeadzone(JOYSTICK_DEADZONE, 0)).toEqual({ x: 0, y: 0 });
+    expect(remapRadialDeadzone(0.19, 0).x).toBeCloseTo((0.19 - 0.18) / 0.82, 10);
+    expect(remapRadialDeadzone(0.5, 0).x).toBeCloseTo((0.5 - 0.18) / 0.82, 10);
+    expect(remapRadialDeadzone(1, 0)).toEqual({ x: 1, y: 0 });
+  });
+
+  it('preserves direction, clamps overtravel and stays monotonic', () => {
+    const diagonal = remapRadialDeadzone(0.5 / Math.SQRT2, 0.5 / Math.SQRT2);
+    expect(diagonal.x).toBeCloseTo(diagonal.y, 12);
+    expect(Math.hypot(diagonal.x, diagonal.y)).toBeCloseTo((0.5 - 0.18) / 0.82, 10);
+    expect(remapRadialDeadzone(2, 0)).toEqual({ x: 1, y: 0 });
+    const magnitudes = [0.18, 0.19, 0.24, 0.5, 0.75, 1]
+      .map((magnitude) => Math.hypot(...Object.values(remapRadialDeadzone(magnitude, 0))));
+    expect(magnitudes).toEqual([...magnitudes].sort((a, b) => a - b));
+    expect(remapRadialDeadzone(Number.NaN, 0)).toEqual({ x: 0, y: 0 });
+  });
+});
+
+describe('frame timing', () => {
+  it('produces the same exponential camera response at 60 and 120 Hz', () => {
+    const at60 = 1 - (1 - exponentialSmoothing(7.67, 1 / 60)) ** 60;
+    const at120 = 1 - (1 - exponentialSmoothing(7.67, 1 / 120)) ** 120;
+    expect(at60).toBeCloseTo(at120, 10);
+  });
+
+  it('retains one catch-up step and reports only surplus fixed-step time', () => {
+    const normal = consumeFixedSteps(0, 1 / 30);
+    expect(normal.steps).toBe(2);
+    expect(normal.discarded).toBe(0);
+
+    const hitch = consumeFixedSteps(0, 0.25, 1 / 60, 8);
+    expect(hitch.steps).toBe(8);
+    expect(hitch.remainder).toBeCloseTo(1 / 60, 8);
+    expect(hitch.discarded).toBeCloseTo(0.1, 8);
+  });
+});
+
+describe('generated strip grounding', () => {
+  it('moves an airborne authored body down to the shared foot baseline', () => {
+    const pixels = new Uint8ClampedArray(4 * 4 * 4);
+    pixels[(1 * 4 + 2) * 4 + 3] = 255;
+    expect(opaqueFrameBaselineOffset(pixels, 4, 4, 3)).toBe(1);
+    pixels[(2 * 4 + 1) * 4 + 3] = 255;
+    expect(opaqueFrameBaselineOffset(pixels, 4, 4, 3)).toBe(0);
+  });
+});
+
+describe('audio threat hierarchy', () => {
+  it('ducks lower layers monotonically without increasing master loudness', () => {
+    const ordinary = audioPriorityProfile(2);
+    const warning = audioPriorityProfile(3);
+    const immediateDanger = audioPriorityProfile(4);
+
+    expect(ordinary.musicDuck).toBe(1);
+    expect(ordinary.combatDuck).toBe(1);
+    expect(warning.musicDuck).toBeLessThan(ordinary.musicDuck);
+    expect(warning.combatDuck).toBeLessThan(ordinary.combatDuck);
+    expect(immediateDanger.musicDuck).toBeLessThan(warning.musicDuck);
+    expect(immediateDanger.combatDuck).toBeLessThan(warning.combatDuck);
+    expect(immediateDanger.hold).toBeGreaterThan(warning.hold);
+  });
+});
+
 describe('data integrity', () => {
   it('has exactly the 4 required players, all selectable', () => {
     expect(PLAYERS.map((p) => p.id).sort()).toEqual(['messi', 'neymar', 'ronaldo', 'yamal']);
@@ -60,18 +130,21 @@ describe('data integrity', () => {
   });
   it('has every required ability plus the expanded aerial kit, each with 5 levels', () => {
     expect(ABILITY_IDS.sort()).toEqual([
-      'blast', 'bootseekers', 'curveball', 'dash', 'guard', 'orbit', 'pressure', 'strike', 'whistle',
+      'blast', 'bootseekers', 'curveball', 'dash', 'guard', 'keeperhalo', 'orbit', 'pressure', 'strike', 'whistle',
     ]);
     for (const id of ABILITY_IDS) expect(ABILITIES[id].levels).toHaveLength(5);
   });
   it('every offensive ability is lane-typed (ground/aerial + band + delivery + force)', () => {
+    const roles = new Set<string>();
     for (const id of ABILITY_IDS) {
       const a = ABILITIES[id];
       expect(['ground', 'aerial', 'hybrid']).toContain(a.lane);
       expect(['near', 'far']).toContain(a.rangeBand);
       expect(['ring', 'sweep', 'trap', 'lob', 'direct', 'barrage']).toContain(a.delivery);
       expect(['none', 'push', 'pull']).toContain(a.force);
+      roles.add(a.role);
     }
+    expect(roles.size).toBe(ABILITY_IDS.length);
   });
   it('has the 4 required meta tracks', () => {
     expect(META_TRACKS.map((t) => t.id).sort()).toEqual(['guard', 'magnet', 'move', 'power']);
@@ -171,6 +244,10 @@ describe('meta / save', () => {
     } as Storage;
   }
 
+  it('starts new saves muted so no audio layer is audible by default', () => {
+    expect(new Save(fakeStorage()).data.muted).toBe(true);
+  });
+
   it('persists and reloads coins, ranks and skins', () => {
     const storage = fakeStorage();
     const s1 = new Save(storage);
@@ -178,6 +255,9 @@ describe('meta / save', () => {
     s1.buyRank('power', metaCost(META_TRACKS[0], 0));
     s1.buySkin('messi_away');
     s1.equipSkin('messi', 'messi_away');
+    s1.data.reducedVfx = true;
+    s1.data.haptics = false;
+    s1.persist();
     s1.recordRun({ kills: 100, time: 320, level: 8, won: false });
     const s2 = new Save(storage);
     expect(s2.data.coins).toBe(500 - metaCost(META_TRACKS[0], 0) - 150);
@@ -186,6 +266,32 @@ describe('meta / save', () => {
     expect(s2.equippedSkin('messi')).toBe('messi_away');
     expect(s2.data.stats.totalKills).toBe(100);
     expect(s2.data.stats.bestTime).toBe(320);
+    expect(s2.data.reducedVfx).toBe(true);
+    expect(s2.data.haptics).toBe(false);
+  });
+
+  it('migrates old saves and clamps corrupt values without losing valid progress', () => {
+    const storage = fakeStorage();
+    storage.setItem('ff_save_v1', JSON.stringify({
+      coins: 420.4,
+      ranks: { power: 999, move: 3, magnet: -4, guard: 2 },
+      ownedSkins: ['messi_away', 'messi_away', 17],
+      equipped: { messi: 'messi_away', broken: 9 },
+      stats: { runs: 12, wins: -2, totalKills: 770, bestTime: Number.POSITIVE_INFINITY, bestLevel: 8 },
+      leaderboardName: '  Isak FC  ',
+      volume: { master: 4, sfx: -1, music: 0.45 },
+    }));
+
+    const save = new Save(storage);
+
+    expect(save.data.version).toBe(SAVE_VERSION);
+    expect(save.data.coins).toBe(420);
+    expect(save.data.ranks).toEqual({ power: 5, move: 3, magnet: 0, guard: 2 });
+    expect(save.data.ownedSkins).toEqual(['messi_away']);
+    expect(save.data.equipped).toEqual({ messi: 'messi_away' });
+    expect(save.data.stats).toMatchObject({ runs: 12, wins: 0, totalKills: 770, bestTime: 0, bestLevel: 8 });
+    expect(save.data.leaderboardName).toBe('Isak FC');
+    expect(save.data.volume).toEqual({ master: 1, sfx: 0, music: 0.45 });
   });
 
   it('refuses purchases without funds and caps ranks', () => {

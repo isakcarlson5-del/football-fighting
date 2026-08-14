@@ -6,13 +6,35 @@
  * gesture (unlock()). Mute + master/sfx/music volumes persist via Save.
  */
 
+export type AudioThreatPriority = 1 | 2 | 3 | 4;
+
+export interface AudioPriorityProfile {
+  musicDuck: number;
+  combatDuck: number;
+  attack: number;
+  hold: number;
+  release: number;
+}
+
+/** Priority 1/2 are ordinary mix content. Priority 3 warning cues and
+ * priority 4 immediate danger cues earn space by briefly lowering everything
+ * below them, never by raising the master volume. */
+export function audioPriorityProfile(priority: AudioThreatPriority): AudioPriorityProfile {
+  if (priority === 4) return { musicDuck: 0.24, combatDuck: 0.34, attack: 0.012, hold: 0.24, release: 0.34 };
+  if (priority === 3) return { musicDuck: 0.42, combatDuck: 0.58, attack: 0.018, hold: 0.16, release: 0.25 };
+  return { musicDuck: 1, combatDuck: 1, attack: 0.02, hold: 0, release: 0.08 };
+}
+
 export class AudioEngine {
   private ctx: AudioContext | null = null;
   private master: GainNode | null = null;
   private musicGain: GainNode | null = null;
   private sfxGain: GainNode | null = null;
+  private dangerGain: GainNode | null = null;
   private crowd: { src: AudioBufferSourceNode; gain: GainNode } | null = null;
-  muted = false;
+  // Fail silent. The game explicitly opts into sound only when the player
+  // chooses Unmute; no synthesized layer may start audible by default.
+  muted = true;
   volumes = { master: 0.9, sfx: 1, music: 0.7 };
   private musicTimer: ReturnType<typeof setInterval> | null = null;
   private step = 0;
@@ -37,6 +59,9 @@ export class AudioEngine {
     this.sfxGain = this.ctx.createGain();
     this.sfxGain.gain.value = 0.9;
     this.sfxGain.connect(this.master);
+    this.dangerGain = this.ctx.createGain();
+    this.dangerGain.gain.value = 0.94;
+    this.dangerGain.connect(this.master);
   }
 
   setMuted(m: boolean): void {
@@ -52,9 +77,29 @@ export class AudioEngine {
   private applyVolumes(): void {
     if (!this.ctx) return;
     const t = this.ctx.currentTime;
-    if (this.master) this.master.gain.setTargetAtTime(this.muted ? 0 : this.volumes.master, t, 0.02);
-    if (this.sfxGain) this.sfxGain.gain.setTargetAtTime(this.volumes.sfx * 0.9, t, 0.02);
-    if (this.musicGain) this.musicGain.gain.setTargetAtTime(this.volumes.music * 0.6, t, 0.02);
+    const reset = (param: AudioParam, value: number): void => {
+      param.cancelScheduledValues(t);
+      param.setTargetAtTime(value, t, 0.02);
+    };
+    if (this.master) reset(this.master.gain, this.muted ? 0 : this.volumes.master);
+    if (this.sfxGain) reset(this.sfxGain.gain, this.volumes.sfx * 0.9);
+    if (this.dangerGain) reset(this.dangerGain.gain, this.volumes.sfx * 0.94);
+    if (this.musicGain) reset(this.musicGain.gain, this.volumes.music * 0.6);
+  }
+
+  private duckForThreat(priority: AudioThreatPriority): void {
+    if (!this.ctx || !this.musicGain || !this.sfxGain || priority < 3) return;
+    const profile = audioPriorityProfile(priority);
+    const t = this.ctx.currentTime;
+    const musicBase = this.volumes.music * 0.6;
+    const combatBase = this.volumes.sfx * 0.9;
+    const duck = (param: AudioParam, base: number, depth: number): void => {
+      param.cancelScheduledValues(t);
+      param.setTargetAtTime(base * depth, t, profile.attack);
+      param.setTargetAtTime(base, t + profile.hold, profile.release);
+    };
+    duck(this.musicGain.gain, musicBase, profile.musicDuck);
+    duck(this.sfxGain.gain, combatBase, profile.combatDuck);
   }
 
   private now(): number {
@@ -63,7 +108,7 @@ export class AudioEngine {
 
   private tone(opts: {
     freq: number; freqEnd?: number; dur: number; type?: OscillatorType;
-    gain?: number; when?: number; dest?: GainNode;
+    gain?: number; when?: number; dest?: GainNode; priority?: AudioThreatPriority;
   }): void {
     if (!this.ctx || !this.sfxGain) return;
     const t = opts.when ?? this.now();
@@ -74,12 +119,17 @@ export class AudioEngine {
     const g = this.ctx.createGain();
     g.gain.setValueAtTime(opts.gain ?? 0.25, t);
     g.gain.exponentialRampToValueAtTime(0.001, t + opts.dur);
-    osc.connect(g).connect(opts.dest ?? this.sfxGain);
+    const output = opts.dest ?? (opts.priority && opts.priority >= 3 ? this.dangerGain : this.sfxGain);
+    if (!output) return;
+    osc.connect(g).connect(output);
     osc.start(t);
     osc.stop(t + opts.dur + 0.02);
   }
 
-  private noise(opts: { dur: number; gain?: number; freq?: number; q?: number; when?: number; sweepTo?: number }): void {
+  private noise(opts: {
+    dur: number; gain?: number; freq?: number; q?: number; when?: number;
+    sweepTo?: number; dest?: GainNode; priority?: AudioThreatPriority;
+  }): void {
     if (!this.ctx || !this.sfxGain) return;
     const t = opts.when ?? this.now();
     const len = Math.ceil(this.ctx.sampleRate * opts.dur);
@@ -96,7 +146,9 @@ export class AudioEngine {
     const g = this.ctx.createGain();
     g.gain.setValueAtTime(opts.gain ?? 0.2, t);
     g.gain.exponentialRampToValueAtTime(0.001, t + opts.dur);
-    src.connect(filt).connect(g).connect(this.sfxGain);
+    const output = opts.dest ?? (opts.priority && opts.priority >= 3 ? this.dangerGain : this.sfxGain);
+    if (!output) return;
+    src.connect(filt).connect(g).connect(output);
     src.start(t);
   }
 
@@ -118,8 +170,9 @@ export class AudioEngine {
     if (crit) this.tone({ freq: 920, freqEnd: 1450, dur: 0.08, type: 'sine', gain: 0.1 });
   }
   hurt(): void {
-    this.tone({ freq: 320, freqEnd: 90, dur: 0.25, type: 'sawtooth', gain: 0.3 });
-    this.noise({ dur: 0.15, gain: 0.2, freq: 400 });
+    this.duckForThreat(3);
+    this.tone({ freq: 320, freqEnd: 90, dur: 0.25, type: 'sawtooth', gain: 0.3, priority: 3 });
+    this.noise({ dur: 0.15, gain: 0.2, freq: 400, priority: 3 });
   }
   xp(): void {
     this.tone({ freq: 660, freqEnd: 990, dur: 0.07, type: 'sine', gain: 0.14 });
@@ -136,14 +189,16 @@ export class AudioEngine {
   }
   arenaBomb(): void {
     const t = this.now();
-    this.tone({ freq: 92, freqEnd: 28, dur: 0.72, type: 'sine', gain: 0.56, when: t });
-    this.noise({ dur: 0.62, gain: 0.42, freq: 520, sweepTo: 70, q: 0.65, when: t });
-    this.tone({ freq: 620, freqEnd: 120, dur: 0.2, type: 'sawtooth', gain: 0.15, when: t + 0.02 });
+    this.duckForThreat(3);
+    this.tone({ freq: 92, freqEnd: 28, dur: 0.72, type: 'sine', gain: 0.56, when: t, priority: 3 });
+    this.noise({ dur: 0.62, gain: 0.42, freq: 520, sweepTo: 70, q: 0.65, when: t, priority: 3 });
+    this.tone({ freq: 620, freqEnd: 120, dur: 0.2, type: 'sawtooth', gain: 0.15, when: t + 0.02, priority: 3 });
   }
   timeFreeze(): void {
     const t = this.now();
-    [1320, 990, 740, 554].forEach((f, i) => this.tone({ freq: f, freqEnd: f * 0.72, dur: 0.18, type: 'sine', gain: 0.13, when: t + i * 0.045 }));
-    this.noise({ dur: 0.5, gain: 0.1, freq: 3600, sweepTo: 900, q: 2, when: t });
+    this.duckForThreat(3);
+    [1320, 990, 740, 554].forEach((f, i) => this.tone({ freq: f, freqEnd: f * 0.72, dur: 0.18, type: 'sine', gain: 0.13, when: t + i * 0.045, priority: 3 }));
+    this.noise({ dur: 0.5, gain: 0.1, freq: 3600, sweepTo: 900, q: 2, when: t, priority: 3 });
   }
   whistle(): void {
     const t = this.now();
@@ -214,19 +269,22 @@ export class AudioEngine {
   /** Shock Drone discharge: a short electrical crack with a descending core. */
   zap(): void {
     const t = this.now();
-    this.noise({ dur: 0.11, gain: 0.2, freq: 3400, sweepTo: 900, q: 2.1, when: t });
-    this.tone({ freq: 1320, freqEnd: 360, dur: 0.14, type: 'square', gain: 0.13, when: t });
+    this.duckForThreat(4);
+    this.noise({ dur: 0.11, gain: 0.2, freq: 3400, sweepTo: 900, q: 2.1, when: t, priority: 4 });
+    this.tone({ freq: 1320, freqEnd: 360, dur: 0.14, type: 'square', gain: 0.13, when: t, priority: 4 });
   }
   /** Heavy hoof launch without reusing the lighter player dash sound. */
   bullCharge(): void {
     const t = this.now();
-    this.tone({ freq: 78, freqEnd: 36, dur: 0.28, type: 'triangle', gain: 0.46, when: t });
-    this.noise({ dur: 0.3, gain: 0.22, freq: 260, sweepTo: 90, q: 0.7, when: t });
+    this.duckForThreat(4);
+    this.tone({ freq: 78, freqEnd: 36, dur: 0.28, type: 'triangle', gain: 0.46, when: t, priority: 4 });
+    this.noise({ dur: 0.3, gain: 0.22, freq: 260, sweepTo: 90, q: 0.7, when: t, priority: 4 });
   }
   bossHorn(): void {
     const t = this.now();
-    [98, 123, 147].forEach((f) => this.tone({ freq: f, freqEnd: f * 0.94, dur: 0.7, type: 'sawtooth', gain: 0.2, when: t }));
-    this.noise({ dur: 0.5, gain: 0.12, freq: 250 });
+    this.duckForThreat(4);
+    [98, 123, 147].forEach((f) => this.tone({ freq: f, freqEnd: f * 0.94, dur: 0.7, type: 'sawtooth', gain: 0.2, when: t, priority: 4 }));
+    this.noise({ dur: 0.5, gain: 0.12, freq: 250, priority: 4 });
   }
   victory(): void {
     const t = this.now();
@@ -283,7 +341,7 @@ export class AudioEngine {
       // Arp sparkle on off-beats
       if (i % 2 === 1) this.tone({ freq: arp[i], dur: stepDur * 0.5, type: 'triangle', gain: 0.07, when: t, dest: this.musicGain });
       // Hat
-      this.noise({ dur: 0.03, gain: 0.05, freq: 6000, q: 2, when: t });
+      this.noise({ dur: 0.03, gain: 0.05, freq: 6000, q: 2, when: t, dest: this.musicGain });
       this.step++;
     }, stepDur * 1000);
   }

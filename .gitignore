@@ -3,5 +3,6 @@ dist/
 .pw-browsers/
 playwright-report/
 test-results/
+server-data/
 .DS_Store
 *.local

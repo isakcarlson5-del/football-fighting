@@ -26,19 +26,43 @@ export interface PlayerDef {
 
 export type AbilityId =
   | 'strike' | 'curveball' | 'bootseekers'
-  | 'orbit' | 'whistle' | 'dash' | 'guard' | 'pressure' | 'blast';
+  | 'orbit' | 'whistle' | 'dash' | 'guard' | 'pressure' | 'blast' | 'keeperhalo';
 
 /** Permanent base pace: responsive enough to thread late-game gaps while
  *  enemies retain pressure through density, charges and ranged attacks. */
 export const PLAYER_PACE_MULT = 1.6;
 export const ENEMY_PACE_MULT = 1.42;
-export const FREEZE_DURATION = 5.5;
+export const FREEZE_DURATION = 4.0;
 
 /** Attack-lane semantics: every offensive ability plays differently by lane. */
 export type Lane = 'ground' | 'aerial' | 'hybrid';
 export type RangeBand = 'near' | 'far';
 export type Delivery = 'ring' | 'sweep' | 'trap' | 'lob' | 'direct' | 'barrage';
 export type Force = 'none' | 'push' | 'pull';
+export type AbilityRole =
+  | 'directed-burst'
+  | 'aerial-specialist'
+  | 'boss-break'
+  | 'sustained-clear'
+  | 'rescue'
+  | 'positioning'
+  | 'defensive-timing'
+  | 'aerial-denial'
+  | 'zone-control'
+  | 'hybrid-break';
+
+export const ABILITY_ROLE_LABELS: Record<AbilityRole, string> = {
+  'directed-burst': 'Directed burst',
+  'aerial-specialist': 'Aerial specialist',
+  'boss-break': 'Boss break',
+  'sustained-clear': 'Sustained clear',
+  rescue: 'Rescue tool',
+  positioning: 'Positioning',
+  'defensive-timing': 'Defensive timing',
+  'aerial-denial': 'Aerial denial',
+  'zone-control': 'Zone control',
+  'hybrid-break': 'Hybrid break',
+};
 
 export interface AbilityLevel {
   desc: string;
@@ -55,6 +79,8 @@ export interface AbilityDef {
   rangeBand: RangeBand;
   delivery: Delivery;
   force: Force;
+  /** Unique decision role; two attractive cards should solve different match problems. */
+  role: AbilityRole;
   levels: AbilityLevel[]; // length = max level
 }
 
@@ -69,6 +95,7 @@ export const ABILITIES: Record<AbilityId, AbilityDef> = {
     rangeBand: 'far',
     delivery: 'lob',
     force: 'none',
+    role: 'directed-burst',
     levels: [
       { desc: 'AERIAL · Lob 1 ball at a distant threat (ranged first). 14 direct damage on impact.' },
       { desc: '+1 ball (2 total). Volleys spread across living targets.' },
@@ -87,6 +114,7 @@ export const ABILITIES: Record<AbilityId, AbilityDef> = {
     rangeBand: 'far',
     delivery: 'barrage',
     force: 'none',
+    role: 'aerial-specialist',
     levels: [
       { desc: 'AERIAL · Every 3.4s: 3 tracking curveballs hunt distant threats for 11 damage.' },
       { desc: '4 curveballs, 13 damage, tighter turns and smarter target spread.' },
@@ -105,6 +133,7 @@ export const ABILITIES: Record<AbilityId, AbilityDef> = {
     rangeBand: 'far',
     delivery: 'barrage',
     force: 'push',
+    role: 'boss-break',
     levels: [
       { desc: 'AERIAL · Every 4.5s: a homing Golden Boot lands for 28 damage and a small airburst.' },
       { desc: 'Launch 2 boots. Splash grows and secondary targets take 55% damage.' },
@@ -123,6 +152,7 @@ export const ABILITIES: Record<AbilityId, AbilityDef> = {
     rangeBand: 'near',
     delivery: 'ring',
     force: 'push',
+    role: 'sustained-clear',
     levels: [
       { desc: 'GROUND · 2 balls orbit you. 10 damage on contact.' },
       { desc: '+1 orbiting ball (3 total).' },
@@ -141,6 +171,7 @@ export const ABILITIES: Record<AbilityId, AbilityDef> = {
     rangeBand: 'near',
     delivery: 'ring',
     force: 'push',
+    role: 'rescue',
     levels: [
       { desc: 'GROUND · Every 3.5s: shockwave, 15 damage, knocks enemies back.' },
       { desc: 'Bigger shockwave radius.' },
@@ -154,17 +185,18 @@ export const ABILITIES: Record<AbilityId, AbilityDef> = {
     name: 'Nutmeg Dash',
     icon: 'ND',
     color: '#80ed99',
-    tagline: 'A burst of speed straight through danger, hitting everything in the way.',
+    tagline: 'Press Space or the dash button to burst through danger along your locked movement line.',
     lane: 'ground',
     rangeBand: 'near',
     delivery: 'sweep',
     force: 'push',
+    role: 'positioning',
     levels: [
-      { desc: 'GROUND · Every 5s: dash forward, 20 damage, untouchable mid-dash.' },
-      { desc: '30 damage, longer dash.' },
-      { desc: 'Every 4s.' },
-      { desc: 'Two dash charges.' },
-      { desc: 'MAX · Phantom Run: every 3s, 45 damage, dash leaves a persistent slowing nutmeg trail.' },
+      { desc: 'GROUND · ACTIVE: dash forward, 20 damage, untouchable during travel. 5s recharge.' },
+      { desc: '30 damage and a longer committed run.' },
+      { desc: 'Recharge reduced to 4s.' },
+      { desc: 'Two deliberate dash charges; each requires a new press.' },
+      { desc: 'MAX · Phantom Run: 3s recharge, 45 damage, leaves a persistent slowing nutmeg trail.' },
     ],
   },
   guard: {
@@ -177,6 +209,7 @@ export const ABILITIES: Record<AbilityId, AbilityDef> = {
     rangeBand: 'near',
     delivery: 'direct',
     force: 'push',
+    role: 'defensive-timing',
     levels: [
       { desc: 'GROUND · 1 bodyguard punches nearby threats. 12 damage.' },
       { desc: 'Bodyguard hits harder: 18 damage.' },
@@ -195,6 +228,7 @@ export const ABILITIES: Record<AbilityId, AbilityDef> = {
     rangeBand: 'near',
     delivery: 'ring',
     force: 'push',
+    role: 'zone-control',
     levels: [
       { desc: 'GROUND · Every 2.6s: expanding ring, 12 damage, shoves close enemies back.' },
       { desc: '18 damage, wider ring.' },
@@ -213,6 +247,7 @@ export const ABILITIES: Record<AbilityId, AbilityDef> = {
     rangeBand: 'near',
     delivery: 'ring',
     force: 'push',
+    role: 'hybrid-break',
     levels: [
       { desc: 'HYBRID · Every 4.8s: 18-damage GROUND boom plus a 14-damage AERIAL airburst.' },
       { desc: 'Wider layers. Ground 24 damage, airburst 18.' },
@@ -221,10 +256,29 @@ export const ABILITIES: Record<AbilityId, AbilityDef> = {
       { desc: 'MAX · Perfect Touch: huge dual-layer blast followed by a delayed second overhead-and-ground detonation.' },
     ],
   },
+  keeperhalo: {
+    id: 'keeperhalo',
+    name: "Keeper's Halo",
+    icon: 'KH',
+    color: '#5ee7e7',
+    tagline: 'Goalkeeper shields orbit you and parry hostile aerial shots.',
+    lane: 'aerial',
+    rangeBand: 'near',
+    delivery: 'ring',
+    force: 'none',
+    role: 'aerial-denial',
+    levels: [
+      { desc: 'AERIAL DEFENCE · 2 keeper shields orbit close and parry one hostile shot every 1.55s.' },
+      { desc: '3 shields, wider coverage and a 1.2s parry recovery.' },
+      { desc: '3 faster shields; parry recovery falls to 0.9s.' },
+      { desc: '4 shields, wider halo and a 0.62s parry recovery.' },
+      { desc: "MAX · Clean Sheet: 5 shields, 0.34s recovery; every parry counters the nearest aerial threat." },
+    ],
+  },
 };
 
 export const ABILITY_IDS: AbilityId[] = [
-  'strike', 'curveball', 'bootseekers', 'orbit', 'whistle', 'dash', 'guard', 'pressure', 'blast',
+  'strike', 'curveball', 'bootseekers', 'orbit', 'whistle', 'dash', 'guard', 'pressure', 'blast', 'keeperhalo',
 ];
 
 export const PLAYERS: PlayerDef[] = [
@@ -305,6 +359,7 @@ export const PLAYERS: PlayerDef[] = [
 export type EnemyId =
   | 'invader' | 'sprinter' | 'lobber' | 'flare' | 'flag' | 'foam' | 'drummer'
   | 'vuvuzela' | 'steward' | 'mascot' | 'banner' | 'paparazzo' | 'chant' | 'bull' | 'drone'
+  | 'varcam'
   | 'official' | 'captain' | 'drumboss';
 
 export type EnemyBehavior =
@@ -397,8 +452,12 @@ export const ENEMIES: Record<Exclude<EnemyId, 'official' | 'captain' | 'drumboss
     radius: 28, unlockAt: 210, weight: 12, coinChance: 0.58, behavior: 'charger', scale: 1.48, push: 430,
   },
   drone: {
-    id: 'drone', name: 'Shock Drone', hp: 72, speed: 72, damage: 11, xp: 8,
+    id: 'drone', name: 'Shock Drone', hp: 78, speed: 74, damage: 14, xp: 8,
     radius: 20, unlockAt: 145, weight: 16, coinChance: 0.42, behavior: 'aerial', scale: 1.12,
+  },
+  varcam: {
+    id: 'varcam', name: 'VAR Skycam', hp: 118, speed: 64, damage: 10, xp: 11,
+    radius: 22, unlockAt: 330, weight: 9, coinChance: 0.5, behavior: 'aerial', scale: 1.22,
   },
 };
 
@@ -593,7 +652,7 @@ export const STATS: Record<StatId, StatDef> = {
   speed: { id: 'speed', name: 'Fresh Boots', color: '#80ed99', desc: '+5% move speed.', max: 6 },
   maxhp: { id: 'maxhp', name: 'Captain\u2019s Heart', color: '#ff6b6b', desc: '+15 max HP, heal 15.', max: 8 },
   regen: { id: 'regen', name: 'Energy Gel', color: '#f5f7fa', desc: '+0.4 HP/s regeneration.', max: 6 },
-  magnet: { id: 'magnet', name: 'Ball Magnet', color: '#4cc9f0', desc: '+25% pickup radius.', max: 6 },
+  magnet: { id: 'magnet', name: 'Ball Magnet', color: '#4cc9f0', desc: '+18% pickup radius.', max: 6 },
   armor: { id: 'armor', name: 'Shin Pads', color: '#b08968', desc: '-1 damage taken (min 1).', max: 5 },
 };
 
