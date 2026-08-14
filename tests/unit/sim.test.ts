@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { abilityCadenceLabel, approachVelocity, ARENA_W, bossApproachIngressMultiplier, bossDirectorIngressMultiplier, bossHealthMultiplier, BOSS_INTRO_DURATION, BOSS_MELEE_LUNGE_DURATION, directorPopulationIngressMultiplier, ENEMY_MELEE_LUNGE_DURATION, enemyAirLift, enemyHitFeedbackStrength, enemyRunCycleDistance, enemyRunTargetFps, enemyXpRewardMultiplier, guardAuthoredRunVector, guardFormationOffset, guardRunPresentation, hybridBossBodyContact, hybridBossSceneryPad, hybridEnemySceneryPad, hystereticMovementOctant, MELEE_CONTACT_PROGRESS, PLAYER_RUN_CYCLE_DISTANCE, PLAYER_RUN_FPS, PLAYER_RUN_FRAMES, PLAYER_VISUAL_Y_SCALE, resolveHybridBossBodyContact, Sim, statProgressLabel, stepMovementOctant, upgradeDraftWeight } from '../../src/game/sim';
 import { BOSS0_AT, BOSS1_AT, BOSSES, ENEMIES, PLAYERS, RUN_LENGTH } from '../../src/game/data';
 import { Save } from '../../src/game/meta';
-import { aerialLaunchVisual, ART_DIRECTION_PROFILE, bossArrivalVisual, combatPresentationBudget, corpseCollapseVisual, dampedTurfDisplacement, directionalFrameBlend, enemyHealthBarPriority, enemyHealthBarStyle, enemyPoseFrame, guardPoseFrame, HYBRID_LIGHT_CAST, hybridCentreMarkingGeometry, hybridCornerFlagDepthScale, hybridEntityDepthScale, hybridEntityShadowGeometry, hybridGoalNetBreathe, hybridHostileProjectileElevation, hybridPitchMarkingGeometry, hybridStadiumParallax, movementDirection, orbitPainterDepthY, orbitTrailArcGeometry, pickupVisibleBounds, placeEnemyHealthBar, playerOcclusionStrength, playerStepCue, reducedCombatPresentationBudget, type HealthBarCollisionRect } from '../../src/game/render';
+import { aerialLaunchVisual, ART_DIRECTION_PROFILE, bossArrivalVisual, combatPresentationBudget, corpseCollapseVisual, dampedTurfDisplacement, directionalFrameBlend, enemyHealthBarPriority, enemyHealthBarStyle, enemyPoseFrame, guardPoseFrame, HYBRID_LIGHT_CAST, hybridCentreMarkingGeometry, hybridCornerFlagDepthScale, hybridEntityDepthScale, hybridEntityShadowGeometry, hybridGoalNetBreathe, hybridHostileProjectileElevation, hybridPitchMarkingGeometry, hybridStadiumParallax, matchdayWipeoutVisual, movementDirection, orbitPainterDepthY, orbitTrailArcGeometry, pickupVisibleBounds, placeEnemyHealthBar, playerOcclusionStrength, playerStepCue, reducedCombatPresentationBudget, type HealthBarCollisionRect } from '../../src/game/render';
 
 function freshSave(): Save {
   return new Save(null);
@@ -225,6 +225,17 @@ describe('sim core loop', () => {
     expect(directionalFrameBlend(Number.NaN, 20, 12)).toEqual({ frame: 0, nextFrame: 1, mix: 0 });
     expect(directionalFrameBlend(0.03, 20, 12).mix).toBe(0);
     expect(directionalFrameBlend(0.048, 20, 12).mix).toBe(0);
+  });
+
+  it('keeps Matchday Wipeout inside the fair-play viewport footprint', () => {
+    const landscape = matchdayWipeoutVisual(844, 390, 0.5, false);
+    const portrait = matchdayWipeoutVisual(390, 844, 0.5, false);
+    const reduced = matchdayWipeoutVisual(844, 390, 0.5, true);
+    expect(landscape.size).toBeCloseTo(390 * 0.65, 8);
+    expect(portrait.size).toBeCloseTo(390 * 0.65, 8);
+    expect(landscape.alpha).toBeLessThanOrEqual(0.5);
+    expect(reduced.alpha).toBeLessThan(landscape.alpha);
+    expect(matchdayWipeoutVisual(844, 390, 0.999, false).alpha).toBeLessThan(0.01);
   });
 
   it('budgets a player contour only for bodies painted in front of the hero', () => {

@@ -24,7 +24,7 @@ import {
   type Atlas,
 } from '../core/sprites';
 import { BOSSES, ENEMIES, FREEZE_DURATION, SKINS, type BossId, type EnemyDef, type PlayerDef } from './data';
-import { ARENA_H, ARENA_W, BOSS_INTRO_DURATION, BOSS_MELEE_LUNGE_DURATION, DASH_ANTICIPATION_DURATION, DASH_RECOVERY_DURATION, ENEMY_MELEE_LUNGE_DURATION, enemyAirLift, enemyRunCycleDistance, guardRunCycleDistance, guardRunPresentation, hybridBossBodyContact, KICK_AIM_LOCK_DELAY, KICK_CONTACT_DELAY, KICK_DURATION, MELEE_RECOVERY_DURATION, type Enemy, type Guard, type Pickup, type Sim } from './sim';
+import { ARENA_H, ARENA_W, BOSS_INTRO_DURATION, BOSS_MELEE_LUNGE_DURATION, DASH_ANTICIPATION_DURATION, DASH_RECOVERY_DURATION, ENEMY_MELEE_LUNGE_DURATION, enemyAirLift, enemyRunCycleDistance, guardRunCycleDistance, guardRunPresentation, hybridBossBodyContact, KICK_AIM_LOCK_DELAY, KICK_CONTACT_DELAY, KICK_DURATION, MELEE_RECOVERY_DURATION, PLAYER_PIVOT_DURATION, type Enemy, type Guard, type Pickup, type Sim } from './sim';
 import type { Save } from './meta';
 
 /** Runtime art bible. Values are consumed by the renderer so perspective,
@@ -467,6 +467,28 @@ export function directionalFrameBlend(animT: number, fps: number, frames: number
     frame: base % count,
     nextFrame: (base + 1) % count,
     mix: 0,
+  };
+}
+
+export interface MatchdayWipeoutVisual {
+  size: number;
+  alpha: number;
+}
+
+/** Keep the authored Wipeout spectacular without hiding the tactical frame.
+ * The diameter is capped to 65% of the short viewport edge, matching the
+ * release-audit readability contract on portrait and landscape screens. */
+export function matchdayWipeoutVisual(
+  viewportWidth: number,
+  viewportHeight: number,
+  progress: number,
+  reducedVfx: boolean,
+): MatchdayWipeoutVisual {
+  const safeProgress = clamp(progress, 0, 0.999);
+  const fade = safeProgress < 0.72 ? 1 : 1 - (safeProgress - 0.72) / 0.28;
+  return {
+    size: Math.max(0, Math.min(viewportWidth, viewportHeight)) * 0.65,
+    alpha: clamp(fade, 0, 1) * (reducedVfx ? 0.26 : 0.5),
   };
 }
 
@@ -3044,6 +3066,7 @@ export class Renderer {
       bottom: playerScreenY + 3,
     };
     let playerOcclusion = 0;
+    let friendlyVfxOcclusion = 0;
     let playerOcclusionPose: {
       atlas: Atlas;
       frame: number;
@@ -3389,10 +3412,19 @@ export class Renderer {
       } else if (it.kind === 1) {
         const dashPose = p.dashWindupT > 0 || p.dashT > 0 || p.dashRecoveryT > 0;
         const running = p.moving || dashPose;
-        const direction = movementDirection(
+        const physicalDirection = movementDirection(
           dashPose ? p.dashDx : p.visualDx,
           dashPose ? p.dashDy : p.visualDy,
         );
+        const pivotProgress = p.pivotT > 0
+          ? clamp(1 - p.pivotT / PLAYER_PIVOT_DURATION, 0, 1)
+          : 1;
+        // A true 180-degree cut holds the outgoing authored view through the
+        // first half of a compressed plant, then commits to the new view. This
+        // removes the instantaneous atlas teleport without blending two feet.
+        const direction = p.pivotT > 0 && pivotProgress < 0.5
+          ? MOVEMENT_DIRECTIONS[((p.pivotFromDir % 8) + 8) % 8]
+          : physicalDirection;
         const vis = this.heroVisual(def, save, running, p.kickT > 0, direction);
         const heroSkinId = save.equippedSkin(def.id);
         const heroSkin = heroSkinId ? SKINS.find((skin) => skin.id === heroSkinId) : undefined;
@@ -3557,6 +3589,13 @@ export class Renderer {
             ctx.translate(p.aimDx * recoveryU * 2.2, p.aimDy * TILT * recoveryU);
             ctx.rotate(p.aimDx * recoveryU * 0.024);
           }
+        }
+        if (p.pivotT > 0 && p.dashT <= 0 && p.kickT <= 0) {
+          const plant = Math.sin(Math.PI * pivotProgress);
+          const turnSign = Math.sin((p.pivotToDir - p.pivotFromDir) * Math.PI / 4) || (p.moveDx >= 0 ? 1 : -1);
+          ctx.translate(0, plant * 1.3);
+          ctx.rotate(turnSign * plant * 0.042);
+          ctx.scale(1 - plant * 0.085, 1 + plant * 0.035);
         }
         // A restrained acceleration lean gives the first 130 ms physical
         // weight without shifting the planted foot baseline or delaying input.
@@ -3935,9 +3974,26 @@ export class Renderer {
             this.drawVfxFrame(ctx, this.captainsWhistleSpr, nextFrame, x, y, size, 0, mix * (this.reducedVfx ? 0.5 : 0.78), false);
           }
           ctx.restore();
+        } else {
+          // Decode/network failure must not make a gameplay pulse invisible.
+          // The shipped authored strip remains the normal presentation; this
+          // restrained stadium-sound contour is emergency readability only.
+          const progress = clamp(1 - r.life / 0.45, 0, 0.999);
+          const x = toSX(r.x);
+          const y = toSY(r.y);
+          ctx.save();
+          ctx.globalAlpha = (1 - progress) * (this.reducedVfx ? 0.28 : 0.46);
+          ctx.strokeStyle = '#eefbff';
+          ctx.lineWidth = 3.2 - progress * 1.2;
+          ctx.beginPath();
+          ctx.ellipse(x, y, r.r, r.r * TILT, 0, 0, TAU);
+          ctx.stroke();
+          ctx.globalAlpha *= 0.52;
+          ctx.beginPath();
+          ctx.ellipse(x, y, r.r * 0.78, r.r * TILT * 0.78, 0, 0, TAU);
+          ctx.stroke();
+          ctx.restore();
         }
-        // Captain's Whistle intentionally has no procedural fallback. If its
-        // authored strip is not decoded yet, the pulse waits for the next cast.
         continue;
       }
       ctx.globalAlpha = whistle ? a * 0.9 : a;
@@ -4027,6 +4083,34 @@ export class Renderer {
     }
     ctx.globalAlpha = 1;
 
+    // Matchday Wipeout uses the authored six-stage stadium explosion but is
+    // clamped to the audit's fair-play footprint. It renders before the final
+    // hostile-warning pass, and the player receives a temporary contour so
+    // neither danger nor control position disappears inside the spectacle.
+    if (this.matchdayWipeoutStartedAt >= 0) {
+      const age = time - this.matchdayWipeoutStartedAt;
+      const duration = 0.72;
+      if (age < duration) {
+        const progress = clamp(age / duration, 0, 0.999);
+        const frame = Math.min(5, Math.floor(progress * 6));
+        const wipeoutVisual = matchdayWipeoutVisual(vw, vh, progress, this.reducedVfx);
+        this.drawVfxFrame(
+          ctx,
+          this.matchdayWipeoutSpr,
+          frame,
+          toSX(sim.player.x),
+          toSY(sim.player.y) - 20,
+          wipeoutVisual.size,
+          0,
+          wipeoutVisual.alpha,
+          false,
+        );
+        friendlyVfxOcclusion = wipeoutVisual.alpha * 0.82;
+      } else {
+        this.matchdayWipeoutStartedAt = -1;
+      }
+    }
+
     // Re-ink only the collision boundary of active danger after decorative
     // impacts. The ground fill remains correctly underneath bodies, while the
     // final two-pixel edge cannot be erased by friendly max-level spectacle.
@@ -4057,32 +4141,6 @@ export class Renderer {
       ctx.restore();
     }
 
-    // Matchday Wipeout is authored as a six-stage, full-pitch explosion. It
-    // replaces the old oversized procedural ring and remains below HUD text.
-    if (this.matchdayWipeoutStartedAt >= 0) {
-      const age = time - this.matchdayWipeoutStartedAt;
-      const duration = 0.72;
-      if (age < duration) {
-        const progress = clamp(age / duration, 0, 0.999);
-        const frame = Math.min(5, Math.floor(progress * 6));
-        const fade = progress < 0.72 ? 1 : 1 - (progress - 0.72) / 0.28;
-        const size = Math.max(vw, vh * 1.35) * 1.08;
-        this.drawVfxFrame(
-          ctx,
-          this.matchdayWipeoutSpr,
-          frame,
-          toSX(sim.player.x),
-          toSY(sim.player.y) - 20,
-          size,
-          0,
-          clamp(fade, 0, 1) * (this.reducedVfx ? 0.3 : 0.68),
-          false,
-        );
-      } else {
-        this.matchdayWipeoutStartedAt = -1;
-      }
-    }
-
     // The final player knockout is also a generated sequence. It has enough
     // time to complete before the result screen replaces the live pitch.
     if (sim.over === 'lost') {
@@ -4106,7 +4164,8 @@ export class Renderer {
     // The contour is intentionally delayed until all world-space effects have
     // rendered. It appears only while another living body covers the player,
     // preserving normal painter depth everywhere else.
-    if (playerOcclusionPose && playerOcclusion > 0.04 && sim.over !== 'lost') {
+    const playerLocatorStrength = Math.max(playerOcclusion, friendlyVfxOcclusion);
+    if (playerOcclusionPose && playerLocatorStrength > 0.04 && sim.over !== 'lost') {
       this.drawPlayerOcclusionLocator(
         ctx,
         playerOcclusionPose.atlas,
@@ -4116,7 +4175,7 @@ export class Renderer {
         playerOcclusionPose.scale,
         playerOcclusionPose.bobY,
         playerOcclusionPose.flip,
-        playerOcclusion,
+        playerLocatorStrength,
       );
     }
     this.lastPlayerOcclusion = playerOcclusion;
