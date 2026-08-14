@@ -62,6 +62,10 @@ const MOVEMENT_DIRECTIONS: readonly MovementDirection[] = ['e', 'se', 's', 'sw',
 const BOSS_DIRECTION_FRAME_WIDTH = 480;
 const PLAYER_DIRECTION_FRAME_WIDTH = 256;
 const PLAYER_DIRECTION_RUN_FPS = 18;
+/** Normal match framing. The previous 1240-unit window made dense late-game
+ *  threats enter from just outside the player's readable space. A restrained
+ *  6.5% wider frame shows more of the pitch without miniaturising actors. */
+export const NORMAL_VIEW_WORLD_H = 1320;
 const HYBRID_GOAL_DEPTH = 34;
 const HYBRID_GOAL_LIFT = 13.5;
 const HYBRID_GOAL_POST_HEIGHT = 27;
@@ -834,7 +838,7 @@ export class Renderer {
   /** World rect covered by the prerendered pitch canvas (camera hard limits). */
   private bounds = { x0: -MARGIN, y0: -MARGIN, x1: ARENA_W + MARGIN, y1: ARENA_H + MARGIN };
   private scale = 1;
-  private viewWorldH = 1240;
+  private viewWorldH = NORMAL_VIEW_WORLD_H;
   private shake = 0;
   private lastDrawTime = Number.NaN;
   private ball: HTMLCanvasElement;
@@ -1337,8 +1341,14 @@ export class Renderer {
   }
 
   /** Read-only camera proof for deterministic browser QA. */
-  getCameraState(): { x: number; y: number; lookX: number; lookY: number } {
-    return { x: this.camX, y: this.camY, lookX: this.hybridLookX, lookY: this.hybridLookY };
+  getCameraState(): { x: number; y: number; lookX: number; lookY: number; viewWorldH: number } {
+    return {
+      x: this.camX,
+      y: this.camY,
+      lookX: this.hybridLookX,
+      lookY: this.hybridLookY,
+      viewWorldH: this.viewWorldH,
+    };
   }
 
   /** Read-only visual-priority proof for deterministic browser QA. */
@@ -1404,7 +1414,7 @@ export class Renderer {
     this.camY = Number.isFinite(y) ? y : ARENA_H / 2;
     this.hybridLookX = 0;
     this.hybridLookY = 0;
-    this.viewWorldH = 1240;
+    this.viewWorldH = NORMAL_VIEW_WORLD_H;
     this.shake = 0;
   }
 
@@ -2441,8 +2451,14 @@ export class Renderer {
     const w = this.canvas.clientWidth;
     const h = this.canvas.clientHeight;
     if (w === 0 || h === 0) return;
-    this.canvas.width = Math.round(w * dpr);
-    this.canvas.height = Math.round(h * dpr);
+    const backingWidth = Math.round(w * dpr);
+    const backingHeight = Math.round(h * dpr);
+    // Assigning either canvas dimension clears its complete front buffer.
+    // Browsers can emit duplicate resize/orientation events with unchanged
+    // geometry; ignoring them prevents a one-frame navy/black pitch flash.
+    if (this.canvas.width === backingWidth && this.canvas.height === backingHeight) return;
+    this.canvas.width = backingWidth;
+    this.canvas.height = backingHeight;
   }
 
   /**
@@ -2560,7 +2576,7 @@ export class Renderer {
         ? finaleTargetWorldH
         : encounterBoss
           ? 2200
-          : 1240;
+          : NORMAL_VIEW_WORLD_H;
     this.viewWorldH += (targetViewWorldH - this.viewWorldH) * exponentialSmoothing(9.05, renderDt);
     if (Math.abs(targetViewWorldH - this.viewWorldH) < 0.1) this.viewWorldH = targetViewWorldH;
     const viewWorldH = this.viewWorldH;
@@ -4230,14 +4246,20 @@ export class Renderer {
     if (this.flashWarn > 0) {
       this.flashWarn -= renderDt;
       const hurtStrength = clamp(this.flashWarn / 0.42, 0, 1);
-      ctx.fillStyle = `rgba(178,0,28,${hurtStrength * 0.2})`;
+      ctx.save();
+      // Screen blending raises the warning red without subtracting the pitch's
+      // green luminance. The prior source-over wash made the whole arena pulse
+      // dark whenever several enemies landed consecutive hits.
+      ctx.globalCompositeOperation = 'screen';
+      ctx.fillStyle = `rgba(214,12,35,${hurtStrength * 0.045})`;
       ctx.fillRect(0, 0, vw, vh);
       const redVignette = ctx.createRadialGradient(vw / 2, vh / 2, vh * 0.18, vw / 2, vh / 2, vh * 0.76);
       redVignette.addColorStop(0, 'rgba(205,0,32,0)');
-      redVignette.addColorStop(0.58, `rgba(205,0,32,${hurtStrength * 0.12})`);
-      redVignette.addColorStop(1, `rgba(205,0,32,${hurtStrength * 0.72})`);
+      redVignette.addColorStop(0.62, `rgba(235,12,42,${hurtStrength * 0.055})`);
+      redVignette.addColorStop(1, `rgba(255,18,48,${hurtStrength * 0.52})`);
       ctx.fillStyle = redVignette;
       ctx.fillRect(0, 0, vw, vh);
+      ctx.restore();
     }
     // paparazzo white flash
     if (this.flashWhiteT > 0) {

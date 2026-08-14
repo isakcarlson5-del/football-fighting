@@ -516,6 +516,67 @@ test('hybrid camera adds restrained directional look-ahead while Showpiece stays
   expect(errors).toEqual([]);
 });
 
+test('hybrid match keeps the wider readable frame and never clears on duplicate resize', async ({ page }) => {
+  const errors = await collectErrors(page);
+  await page.goto('/?debug=1&stage=arena-preview&arena=world-cup-hybrid-25d');
+  await expect.poll(() => page.evaluate(() => window.__FF.getState())).toEqual({ app: 'run', run: 'playing' });
+  await expect.poll(() => page.evaluate(() => window.__FF.getCameraState().viewWorldH)).toBeCloseTo(1320, 1);
+
+  const resizeProof = await page.evaluate(() => {
+    const canvas = document.getElementById('game') as HTMLCanvasElement;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true })!;
+    const x = Math.floor(canvas.width * 0.22);
+    const y = Math.floor(canvas.height * 0.32);
+    const before = [...ctx.getImageData(x, y, 1, 1).data];
+    window.dispatchEvent(new Event('resize'));
+    const after = [...ctx.getImageData(x, y, 1, 1).data];
+    return { before, after };
+  });
+  expect(resizeProof.after).toEqual(resizeProof.before);
+  expect(resizeProof.after[3]).toBe(255);
+  expect(errors).toEqual([]);
+});
+
+test('hurt feedback stays clearly red without darkening the complete pitch', async ({ page }) => {
+  const errors = await collectErrors(page);
+  await page.goto('/?debug=1&stage=arena-preview&arena=world-cup-hybrid-25d');
+  await expect.poll(() => page.evaluate(() => window.__FF.getState())).toEqual({ app: 'run', run: 'playing' });
+  await page.waitForTimeout(350);
+
+  const sampleCanvas = () => page.evaluate(() => {
+    const canvas = document.getElementById('game') as HTMLCanvasElement;
+    const probe = document.createElement('canvas');
+    probe.width = 32;
+    probe.height = 18;
+    const ctx = probe.getContext('2d', { willReadFrequently: true })!;
+    ctx.drawImage(canvas, 0, 0, probe.width, probe.height);
+    const data = ctx.getImageData(0, 0, probe.width, probe.height).data;
+    let red = 0;
+    let green = 0;
+    let blue = 0;
+    for (let i = 0; i < data.length; i += 4) {
+      red += data[i];
+      green += data[i + 1];
+      blue += data[i + 2];
+    }
+    const count = data.length / 4;
+    return {
+      red: red / count,
+      green: green / count,
+      blue: blue / count,
+      luminance: (red * 0.2126 + green * 0.7152 + blue * 0.0722) / count,
+    };
+  });
+
+  const before = await sampleCanvas();
+  await page.evaluate(() => window.__FF.hurt(8));
+  await page.waitForTimeout(35);
+  const during = await sampleCanvas();
+  expect(during.red).toBeGreaterThan(before.red + 1);
+  expect(during.luminance).toBeGreaterThanOrEqual(before.luminance * 0.98);
+  expect(errors).toEqual([]);
+});
+
 test('hybrid structural bowl parallax stays clamped while camera crosses the pitch', async ({ page }) => {
   const errors = await collectErrors(page);
   await page.goto('/?debug=1&stage=arena-preview&move=e&arena=world-cup-hybrid-25d');

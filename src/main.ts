@@ -747,7 +747,7 @@ interface FfDebug {
   getInputState(): { ax: number; ay: number; joyActive: boolean; joyX: number; joyY: number };
   getArenaRenderMode(): { liveStadium: boolean; hybridDepth: boolean };
   getReducedVfx(): boolean;
-  getCameraState(): { x: number; y: number; lookX: number; lookY: number };
+  getCameraState(): { x: number; y: number; lookX: number; lookY: number; viewWorldH: number };
   getPlayerOcclusionStrength(): number;
   getBossScreenRect(): EntityScreenRect | null;
   getCombatPresentationMetrics(): CombatPresentationMetrics;
