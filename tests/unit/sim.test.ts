@@ -1545,6 +1545,29 @@ describe('sim core loop', () => {
     expect(guard.patrolAngle).toBe(patrolAngle);
   });
 
+  it('Security Detail screens toward a coherent distant ground threat without chasing it', () => {
+    const sim = makeSim();
+    sim.debugDirectorPaused = true;
+    sim.enemies.forEach((enemy) => (enemy.active = false));
+    sim.applyUpgrade({ kind: 'ability', id: 'guard', name: '', desc: '', color: '', level: 1 });
+    const guard = sim.guards[0];
+    sim.debugSpawn('steward', sim.player.x + 690, sim.player.y + 40);
+    const threat = sim.enemies.find((enemy) => enemy.active)!;
+    threat.speed = 0;
+    threat.hp = threat.maxHp = 10_000;
+    guard.decisionT = 0;
+
+    step(sim, 1);
+
+    expect(guard.target).toBe(-1);
+    expect(guard.tx).toBeGreaterThan(sim.player.x + 70);
+    expect(Math.abs(guard.ty - sim.player.y)).toBeLessThan(40);
+    expect(Math.hypot(guard.tx - guard.escortX, guard.ty - guard.escortY)).toBeLessThan(100);
+    step(sim, 90);
+    expect(Math.hypot(guard.x - sim.player.x, guard.y - sim.player.y)).toBeLessThan(150);
+    expect(Math.hypot(threat.x - sim.player.x, threat.y - sim.player.y)).toBeGreaterThan(600);
+  });
+
   it('Nutmeg Dash never spends itself without an explicit request', () => {
     const sim = makeSim(2); // Neymar starts with dash
     sim.debugDirectorPaused = true;

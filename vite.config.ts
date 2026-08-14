@@ -14,6 +14,8 @@ const RELEASE_EXCLUDED_ASSETS = [
   'art/enemies/drone-run.png',
   'art/allies/bodyguard-heavy.png',
   'art/allies/bodyguard-scout.png',
+  // Retain the six-frame Halo source as a rollback, but only ship v2.
+  'art/abilities/keeper-halo-strip.png',
   'art/vfx/kick-contact-turf-strip.png',
 ] as const;
 const RELEASE_EXCLUDED_DIRECTORIES = [

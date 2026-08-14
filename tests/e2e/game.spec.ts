@@ -1777,6 +1777,45 @@ test('security guards split grounded targets and ignore the aerial drone', async
   expect(errors).toEqual([]);
 });
 
+test('security guards screen toward a distant coherent crowd without leaving the player', async ({ page }) => {
+  const errors = await collectErrors(page);
+  await page.goto('/?debug=1&stage=guard-screening&arena=world-cup-hybrid-25d');
+  await page.waitForTimeout(800);
+  const screening = await page.evaluate(() => {
+    const sim = window.__FF.getSim()!;
+    return {
+      player: { x: sim.player.x, y: sim.player.y },
+      guards: sim.guards.map((guard: { x: number; y: number; tx: number; target: number }) => ({
+        x: guard.x,
+        y: guard.y,
+        tx: guard.tx,
+        target: guard.target,
+      })),
+      enemies: sim.enemies.filter((enemy: { active: boolean }) => enemy.active).map((enemy: { x: number; y: number }) => ({
+        x: enemy.x,
+        y: enemy.y,
+      })),
+    };
+  });
+  expect(screening.guards).toHaveLength(4);
+  expect(screening.guards.every((guard: { target: number }) => guard.target === -1)).toBe(true);
+  expect(screening.guards.every((guard: { tx: number }) => guard.tx > screening.player.x + 45)).toBe(true);
+  expect(screening.guards.every((guard: { x: number; y: number }) => (
+    Math.hypot(guard.x - screening.player.x, guard.y - screening.player.y) < 185
+  ))).toBe(true);
+  expect(screening.enemies.every((enemy: { x: number }) => enemy.x > screening.player.x + 600)).toBe(true);
+  expect(errors).toEqual([]);
+});
+
+test('Keeper\'s Halo loads the twelve-frame shield-backed runtime strip', async ({ page }) => {
+  const errors = await collectErrors(page);
+  await page.goto('/?debug=1&stage=aerial-defence&arena=world-cup-hybrid-25d');
+  await expect.poll(() => page.evaluate(() => performance.getEntriesByType('resource')
+    .some((entry) => new URL(entry.name).pathname.endsWith('/art/abilities/keeper-halo-strip-v2.png')))).toBe(true);
+  expect(await page.evaluate(() => window.__FF.getSim()!.player.abilities.keeperhalo)).toBe(5);
+  expect(errors).toEqual([]);
+});
+
 test('art-direction scene presents the shared player, guard and threat scale stack', async ({ page }) => {
   const errors = await collectErrors(page);
   await page.goto('/?debug=1&stage=art-direction&arena=world-cup-hybrid-25d');

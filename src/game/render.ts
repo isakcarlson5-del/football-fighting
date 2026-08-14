@@ -62,6 +62,7 @@ const MOVEMENT_DIRECTIONS: readonly MovementDirection[] = ['e', 'se', 's', 'sw',
 const BOSS_DIRECTION_FRAME_WIDTH = 480;
 const PLAYER_DIRECTION_FRAME_WIDTH = 256;
 const PLAYER_DIRECTION_RUN_FPS = 18;
+const KEEPER_HALO_FRAME_COUNT = 12;
 /** Normal match framing. The previous 1240-unit window made dense late-game
  *  threats enter from just outside the player's readable space. A restrained
  *  6.5% wider frame shows more of the pitch without miniaturising actors. */
@@ -1034,7 +1035,7 @@ export class Renderer {
     this.loadPickupSprite('art/vfx/orbit-ball-curved-trail.png?v=2', (img) => {
       this.orbitTrailSpr = img;
     });
-    this.loadPickupSprite('art/abilities/keeper-halo-strip.png', (img) => {
+    this.loadPickupSprite('art/abilities/keeper-halo-strip-v2.png', (img) => {
       this.keeperHaloSpr = img;
     });
     this.loadPickupSprite('art/vfx/var-scan-shot-strip.png', (img) => {
@@ -1070,8 +1071,8 @@ export class Renderer {
     img.src = url;
   }
 
-  /** Draws one cell from a six-frame generated VFX strip. Keeping VFX in one
-   *  fixed atlas avoids per-hit allocations and remains safe in dense runs. */
+  /** Draws one cell from a generated VFX strip. Keeping VFX in one fixed atlas
+   *  avoids per-hit allocations and remains safe in dense runs. */
   private drawVfxFrame(
     ctx: CanvasRenderingContext2D,
     sprite: HTMLImageElement | null,
@@ -1083,9 +1084,10 @@ export class Renderer {
     alpha = 1,
     additive = false,
     anchorX = 0.5,
+    frameCount = 6,
   ): boolean {
     if (!sprite || !sprite.complete || sprite.naturalWidth <= 0) return false;
-    const frames = 6;
+    const frames = Math.max(1, Math.floor(frameCount));
     const fw = sprite.naturalWidth / frames;
     const sourceFrame = clamp(Math.floor(frame), 0, frames - 1);
     ctx.save();
@@ -3718,17 +3720,19 @@ export class Renderer {
         const y = toSY(worldY);
         const depthScale = this.hybridDepth ? hybridEntityDepthScale(worldY) : 1;
         const lift = (22 + Math.sin(time * 6.4 + it.idx * 1.9) * 2.5) * depthScale;
-        const frame = Math.floor(time * (keeperLvl >= 4 ? 11 : 8) + it.idx * 1.4) % 6;
+        const frame = Math.floor(time * (keeperLvl >= 4 ? 16 : 12) + it.idx * 2.35) % KEEPER_HALO_FRAME_COUNT;
         this.drawVfxFrame(
           ctx,
           this.keeperHaloSpr,
           frame,
           x,
           y - lift,
-          (keeperLvl >= 5 ? 72 : 64) * depthScale,
+          (keeperLvl >= 5 ? 74 : 68) * depthScale,
           angle + Math.PI / 2,
-          this.reducedVfx ? 0.72 : 0.94,
-          true,
+          this.reducedVfx ? 0.72 : 0.96,
+          false,
+          0.5,
+          KEEPER_HALO_FRAME_COUNT,
         );
       } else {
         const g = sim.guards[it.idx];
@@ -3911,7 +3915,7 @@ export class Renderer {
       const age = time - this.keeperBlockStartedAt;
       if (age >= 0 && age < 0.48) {
         const progress = clamp(age / 0.48, 0, 0.999);
-        const frame = Math.min(5, Math.floor(progress * 6));
+        const frame = Math.min(KEEPER_HALO_FRAME_COUNT - 1, Math.floor(progress * KEEPER_HALO_FRAME_COUNT));
         this.drawVfxFrame(
           ctx,
           this.keeperHaloSpr,
@@ -3921,7 +3925,9 @@ export class Renderer {
           this.keeperBlockCounter ? 138 : 108,
           progress * 0.32,
           clamp((0.48 - age) * 3.4, 0, 1),
-          true,
+          false,
+          0.5,
+          KEEPER_HALO_FRAME_COUNT,
         );
       } else if (age >= 0.48) {
         this.keeperBlockStartedAt = -1;

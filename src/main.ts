@@ -2253,6 +2253,30 @@ if (debugStage === 'active-dash') {
     }
     document.getElementById('banner')?.classList.remove('show');
   }
+} else if (debugStage === 'guard-screening') {
+  ff.startRun('messi');
+  const stagedSim = ff.getSim();
+  if (stagedSim) {
+    stagedSim.debugDirectorPaused = true;
+    stagedSim.player.abilities = {};
+    stagedSim.player.maxHp = 9999;
+    stagedSim.player.hp = 9999;
+    stagedSim.debugSetGuardDamageMultiplier(0);
+    for (let level = 1; level <= 5; level++) {
+      stagedSim.applyUpgrade({ kind: 'ability', id: 'guard', name: '', desc: '', color: '', level });
+    }
+    for (const offsetY of [-210, -70, 70, 210]) {
+      stagedSim.debugSpawn('steward', stagedSim.player.x + 680, stagedSim.player.y + offsetY);
+    }
+    for (const enemy of stagedSim.enemies) {
+      if (!enemy.active) continue;
+      enemy.speed = 0;
+      enemy.damage = 0;
+      enemy.hp = enemy.maxHp = enemy.barHp = 999_999;
+    }
+    stagedSim.guards.forEach((guard) => (guard.decisionT = 0));
+    document.getElementById('banner')?.classList.remove('show');
+  }
 } else if (debugStage === 'guards') {
   ff.startRun('messi');
   const stagedSim = ff.getSim();

@@ -193,12 +193,14 @@ describe('generated locomotion art', () => {
     expect(header).toEqual({ width: 256 * 6, height: 256, colorType: 6 });
   });
 
-  it('ships the six-frame transparent Keeper\'s Halo ability strip and card', () => {
-    expect(pngHeader(resolve('public/art/abilities/keeper-halo-strip.png'))).toEqual({
-      width: 256 * 6,
+  it('ships the twelve-frame transparent Keeper\'s Halo ability strip and card', () => {
+    const strip = resolve('public/art/abilities/keeper-halo-strip-v2.png');
+    expect(pngHeader(strip)).toEqual({
+      width: 256 * 12,
       height: 256,
       colorType: 6,
     });
+    expect(statSync(strip).size).toBeGreaterThan(500_000);
     const card = resolve('public/art/abilities/keeperhalo.webp');
     expect(opaqueWebpHeader(card)).toEqual({ width: 512, height: 512 });
     expect(statSync(card).size).toBeGreaterThan(5_000);

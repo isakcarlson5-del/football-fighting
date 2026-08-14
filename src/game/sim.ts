@@ -3986,7 +3986,31 @@ export class Sim {
       const dmg = [0, 12, 18, 18, 18, 30][guardLvl] * this.guardDmgMult * this.damageMult;
       const swingCd = guardLvl >= 5 ? 0.55 : 0.8;
       const knock = guardLvl >= 4 ? 260 : 90;
-      const guardRange2 = 320 * 320;
+      const guardRange2 = 360 * 360;
+      // Guards may read a distant grounded crowd before it enters punch range.
+      // This is anticipation only: it biases the close patrol sector toward
+      // the threat and never sends the guard outside the protection zone.
+      let threatVectorX = 0;
+      let threatVectorY = 0;
+      let threatWeight = 0;
+      for (const enemy of this.enemies) {
+        if (!enemy.active || this.isAerialEnemy(enemy)) continue;
+        const dx = enemy.x - p.x;
+        const dy = enemy.y - p.y;
+        const distance = Math.hypot(dx, dy);
+        if (distance < 1 || distance > 860) continue;
+        const importance = enemy.boss ? 2.6 : enemy.elite ? 1.55 : 1;
+        const weight = importance * clamp(1.18 - distance / 1_050, 0.24, 1.05);
+        threatVectorX += (dx / distance) * weight;
+        threatVectorY += (dy / distance) * weight;
+        threatWeight += weight;
+      }
+      const threatCoherence = threatWeight > 0
+        ? Math.hypot(threatVectorX, threatVectorY) / threatWeight
+        : 0;
+      const threatPatrolAngle = threatCoherence >= 0.18
+        ? Math.atan2(threatVectorY, threatVectorX)
+        : null;
       const validGroundTarget = (targetIdx: number): boolean => {
         const enemy = this.enemies[targetIdx];
         return !!enemy?.active
@@ -4103,7 +4127,17 @@ export class Sim {
           const sectorHalf = Math.min(0.66, Math.PI / Math.max(3, this.guards.length + 1));
           g.patrolDirection = g.patrolDirection === 1 ? -1 : 1;
           const sweep = 0.58 + g.variant * 0.07;
-          g.patrolAngle = g.patrolHomeAngle + g.patrolDirection * sectorHalf * sweep;
+          if (threatPatrolAngle !== null) {
+            // Spread a squad across a narrow forward screen while a single
+            // guard owns the exact crowd bearing. Position changes remain
+            // inertial and decision-timed, independent from player input.
+            const lineupOffset = this.guards.length <= 1
+              ? 0
+              : (gi - (this.guards.length - 1) / 2) * Math.min(0.32, 0.7 / (this.guards.length - 1));
+            g.patrolAngle = threatPatrolAngle + lineupOffset;
+          } else {
+            g.patrolAngle = g.patrolHomeAngle + g.patrolDirection * sectorHalf * sweep;
+          }
           g.patrolRadius = gi === 0 ? this.rng.range(82, 94)
             : gi === 1 ? this.rng.range(96, 112)
             : gi === 2 ? this.rng.range(122, 136)
