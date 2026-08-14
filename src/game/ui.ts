@@ -107,6 +107,7 @@ export class UI {
   private dockSig = '';
   private dialogCleanup: (() => void) | null = null;
   private draftCleanup: (() => void) | null = null;
+  private menuNavCleanups = new Set<() => void>();
   selectedPlayer = PLAYERS[0].id;
 
   constructor(root: HTMLElement, hooks: UiHooks, save: Save) {
@@ -135,6 +136,7 @@ export class UI {
   clear(): void {
     this.dialogCleanup?.();
     this.draftCleanup?.();
+    this.menuNavCleanups.forEach((cleanup) => cleanup());
     this.root.innerHTML = '';
     this.hudRefs = {};
     this.dockSig = '';
@@ -208,13 +210,25 @@ export class UI {
       return null;
     };
     const targets = () => [...el.querySelectorAll<HTMLElement>(
-      'button:not([disabled]):not(.skin-swatch), input:not([disabled]):not([type="hidden"]), select:not([disabled]), [tabindex]:not([tabindex="-1"]):not(.skin-swatch), [href]',
+      'button:not([disabled]):not(.skin-swatch), input:not([disabled]):not([type="hidden"]), select:not([disabled]), [tabindex]:not([tabindex="-1"]):not(.skin-swatch), .char-card, [href]',
     )].filter((node) => node.offsetParent !== null);
-    el.addEventListener('keydown', (event) => {
-      if (!(event instanceof KeyboardEvent) || event.defaultPrevented) return;
+    const handleKeydown = (event: KeyboardEvent) => {
+      if (!el.isConnected) {
+        cleanup();
+        return;
+      }
+      const visibleScreens = [...this.root.querySelectorAll<HTMLElement>('.screen')]
+        .filter((screen) => {
+          const style = getComputedStyle(screen);
+          return !screen.hidden && style.display !== 'none' && style.visibility !== 'hidden';
+        });
+      if (visibleScreens.at(-1) !== el) return;
+      if (!(event instanceof KeyboardEvent)) return;
       const active = document.activeElement;
       if (active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement || active instanceof HTMLSelectElement) return;
       const key = event.key;
+      if (active instanceof HTMLElement && active.closest('[role="tablist"]') &&
+        ['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(key)) return;
       if (key === 'Enter' || key === ' ') {
         event.preventDefault();
         if (active instanceof HTMLElement) active.click();
@@ -253,7 +267,13 @@ export class UI {
         }
       }
       best?.focus({ preventScroll: true });
-    });
+    };
+    const cleanup = () => {
+      window.removeEventListener('keydown', handleKeydown);
+      this.menuNavCleanups.delete(cleanup);
+    };
+    window.addEventListener('keydown', handleKeydown);
+    this.menuNavCleanups.add(cleanup);
   }
 
   /**
@@ -427,6 +447,7 @@ export class UI {
     }
     input.value = '';
     form.hidden = true;
+    screen.querySelector<HTMLButtonElement>('[data-act="vip-close"]')?.focus({ preventScroll: true });
     status.classList.remove('error');
     status.textContent = `Authorized · ${data.summary.active24h} active during the last 24 hours`;
     content.innerHTML = '';
@@ -544,10 +565,13 @@ export class UI {
     `;
     const selectCard = (card: Element, restoreFocus: boolean) => {
       this.selectedPlayer = (card as HTMLElement).dataset.player!;
-      this.showSelect();
-      if (restoreFocus) requestAnimationFrame(() => {
-        this.root.querySelector<HTMLElement>(`.char-card[data-player="${this.selectedPlayer}"]`)?.focus({ preventScroll: true });
+      el.querySelectorAll<HTMLElement>('.char-card').forEach((candidate) => {
+        const selected = candidate === card;
+        candidate.classList.toggle('selected', selected);
+        candidate.setAttribute('aria-checked', String(selected));
+        candidate.tabIndex = selected ? 0 : -1;
       });
+      if (restoreFocus) (card as HTMLElement).focus({ preventScroll: true });
     };
     el.querySelectorAll('.char-card').forEach((card) => {
       card.addEventListener('click', (ev) => {
@@ -1065,7 +1089,15 @@ export class UI {
     const tabs = [...el.querySelectorAll<HTMLButtonElement>('[role="tab"]')];
     tabs.forEach((button, index) => {
       button.tabIndex = button.getAttribute('aria-selected') === 'true' ? 0 : -1;
-      button.addEventListener('click', () => this.showClub(button.dataset.tab as 'upgrades' | 'skins'));
+      button.addEventListener('click', () => {
+        const nextTab = button.dataset.tab as 'upgrades' | 'skins';
+        this.showClub(nextTab);
+        const focusNextTab = () => this.root
+          .querySelector<HTMLButtonElement>(`#club-tab-${nextTab}`)
+          ?.focus({ preventScroll: true });
+        focusNextTab();
+        requestAnimationFrame(focusNextTab);
+      });
       button.addEventListener('keydown', (event) => {
         if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
         event.preventDefault();

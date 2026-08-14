@@ -609,7 +609,7 @@ window.addEventListener('keydown', (e) => {
       const card = cards[idx] as HTMLElement | undefined;
       card?.click();
     }
-  } else if (appState === 'menu' && k === 'enter') {
+  } else if (appState === 'menu' && k === 'enter' && document.querySelector('#menu-screen')) {
     ui.showSelect();
     appState = 'select';
   }
