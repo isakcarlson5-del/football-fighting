@@ -125,7 +125,7 @@ export class UI {
       const image = new Image();
       image.onload = () => resolve();
       image.onerror = () => resolve();
-      image.src = `art/players/directional-v3/${player.id}/e.webp`;
+      image.src = `art/players/directional-v4/${player.id}/e.webp`;
     }))).then(() => previewDelay > 0
       ? new Promise<void>((resolve) => window.setTimeout(resolve, previewDelay))
       : undefined).then(() => {
@@ -538,7 +538,7 @@ export class UI {
       return `
       <div class="char-card ${sel}" data-player="${p.id}" role="radio" aria-checked="${p.id === this.selectedPlayer}" aria-label="Select ${p.name}" tabindex="${p.id === this.selectedPlayer ? '0' : '-1'}">
         <div class="portrait run-preview" role="img" aria-label="${p.name} running east">
-          <span class="runner-sprite" style="--run-strip:url('${documentAssetUrl(`art/players/directional-v3/${p.id}/e.webp`)}')"></span>
+          <span class="runner-sprite" style="--run-strip:url('${documentAssetUrl(`art/players/directional-v4/${p.id}/e.webp`)}')"></span>
         </div>
         <div class="name">${p.name}</div>
         <div class="nickname">#${p.number} · ${p.nickname}</div>

@@ -22,6 +22,7 @@ const RELEASE_EXCLUDED_DIRECTORIES = [
   // Keep the prior authored player atlases in source control as a rollback,
   // but do not ship two complete 384-frame sets in the portal payload.
   'art/players/directional-v2',
+  'art/players/directional-v3',
 ] as const;
 
 async function directoryBytes(path: string): Promise<number> {

@@ -2507,7 +2507,7 @@ export class Renderer {
         const nextId = `player-directional-${def.id}-${nextDirection}`;
         void loadStripAtlas(
           nextId,
-          playerArtUrl(`art/players/directional-v3/${def.id}/${nextDirection}.webp`),
+          playerArtUrl(`art/players/directional-v4/${def.id}/${nextDirection}.webp`),
           tint,
           {
             frameWidth: PLAYER_DIRECTION_FRAME_WIDTH,
