@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { abilityCadenceLabel, approachVelocity, ARENA_W, bossApproachIngressMultiplier, bossDirectorIngressMultiplier, bossHealthMultiplier, BOSS_INTRO_DURATION, BOSS_MELEE_LUNGE_DURATION, directorPopulationIngressMultiplier, ENEMY_MELEE_LUNGE_DURATION, enemyAirLift, enemyHitFeedbackStrength, enemyRunCycleDistance, enemyRunTargetFps, enemyXpRewardMultiplier, guardAuthoredRunVector, guardFormationOffset, guardRunPresentation, hybridBossBodyContact, hybridBossSceneryPad, hybridEnemySceneryPad, hystereticMovementOctant, MELEE_CONTACT_PROGRESS, PLAYER_RUN_CYCLE_DISTANCE, PLAYER_RUN_FPS, PLAYER_RUN_FRAMES, PLAYER_VISUAL_Y_SCALE, REWARD_EVENT_DURATION, REWARD_EVENT_LABEL, REWARD_EVENT_MIN_TIME, resolveHybridBossBodyContact, rewardCoinMul, rewardScoreMul, rewardXpMul, Sim, statProgressLabel, stepMovementOctant, upgradeDraftWeight } from '../../src/game/sim';
+import { abilityCadenceLabel, approachVelocity, ARENA_W, bossApproachIngressMultiplier, bossDirectorIngressMultiplier, bossHealthMultiplier, BOSS_INTRO_DURATION, BOSS_MELEE_LUNGE_DURATION, directorPopulationIngressMultiplier, ENEMY_MELEE_LUNGE_DURATION, enemyAirLift, enemyHitFeedbackStrength, enemyRunCycleDistance, enemyRunTargetFps, enemyXpRewardMultiplier, guardAuthoredRunVector, guardFormationOffset, guardRunPresentation, hybridBossBodyContact, hybridBossSceneryPad, hybridEnemySceneryPad, hystereticMovementOctant, MELEE_CONTACT_PROGRESS, PLAYER_RUN_CYCLE_DISTANCE, PLAYER_RUN_FPS, PLAYER_RUN_FRAMES, PLAYER_VISUAL_Y_SCALE, REWARD_EVENT_CHANCE, REWARD_EVENT_DURATION, REWARD_EVENT_LABEL, REWARD_EVENT_MIN_TIME, resolveHybridBossBodyContact, rewardCoinMul, rewardEventChance, rewardScoreMul, rewardXpMul, Sim, statProgressLabel, stepMovementOctant, upgradeDraftWeight } from '../../src/game/sim';
 import { ABILITIES, ABILITY_IDS, BOSS0_AT, BOSS1_AT, BOSSES, ENEMIES, PLAYERS, RUN_LENGTH } from '../../src/game/data';
 import { Save } from '../../src/game/meta';
 import { aerialLaunchVisual, ART_DIRECTION_PROFILE, bossArrivalVisual, combatPresentationBudget, corpseCollapseVisual, dampedTurfDisplacement, directionalFrameBlend, enemyHealthBarPriority, enemyHealthBarStyle, enemyPoseFrame, guardPoseFrame, HYBRID_LIGHT_CAST, hybridCentreMarkingGeometry, hybridCornerFlagDepthScale, hybridEntityDepthScale, hybridEntityShadowGeometry, hybridGoalNetBreathe, hybridHostileProjectileElevation, hybridPitchMarkingGeometry, hybridStadiumParallax, matchdayWipeoutVisual, movementDirection, orbitPainterDepthY, orbitTrailArcGeometry, pickupVisibleBounds, placeEnemyHealthBar, playerOcclusionStrength, playerStepCue, reducedCombatPresentationBudget, type HealthBarCollisionRect } from '../../src/game/render';
@@ -2093,6 +2093,28 @@ describe('reward buffs', () => {
     expect(sim.rewardBuff).toBeNull();
     expect(rewardXpMul(sim.rewardBuff)).toBe(1);
     expect(rewardCoinMul(sim.rewardBuff)).toBe(1);
+  });
+
+  it('raises the rare event chance after a burst of player damage', () => {
+    expect(rewardEventChance(0)).toBe(REWARD_EVENT_CHANCE);
+    expect(rewardEventChance(240)).toBeGreaterThan(REWARD_EVENT_CHANCE);
+    expect(rewardEventChance(240)).toBeLessThan(rewardEventChance(480));
+    expect(rewardEventChance(9999)).toBeLessThanOrEqual(0.32);
+    const sim = makeSim();
+    sim.debugDirectorPaused = true;
+    sim.debugSpawn('invader', 40, 0);
+    const enemy = sim.enemies.find((entry) => entry.active && !entry.boss)!;
+    enemy.hp = enemy.maxHp = 400;
+    sim.time = REWARD_EVENT_MIN_TIME;
+    sim.damageEnemy(sim.enemies.indexOf(enemy), 200);
+    let rolls: number[] = [];
+    sim.rng.chance = (p: number) => {
+      rolls.push(p);
+      return false;
+    };
+    step(sim, 1);
+    expect(rolls[0]).toBeGreaterThan(REWARD_EVENT_CHANCE);
+    expect(sim.rewardBuff).toBeNull();
   });
 });
 

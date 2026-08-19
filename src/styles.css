@@ -874,36 +874,36 @@ input:focus-visible,
   stroke-linecap: round;
 }
 .reward-event-track {
-  stroke: #0a0d18;
-  stroke-width: 9;
+  stroke: rgba(10, 13, 24, 0.28);
+  stroke-width: 6;
 }
 .reward-event-progress {
   stroke: var(--gold);
-  stroke-width: 8;
+  stroke-width: 5;
   stroke-dasharray: 263.89;
   stroke-dashoffset: 0;
 }
 .reward-event-face {
   position: absolute;
-  inset: 20px;
+  inset: 22px;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   gap: 2px;
   border-radius: 50%;
-  background: var(--gold);
-  border: 4px solid #0a0d18;
-  box-shadow: inset 0 0 0 2px rgba(10, 13, 24, 0.12);
+  background: radial-gradient(circle at 38% 30%, #fff3c2 0%, var(--gold) 58%, #e2b52a 100%);
+  border: 2px solid rgba(10, 13, 24, 0.28);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.28);
   font-family: 'Archivo Black', 'Arial Black', sans-serif;
   text-transform: uppercase;
   color: var(--navy);
-  animation: reward-event-idle 2.15s ease-in-out infinite alternate;
+  animation: reward-event-idle 2.8s ease-in-out infinite alternate;
 }
 #reward-event.tick .reward-event-face {
   animation:
-    reward-event-face-tick 0.7s ease-out,
-    reward-event-idle 2.15s ease-in-out infinite alternate;
+    reward-event-face-tick 0.85s ease-out,
+    reward-event-idle 2.8s ease-in-out infinite alternate;
 }
 .reward-event-kicker {
   font-family: 'Space Grotesk', sans-serif;
@@ -918,7 +918,7 @@ input:focus-visible,
   letter-spacing: 0.02em;
 }
 .reward-event-time.tick {
-  animation: reward-event-tick 0.7s ease-out;
+  animation: reward-event-tick 0.85s ease-out;
 }
 .reward-event-label {
   max-width: 104px;
@@ -932,22 +932,22 @@ input:focus-visible,
   to { opacity: 1; transform: translateX(-50%) scale(1); }
 }
 @keyframes reward-event-idle {
-  from { filter: brightness(1); box-shadow: inset 0 0 0 2px rgba(10, 13, 24, 0.12); }
-  to { filter: brightness(1.05); box-shadow: inset 0 0 0 2px rgba(10, 13, 24, 0.12); }
+  from { filter: brightness(1); }
+  to { filter: brightness(1.04); }
 }
 @keyframes reward-event-tick {
   0% { transform: scale(1); opacity: 1; }
-  35% { transform: scale(1.08); opacity: 1; }
+  40% { transform: scale(1.04); opacity: 1; }
   100% { transform: scale(1); }
 }
 @keyframes reward-event-ring-tick {
   0% { transform: rotate(-90deg); filter: brightness(1); }
-  40% { transform: rotate(-90deg); filter: brightness(1.12); }
+  45% { transform: rotate(-90deg); filter: brightness(1.06); }
   100% { transform: rotate(-90deg); filter: brightness(1); }
 }
 @keyframes reward-event-face-tick {
   0% { transform: scale(1); }
-  35% { transform: scale(1.03); }
+  40% { transform: scale(1.02); }
   100% { transform: scale(1); }
 }
 
@@ -1816,6 +1816,35 @@ kbd {
   padding: 1px 7px;
   font-family: inherit;
   font-size: 11.5px;
+}
+
+@media (max-width: 720px) {
+  #reward-event {
+    top: calc(78px + env(safe-area-inset-top));
+    width: 132px;
+    height: 132px;
+  }
+  .reward-event-ring {
+    width: 132px;
+    height: 132px;
+  }
+  .reward-event-face { inset: 16px; }
+  .reward-event-time { font-size: 36px; }
+  .reward-event-kicker { font-size: 9px; }
+  .reward-event-label { max-width: 78px; font-size: 8px; }
+}
+@media (max-width: 420px) {
+  #reward-event {
+    top: calc(70px + env(safe-area-inset-top));
+    width: 112px;
+    height: 112px;
+  }
+  .reward-event-ring {
+    width: 112px;
+    height: 112px;
+  }
+  .reward-event-face { inset: 14px; }
+  .reward-event-time { font-size: 30px; }
 }
 
 @media (max-width: 720px) {

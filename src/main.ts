@@ -353,8 +353,6 @@ function startRun(): void {
   discardedStepTime = 0;
   ui.buildHud();
   ui.banner('Kick Off!');
-  sim.debugHoldRewardEvent = true;
-  sim.rewardBuff = { kind: 'both', t: 30, label: 'DOUBLE XP + COINS' };
 }
 
 function endRun(won: boolean): void {

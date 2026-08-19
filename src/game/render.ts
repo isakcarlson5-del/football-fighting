@@ -4455,31 +4455,34 @@ export class Renderer {
     ctx.clip('evenodd');
     ctx.lineCap = 'round';
 
-    const drawFan = (hx: number, hy: number, scale: number, i: number, seedA: number, seedB: number): void => {
-      if (hx < -18 || hx > vw + 18 || hy < -22 || hy > vh + 18) return;
+    const drawFan = (hx: number, hy: number, scale: number, i: number, seedA: number, seedB: number, maxLift = 12): void => {
+      if (hx < 10 || hx > vw - 10) return;
       const motion = i % 12;
       const phase = time * (1.2 + seedB * 1.8) + i * 1.73;
       const cheer = 0.35 + 0.65 * Math.max(0, Math.sin(phase * 0.9 + seedA * 4.1));
       const sway = Math.sin(phase * 0.74 + seedB * 3.2) * (2.6 + seedA * 2.6);
       const mexican = Math.max(0, Math.sin(hx * 0.03 - time * 2.55));
-      const waveLift = mexican * mexican * 8.5;
+      const waveLift = mexican * mexican * 4.2;
       const groupCheer = Math.floor(i / 7) % 4 === Math.floor(time * 0.55) % 4;
-      let lift = waveLift + cheer * 2.2;
+      let lift = waveLift + cheer * 1.4;
       let lean = sway * 0.28;
       let seated = false;
       if (motion === 1) lean = sway * 1.15;
-      else if (motion === 2 || groupCheer) lift += cheer * 8.2;
+      else if (motion === 2 || groupCheer) lift += cheer * 4.4;
       else if (motion === 4) {
         seated = cheer < 0.72;
-        lift += seated ? cheer * 0.8 : cheer * 3.4;
-      } else if (motion === 8) lift += cheer * 1.6;
-      else if (motion === 9) lift += Math.abs(Math.sin(phase * 3.2)) * 7.2;
-      else if (motion === 6) lift += cheer * 4.4;
+        lift += seated ? cheer * 0.8 : cheer * 2.2;
+      } else if (motion === 8) lift += cheer * 1.2;
+      else if (motion === 9) lift += Math.abs(Math.sin(phase * 3.2)) * 3.6;
+      else if (motion === 6) lift += cheer * 2.4;
+      lift = Math.min(lift, maxLift);
+      const bodyH = (seated ? 8.4 : 14.4) * scale;
+      const figureTop = hy - lift - bodyH * 1.22 - 3.4 * scale;
+      if (figureTop < 12 || hy + 8 * scale > vh - 10) return;
       const x = hx + lean;
       const y = hy - lift;
       const shirt = shirts[i % shirts.length];
       const accent = shirts[(i + 3) % shirts.length];
-      const bodyH = (seated ? 8.4 : 14.4) * scale;
       const bodyW = (motion === 10 ? 7.6 : 9.1) * scale;
       const headR = 3.3 * scale;
       const shoulderY = y - bodyH * 0.48;
@@ -4592,32 +4595,40 @@ export class Renderer {
       ctx.fill();
     };
 
-    const farRows = 8;
-    const farCols = 62;
+    const farRail = top - 14;
+    const farCeiling = Math.max(36, top - 56);
+    const farSpan = farRail - farCeiling;
+    const farRows = farSpan >= 16 ? Math.min(4, Math.max(2, Math.floor(farSpan / 12))) : 0;
+    const farCols = 58;
+    const farStep = farRows > 0 ? farSpan / farRows : 12;
     for (let row = 0; row < farRows; row++) {
       for (let col = 0; col < farCols; col++) {
         const i = row * farCols + col;
         const seedA = this.crowdSeed[(i * 2) % this.crowdSeed.length] ?? 0.5;
         const seedB = this.crowdSeed[(i * 2 + 1) % this.crowdSeed.length] ?? 0.5;
         const x = left + 18 + (col + 0.5 + (seedA - 0.5) * 0.35) * (pitchWidth - 36) / farCols;
-        const y = top - 20 - row * 16 - seedB * 3;
-        drawFan(x, y, 1.46 - row * 0.08, i, seedA, seedB);
+        const y = farRail - (row + 0.35) * farStep - seedB * 2;
+        drawFan(x, y, 1.34 - row * 0.08, i, seedA, seedB, 3.5);
       }
     }
-    const nearRows = 6;
-    const nearCols = 56;
+    const nearRail = bottom + 16;
+    const nearFloor = vh - 22;
+    const nearSpan = nearFloor - nearRail;
+    const nearRows = nearSpan >= 16 ? Math.min(4, Math.max(2, Math.floor(nearSpan / 12))) : 0;
+    const nearCols = 52;
+    const nearStep = nearRows > 0 ? nearSpan / nearRows : 12;
     for (let row = 0; row < nearRows; row++) {
       for (let col = 0; col < nearCols; col++) {
         const i = 200 + row * nearCols + col;
         const seedA = this.crowdSeed[(i * 2) % this.crowdSeed.length] ?? 0.5;
         const seedB = this.crowdSeed[(i * 2 + 1) % this.crowdSeed.length] ?? 0.5;
         const x = left + 22 + (col + 0.5 + (seedA - 0.5) * 0.35) * (pitchWidth - 44) / nearCols;
-        const y = bottom + 22 + row * 16 + seedB * 3;
-        drawFan(x, y, 1.52 - row * 0.08, i, seedA, seedB);
+        const y = nearRail + (row + 0.3) * nearStep + seedB * 2;
+        drawFan(x, y, 1.38 - row * 0.08, i, seedA, seedB, 3.5);
       }
     }
-    const sideRows = 6;
-    const sideCols = 30;
+    const sideRows = 4;
+    const sideCols = 26;
     for (const side of [-1, 1] as const) {
       for (let row = 0; row < sideRows; row++) {
         for (let col = 0; col < sideCols; col++) {
@@ -4625,9 +4636,9 @@ export class Renderer {
           const seedA = this.crowdSeed[(i * 2) % this.crowdSeed.length] ?? 0.5;
           const seedB = this.crowdSeed[(i * 2 + 1) % this.crowdSeed.length] ?? 0.5;
           const edge = side < 0 ? left : right;
-          const x = edge + side * (18 + row * 14 + seedA * 3);
-          const y = top + 16 + (col + 0.5 + (seedB - 0.5) * 0.3) * (pitchHeight - 32) / sideCols;
-          drawFan(x, y, 1.4 - row * 0.08, i, seedA, seedB);
+          const x = edge + side * (16 + row * 11 + seedA * 2);
+          const y = top + 22 + (col + 0.5 + (seedB - 0.5) * 0.3) * (pitchHeight - 44) / sideCols;
+          drawFan(x, y, 1.28 - row * 0.08, i, seedA, seedB, 3.2);
         }
       }
     }

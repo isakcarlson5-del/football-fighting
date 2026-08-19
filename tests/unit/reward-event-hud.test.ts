@@ -27,7 +27,7 @@ describe('reward event timer HUD', () => {
     expect(hud).toContain('rewardEventTimerView(sim.rewardBuff)');
     expect(css).toContain('#reward-event');
     expect(css).toContain("font-family: 'Archivo Black'");
-    expect(css).toContain('background: var(--gold)');
+    expect(css).toContain('radial-gradient');
     expect(css).toContain('box-shadow: var(--shadow)');
     expect(css).toContain('text-transform: uppercase');
     expect(css).toContain('@keyframes reward-event-enter');

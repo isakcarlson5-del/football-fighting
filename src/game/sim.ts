@@ -87,7 +87,15 @@ export const REWARD_EVENT_DURATION = 30;
 export const REWARD_EVENT_MIN_TIME = 80;
 export const REWARD_EVENT_INTERVAL = 50;
 export const REWARD_EVENT_CHANCE = 0.012;
+export const REWARD_EVENT_DAMAGE_WINDOW = 10;
+export const REWARD_EVENT_DAMAGE_FOR_MAX = 480;
 export const REWARD_EVENT_LABEL = 'DOUBLE XP + COINS';
+
+/** Base roll is rare; recent player damage lifts it, still never guaranteed. */
+export function rewardEventChance(recentDamage: number): number {
+  const extra = clamp(recentDamage / REWARD_EVENT_DAMAGE_FOR_MAX, 0, 1) * 0.28;
+  return clamp(REWARD_EVENT_CHANCE + extra, REWARD_EVENT_CHANCE, 0.32);
+}
 export const HEAL_FX_DURATION = 1.6;
 
 export type RewardBuffKind = 'both' | 'coin' | 'xp';
@@ -1030,6 +1038,7 @@ export class Sim {
   rewardBuff: RewardBuff | null = null;
   private rewardEventUsed = false;
   private killTimes: number[] = [];
+  private damageTimes: { t: number; amount: number }[] = [];
   private nextRandomBuffAt = REWARD_EVENT_MIN_TIME;
   player!: PlayerState;
   enemies: Enemy[] = [];
@@ -1761,6 +1770,7 @@ export class Sim {
     const hpBefore = e.hp;
     const actualDamage = Math.min(hpBefore, final);
     e.hp -= actualDamage;
+    if (actualDamage > 0) this.noteDamageForRewards(actualDamage);
     e.barHp = Math.max(e.barHp, hpBefore);
     e.barHitT = 0.32;
     const force = Math.hypot(kx, ky);
@@ -2349,6 +2359,22 @@ export class Sim {
     this.killTimes = this.killTimes.filter((t) => t >= cut);
   }
 
+  private noteDamageForRewards(amount: number): void {
+    if (!(amount > 0)) return;
+    this.damageTimes.push({ t: this.time, amount });
+    const cut = this.time - REWARD_EVENT_DAMAGE_WINDOW;
+    this.damageTimes = this.damageTimes.filter((entry) => entry.t >= cut);
+  }
+
+  private recentRewardDamage(): number {
+    const cut = this.time - REWARD_EVENT_DAMAGE_WINDOW;
+    let total = 0;
+    for (const entry of this.damageTimes) {
+      if (entry.t >= cut) total += entry.amount;
+    }
+    return total;
+  }
+
   private tickRewardBuffs(dt: number): void {
     if (this.debugHoldRewardEvent) {
       const remaining = this.rewardBuff && this.rewardBuff.t > 0
@@ -2369,7 +2395,7 @@ export class Sim {
     if (this.time < this.nextRandomBuffAt) return;
     this.nextRandomBuffAt = this.time + REWARD_EVENT_INTERVAL;
     if (this.time < REWARD_EVENT_MIN_TIME) return;
-    if (!this.rng.chance(REWARD_EVENT_CHANCE)) return;
+    if (!this.rng.chance(rewardEventChance(this.recentRewardDamage()))) return;
     this.startRewardBuff();
   }
 
