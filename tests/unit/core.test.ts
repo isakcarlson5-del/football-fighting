@@ -4,7 +4,7 @@ import { Rng, weightedPick } from '../../src/core/rng';
 import { matchClock } from '../../src/core/math';
 import { JOYSTICK_DEADZONE, remapRadialDeadzone } from '../../src/core/input';
 import { consumeFixedSteps, exponentialSmoothing } from '../../src/core/timing';
-import { opaqueFrameBaselineOffset } from '../../src/core/sprites';
+import { hardenInteriorAlpha, opaqueFrameBaselineOffset, punchSkinAdjacentWhiteGaps } from '../../src/core/sprites';
 import {
   ABILITIES,
   ABILITY_IDS,
@@ -101,6 +101,68 @@ describe('generated strip grounding', () => {
     pixels[(2 * 4 + 1) * 4 + 3] = 255;
     expect(opaqueFrameBaselineOffset(pixels, 4, 4, 3)).toBe(0);
   });
+
+  it('hardens interior coverage while leaving isolated fringe pixels soft', () => {
+    const pixels = new Uint8ClampedArray(4 * 4 * 4);
+    for (let y = 0; y <= 2; y++) {
+      for (let x = 0; x <= 2; x++) {
+        pixels[(y * 4 + x) * 4 + 3] = 120;
+      }
+    }
+    pixels[(3 * 4 + 3) * 4 + 3] = 80;
+    hardenInteriorAlpha(pixels, 4, 4);
+    expect(pixels[(1 * 4 + 1) * 4 + 3]).toBe(255);
+    expect(pixels[(3 * 4 + 3) * 4 + 3]).toBeLessThan(255);
+  });
+
+  it('does not turn leftover white fringe into opaque armpit spots', () => {
+    const pixels = new Uint8ClampedArray(5 * 5 * 4);
+    const put = (x: number, y: number, r: number, g: number, b: number, a: number) => {
+      const i = (y * 5 + x) * 4;
+      pixels[i] = r;
+      pixels[i + 1] = g;
+      pixels[i + 2] = b;
+      pixels[i + 3] = a;
+    };
+    for (let y = 0; y < 5; y++) {
+      for (let x = 0; x < 5; x++) put(x, y, 70, 150, 210, 255);
+    }
+    put(0, 2, 210, 150, 100, 255);
+    put(1, 2, 205, 145, 95, 255);
+    put(2, 2, 252, 250, 248, 90);
+    hardenInteriorAlpha(pixels, 5, 5);
+    const i = (2 * 5 + 2) * 4;
+    expect(pixels[i + 3]).toBe(255);
+    expect(Math.max(pixels[i], pixels[i + 1], pixels[i + 2])).toBeLessThan(220);
+  });
+
+  it('fills white arm/hand gaps with nearby body paint and keeps kit stripes', () => {
+    const w = 8;
+    const h = 8;
+    const pixels = new Uint8ClampedArray(w * h * 4);
+    const put = (x: number, y: number, r: number, g: number, b: number, a: number) => {
+      const i = (y * w + x) * 4;
+      pixels[i] = r;
+      pixels[i + 1] = g;
+      pixels[i + 2] = b;
+      pixels[i + 3] = a;
+    };
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) put(x, y, 0, 0, 0, 0);
+    }
+    for (let y = 3; y <= 6; y++) {
+      put(1, y, 210, 150, 100, 255);
+      put(2, y, 250, 248, 246, 255);
+      put(5, y, 250, 248, 246, 255);
+    }
+    punchSkinAdjacentWhiteGaps(pixels, w, h, w);
+    const filled = (4 * w + 2) * 4;
+    expect(pixels[filled + 3]).toBe(255);
+    expect(pixels[filled]).toBeGreaterThan(180);
+    expect(pixels[filled] - pixels[filled + 2]).toBeGreaterThan(20);
+    expect(pixels[(4 * w + 5) * 4 + 3]).toBe(255);
+    expect(pixels[(4 * w + 5) * 4]).toBeGreaterThan(240);
+  });
 });
 
 describe('audio threat hierarchy', () => {
@@ -168,32 +230,32 @@ describe('data integrity', () => {
 describe('pacing curves', () => {
   it('accelerates the match while preserving a small player reaction advantage', () => {
     expect(PLAYER_PACE_MULT).toBe(1.6);
-    expect(ENEMY_PACE_MULT).toBe(1.42);
+    expect(ENEMY_PACE_MULT).toBe(1.55);
     expect(PLAYER_PACE_MULT).toBeGreaterThan(ENEMY_PACE_MULT);
   });
   it('xp requirement grows monotonically', () => {
     for (let l = 1; l < 40; l++) expect(xpForLevel(l + 1)).toBeGreaterThan(xpForLevel(l));
   });
   it('matches the reference pacing checkpoints with smooth browser-safe ramps', () => {
-    expect(spawnRate(0)).toBeCloseTo(0.6, 6);
-    expect(spawnRate(120)).toBeCloseTo(1.9, 6);
-    expect(spawnRate(300)).toBeCloseTo(6.5, 6);
-    expect(spawnRate(450)).toBeCloseTo(14, 6);
-    expect(spawnRate(600)).toBeCloseTo(30, 6);
-    expect(spawnRate(720)).toBeCloseTo(37.6, 6);
+    expect(spawnRate(0)).toBeCloseTo(0.8, 6);
+    expect(spawnRate(120)).toBeCloseTo(1.92, 6);
+    expect(spawnRate(300)).toBeCloseTo(5.2, 6);
+    expect(spawnRate(450)).toBeCloseTo(11.2, 6);
+    expect(spawnRate(600)).toBeCloseTo(24, 6);
+    expect(spawnRate(720)).toBeCloseTo(30.4, 6);
     expect(spawnRate(119.99)).toBeLessThanOrEqual(spawnRate(120));
     expect(spawnRate(120.01)).toBeGreaterThanOrEqual(spawnRate(120));
-    expect(spawnInterval(0)).toBeCloseTo(1 / 0.6, 6);
+    expect(spawnInterval(0)).toBeCloseTo(1 / 0.8, 6);
   });
   it('uses the reference HP, damage and speed endpoints without hard jumps', () => {
-    expect(hpScale(0)).toBeCloseTo(0.82, 6);
+    expect(hpScale(0)).toBeCloseTo(1.5, 6);
     expect(hpScale(600)).toBeCloseTo(9.2, 6);
-    expect(enemyDamageScale(0)).toBeCloseTo(0.76, 6);
-    expect(enemyDamageScale(600)).toBeCloseTo(2.3, 6);
+    expect(enemyDamageScale(0)).toBeCloseTo(0.9, 6);
+    expect(enemyDamageScale(600)).toBeCloseTo(2.62, 6);
     expect(enemySpeedScale(0)).toBeCloseTo(1, 6);
     expect(enemySpeedScale(600)).toBeCloseTo(1.35, 6);
     expect(hpScale(720)).toBeCloseTo(11.04, 6);
-    expect(enemyDamageScale(720)).toBeCloseTo(2.76, 6);
+    expect(enemyDamageScale(720)).toBeCloseTo(3.144, 6);
     expect(enemySpeedScale(720)).toBeCloseTo(1.485, 6);
     expect(enemySpeedScale(900)).toBeCloseTo(1.55, 6);
     expect(difficultyProgress(300)).toBeLessThan(0.35);

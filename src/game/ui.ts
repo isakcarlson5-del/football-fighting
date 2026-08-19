@@ -3,7 +3,8 @@
  * The canvas renders the world; everything else lives here.
  */
 
-import { matchClock } from '../core/math';
+import { blurHudKeyboardFocus } from '../core/input';
+import { clamp, matchClock } from '../core/math';
 import { abilityIcon, ABILITY_GLYPHS } from '../core/sprites';
 import {
   ABILITIES,
@@ -20,8 +21,23 @@ import {
 } from './data';
 import type { Save } from './meta';
 import type { EntityScreenRect } from './render';
-import { abilityCadenceLabel, type Sim, type UpgradeOption } from './sim';
+import { abilityCadenceLabel, REWARD_EVENT_DURATION, type RewardBuff, type Sim, type UpgradeOption } from './sim';
 import type { LeaderboardEntry, VipAdminStats } from '../core/community';
+
+export function rewardEventTimerView(buff: RewardBuff | null): {
+  show: boolean;
+  label: string;
+  seconds: string;
+  progress: number;
+} {
+  if (!buff || buff.t <= 0) return { show: false, label: '', seconds: '', progress: 0 };
+  return {
+    show: true,
+    label: buff.label,
+    seconds: String(Math.max(1, Math.ceil(buff.t))),
+    progress: clamp(buff.t / REWARD_EVENT_DURATION, 0, 1),
+  };
+}
 
 export interface UiHooks {
   onPlay(playerId: string): void;
@@ -103,11 +119,26 @@ export class UI {
     bossHpBar?: HTMLElement;
     bossHpText?: HTMLElement;
     banner?: HTMLElement;
+    rewardEvent?: HTMLElement;
+    rewardEventLabel?: HTMLElement;
+    rewardEventTime?: HTMLElement;
+    rewardEventProgress?: SVGCircleElement;
   } = {};
   private dockSig = '';
+  /** Smoothed HP ratio shown by the HUD fill. It chases the real sim value so
+   *  the bar (and its colour) glides instead of jumping. */
+  private hpDisplay = 1;
+  private hudLastT = 0;
   private dialogCleanup: (() => void) | null = null;
   private draftCleanup: (() => void) | null = null;
   private menuNavCleanups = new Set<() => void>();
+  /** Attribute selector of the control that triggered the current screen
+   * rebuild, so the fresh screen can hand keyboard focus back to it. */
+  private focusAfterRender: string | null = null;
+  /** Set by restoreFocusAfterRender to stop bindMenuNav's screen autofocus
+   *  from clobbering a just-restored control (mute toggle, purchase ring,
+   *  skin equip). Consumed by the next bindMenuNav call. */
+  private skipNextAutofocus = false;
   selectedPlayer = PLAYERS[0].id;
 
   constructor(root: HTMLElement, hooks: UiHooks, save: Save) {
@@ -142,6 +173,38 @@ export class UI {
     this.dockSig = '';
   }
 
+  /** After a screen rebuild, hand keyboard focus back to the control that
+   * triggered it. When that control is gone or disabled (a track maxing out,
+   * a skin flipping to Equip), advance to the next enabled control of the
+   * same kind so a buying spree keeps flowing; otherwise the ring would stay
+   * pinned to the spent item (or a stale detached node in Safari) and the
+   * next Enter would double-buy. */
+  private restoreFocusAfterRender(attrs: readonly string[], advance: boolean): void {
+    const sel = this.focusAfterRender;
+    if (!sel) return;
+    const attr = sel.split('=')[0];
+    if (!attrs.includes(attr)) return;
+    this.focusAfterRender = null;
+    // A restore owns focus for this rebuild; suppress the screen autofocus
+    // that bindMenuNav would otherwise apply on top of it.
+    this.skipNextAutofocus = true;
+    const root = this.root;
+    const enabled = [...root.querySelectorAll<HTMLElement>(`[${attr}]`)]
+      .filter((el) => !el.hasAttribute('disabled'));
+    const exact = [...root.querySelectorAll<HTMLElement>(`[${sel}]`)][0];
+    if (advance) {
+      const from = exact ? enabled.indexOf(exact) : -1;
+      (enabled[from + 1] ?? enabled[0])?.focus({ preventScroll: true });
+      return;
+    }
+    if (exact && !exact.hasAttribute('disabled')) {
+      exact.focus({ preventScroll: true });
+      return;
+    }
+    const index = enabled.findIndex((el) => el === exact);
+    (enabled[index + 1] ?? enabled[0])?.focus({ preventScroll: true });
+  }
+
   /** Gives pause/admin overlays real modal keyboard behaviour without
    * trapping focus after the overlay closes. */
   private bindDialog(el: HTMLElement, onEscape: () => void): () => void {
@@ -157,9 +220,9 @@ export class UI {
     const cleanup = () => {
       if (cleaned) return;
       cleaned = true;
-      el.removeEventListener('keydown', handleKeydown);
+      window.removeEventListener('keydown', handleKeydown);
       if (this.dialogCleanup === cleanup) this.dialogCleanup = null;
-      if (previous?.isConnected) previous.focus({ preventScroll: true });
+      if (previous?.isConnected && !previous.closest('#hud')) previous.focus({ preventScroll: true });
     };
     const close = () => {
       cleanup();
@@ -188,19 +251,24 @@ export class UI {
         first.focus({ preventScroll: true });
       }
     };
-    el.addEventListener('keydown', handleKeydown);
+    window.addEventListener('keydown', handleKeydown);
     this.dialogCleanup = cleanup;
-    requestAnimationFrame(() => (focusable()[0] ?? el).focus({ preventScroll: true }));
+    // A pending focusAfterRender restore owns focus for this rebuild; let it
+    // land instead of stealing it with the dialog's default first-control focus.
+    const autoFocus = this.focusAfterRender === null;
+    if (autoFocus) (focusable()[0] ?? el).focus({ preventScroll: true });
     return close;
   }
 
   /** Roving-focus navigation shared by every screen: WASD/arrows move
    * focus between the focusable controls, Enter/Space activates the
-   * focused control. Text fields keep their native behaviour (typing,
-   * caret, slider adjust), and screens with their own keydown handling
-   * keep precedence because they preventDefault. Skin swatches stay out
-   * of the arrow path so character cards read as one clean unit. */
-  private bindMenuNav(el: HTMLElement): void {
+   * focused control. Text fields stay editable (typing, caret,
+   * Enter-submit) but up/down (or W/S) step out of them to the nearest
+   * control; range sliders keep their native arrow adjustment. Screens
+   * with their own keydown handling keep precedence because they
+   * preventDefault. Skin swatches stay out of the arrow path so
+   * character cards read as one clean unit. */
+  private bindMenuNav(el: HTMLElement, autofocus = false): void {
     const direction = (key: string): 'up' | 'down' | 'left' | 'right' | null => {
       const k = key.toLowerCase();
       if (k === 'arrowup' || k === 'w') return 'up';
@@ -210,46 +278,16 @@ export class UI {
       return null;
     };
     const targets = () => [...el.querySelectorAll<HTMLElement>(
-      'button:not([disabled]):not(.skin-swatch), input:not([disabled]):not([type="hidden"]), select:not([disabled]), [tabindex]:not([tabindex="-1"]):not(.skin-swatch), .char-card, [href]',
+      'button:not([disabled]):not(.skin-swatch), input[type="range"]:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"]):not(.skin-swatch), .char-card, [href]',
     )].filter((node) => node.offsetParent !== null);
-    const handleKeydown = (event: KeyboardEvent) => {
-      if (!el.isConnected) {
-        cleanup();
-        return;
-      }
-      const visibleScreens = [...this.root.querySelectorAll<HTMLElement>('.screen')]
-        .filter((screen) => {
-          const style = getComputedStyle(screen);
-          return !screen.hidden && style.display !== 'none' && style.visibility !== 'hidden';
-        });
-      if (visibleScreens.at(-1) !== el) return;
-      if (!(event instanceof KeyboardEvent)) return;
-      const active = document.activeElement;
-      if (active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement || active instanceof HTMLSelectElement) return;
-      const key = event.key;
-      if (active instanceof HTMLElement && active.closest('[role="tablist"]') &&
-        ['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(key)) return;
-      if (key === 'Enter' || key === ' ') {
-        event.preventDefault();
-        if (active instanceof HTMLElement) active.click();
-        return;
-      }
-      const dir = direction(key);
-      if (!dir) return;
-      event.preventDefault();
-      const nodes = targets();
-      if (nodes.length === 0) return;
-      if (!(active instanceof HTMLElement) || !nodes.includes(active)) {
-        nodes[0].focus({ preventScroll: true });
-        return;
-      }
-      const cur = active.getBoundingClientRect();
+    const nearestIn = (nodes: HTMLElement[], from: HTMLElement, dir: 'up' | 'down' | 'left' | 'right'): HTMLElement | null => {
+      const cur = from.getBoundingClientRect();
       const cx = cur.left + cur.width / 2;
       const cy = cur.top + cur.height / 2;
       let best: HTMLElement | null = null;
       let bestScore = Infinity;
       for (const node of nodes) {
-        if (node === active) continue;
+        if (node === from) continue;
         const rect = node.getBoundingClientRect();
         const dx = rect.left + rect.width / 2 - cx;
         const dy = rect.top + rect.height / 2 - cy;
@@ -266,7 +304,61 @@ export class UI {
           best = node;
         }
       }
-      best?.focus({ preventScroll: true });
+      return best;
+    };
+    const handleKeydown = (event: KeyboardEvent) => {
+      if (event.type !== 'keydown') return;
+      if (!el.isConnected) {
+        cleanup();
+        return;
+      }
+      const visibleScreens = [...this.root.querySelectorAll<HTMLElement>('.screen')]
+        .filter((screen) => {
+          const style = getComputedStyle(screen);
+          return !screen.hidden && style.display !== 'none' && style.visibility !== 'hidden';
+        });
+      if (visibleScreens.at(-1) !== el) return;
+      if (!(event instanceof KeyboardEvent)) return;
+      const active = document.activeElement;
+      const key = event.key;
+      const dir = direction(key);
+      const inTextField = (active instanceof HTMLInputElement && active.type !== 'range')
+        || active instanceof HTMLTextAreaElement
+        || active instanceof HTMLSelectElement;
+      if (inTextField) {
+        // up/down (or W/S) step out of the field to the nearest control;
+        // left/right and typing stay native so names stay editable.
+        if (!dir || dir === 'left' || dir === 'right') return;
+        event.preventDefault();
+        const nodes = targets();
+        if (nodes.length === 0) return;
+        nearestIn(nodes, active, dir)?.focus({ preventScroll: true });
+        return;
+      }
+      if (active instanceof HTMLInputElement && active.type === 'range') return;
+      if (active instanceof HTMLElement && active.closest('[role="tablist"]') &&
+        ['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(key)) return;
+      if (key === 'Enter' || key === ' ') {
+        event.preventDefault();
+        if (active instanceof HTMLElement) active.click();
+        return;
+      }
+      if (!dir) return;
+      event.preventDefault();
+      const nodes = targets();
+      if (nodes.length === 0) return;
+      if (!(active instanceof HTMLElement) || !nodes.includes(active)) {
+        nodes[0].focus({ preventScroll: true });
+        return;
+      }
+      // Wrap around the ring instead of going dead: at the last control the
+      // next press cycles back to the first, so a held/rapid key never stops
+      // responding mid-screen. Note: focus() returns void, so a `?.focus()
+      // ?? wrap` chain would ALWAYS take the wrap branch and clobber the
+      // nearest-control focus with nodes[0] — keep the explicit if/else.
+      const nearest = nearestIn(nodes, active, dir);
+      if (nearest) nearest.focus({ preventScroll: true });
+      else (dir === 'down' || dir === 'right' ? nodes[0] : nodes[nodes.length - 1]).focus({ preventScroll: true });
     };
     const cleanup = () => {
       window.removeEventListener('keydown', handleKeydown);
@@ -274,6 +366,15 @@ export class UI {
     };
     window.addEventListener('keydown', handleKeydown);
     this.menuNavCleanups.add(cleanup);
+    // Land the ring synchronously when the screen opens so the very first
+    // keypress navigates instead of being eaten by the initial focus step.
+    // A pending/consumed restore (skin equip, mute, purchase) owns focus
+    // instead.
+    if (autofocus && this.focusAfterRender === null && !this.skipNextAutofocus) {
+      const initial = targets()[0];
+      if (initial) initial.focus({ preventScroll: true });
+    }
+    this.skipNextAutofocus = false;
   }
 
   /**
@@ -335,11 +436,14 @@ export class UI {
         <div class="leaderboard-list" role="list" aria-live="polite"><div class="leaderboard-status">Connecting…</div></div>
       </section>
       <div class="controls-hint"><kbd>WASD</kbd> / <kbd>arrows</kbd> to move — everything else is automatic. Touch: drag left side.</div>
-      <div class="version-tag">v1.0 — local save</div>
+      <div class="version-tag">v1.2 — local save</div>
     `;
     el.querySelector('[data-act="play"]')!.addEventListener('click', () => this.showSelect());
     el.querySelector('[data-act="club"]')!.addEventListener('click', () => this.hooks.onOpenClub());
-    el.querySelector('[data-act="mute"]')?.addEventListener('click', () => this.hooks.onToggleMute());
+    el.querySelector('[data-act="mute"]')?.addEventListener('click', () => {
+      this.focusAfterRender = 'data-act="mute"';
+      this.hooks.onToggleMute();
+    });
     const nameInput = el.querySelector<HTMLInputElement>('.leaderboard-name input')!;
     nameInput.value = this.save.data.leaderboardName;
     const commitName = () => this.hooks.onLeaderboardName(nameInput.value);
@@ -355,7 +459,8 @@ export class UI {
     el.querySelector('[data-act="leaderboard-refresh"]')?.addEventListener('click', () => this.hooks.onLeaderboardRefresh());
     el.querySelector('[data-act="vip-open"]')?.addEventListener('click', () => this.showVipAdmin());
     this.root.appendChild(el);
-    this.bindMenuNav(el);
+    this.restoreFocusAfterRender(['data-act'], false);
+    this.bindMenuNav(el, true);
   }
 
   renderLeaderboard(entries: LeaderboardEntry[], online: boolean): void {
@@ -586,6 +691,7 @@ export class UI {
         const t = sw as HTMLElement;
         const pid = t.dataset.player!;
         const sid = t.dataset.skin || null;
+        this.focusAfterRender = `data-skin="${t.dataset.skin ?? ''}" data-player="${pid}"`;
         this.hooks.onEquipSkin(pid, sid);
         this.showSelect();
       });
@@ -593,7 +699,8 @@ export class UI {
     el.querySelector('[data-act="back"]')!.addEventListener('click', () => this.hooks.onQuitToMenu());
     el.querySelector('[data-act="start"]')!.addEventListener('click', () => this.hooks.onPlay(this.selectedPlayer));
     this.root.appendChild(el);
-    this.bindMenuNav(el);
+    this.restoreFocusAfterRender(['data-skin'], false);
+    this.bindMenuNav(el, true);
   }
 
   /* ---------------- HUD ---------------- */
@@ -610,20 +717,31 @@ export class UI {
         <div class="hud-chip" id="hud-coins"><span class="lbl">Coins</span><span class="v">0</span></div>
         <div class="hud-chip" id="hud-level"><span class="lbl">Lv</span><span class="v">1</span></div>
       </div>
+      <div id="reward-event" hidden>
+        <svg class="reward-event-ring" viewBox="0 0 100 100" aria-hidden="true">
+          <circle class="reward-event-track" cx="50" cy="50" r="42"></circle>
+          <circle class="reward-event-progress" cx="50" cy="50" r="42"></circle>
+        </svg>
+        <div class="reward-event-face">
+          <span class="reward-event-kicker">Event</span>
+          <span class="reward-event-time"></span>
+          <span class="reward-event-label"></span>
+        </div>
+      </div>
       <div id="boss-plate"><div class="title"></div><div class="name"></div><div class="boss-hp" role="progressbar" aria-label="Boss health" aria-valuemin="0" aria-valuemax="1" aria-valuenow="0"><i></i></div><div class="boss-hp-text"></div></div>
       <div id="banner"></div>
       <div id="hp-wrap">
-        <div id="hp-label"><span>HP</span><span id="hp-text"></span></div>
-        <div id="hp-bar" role="progressbar" aria-label="Player health" aria-valuemin="0" aria-valuemax="1" aria-valuenow="1"><div id="hp-fill"></div></div>
+        <div id="hp-label"><span>HP</span></div>
+        <div id="hp-bar" role="progressbar" aria-label="Player health" aria-valuemin="0" aria-valuemax="1" aria-valuenow="1"><div id="hp-fill"></div><div id="hp-text" aria-hidden="true"></div></div>
       </div>
       <div id="ability-dock"></div>
-      <button id="dash-btn" type="button" hidden aria-label="Nutmeg Dash">
+      <button id="dash-btn" type="button" hidden tabindex="-1" aria-label="Nutmeg Dash">
         <span class="dash-cooldown" aria-hidden="true"></span>
         <img src="${iconUrl('dash')}" alt="">
         <span class="dash-hint" data-key="SPACE" data-touch="DASH">SPACE</span>
         <span class="dash-charges" aria-hidden="true"></span>
       </button>
-      <button id="pause-btn" aria-label="Pause">II</button>
+      <button id="pause-btn" tabindex="-1" aria-label="Pause">II</button>
       <div id="joystick"><div class="nub"></div></div>
     `;
     this.root.appendChild(el);
@@ -651,6 +769,10 @@ export class UI {
       bossHpBar: el.querySelector<HTMLElement>('#boss-plate .boss-hp')!,
       bossHpText: el.querySelector<HTMLElement>('#boss-plate .boss-hp-text')!,
       banner: el.querySelector<HTMLElement>('#banner')!,
+      rewardEvent: el.querySelector<HTMLElement>('#reward-event')!,
+      rewardEventLabel: el.querySelector<HTMLElement>('#reward-event .reward-event-label')!,
+      rewardEventTime: el.querySelector<HTMLElement>('#reward-event .reward-event-time')!,
+      rewardEventProgress: el.querySelector<SVGCircleElement>('#reward-event .reward-event-progress')!,
     };
     el.querySelector('#pause-btn')!.addEventListener('click', () => this.hooks.onResume());
     const dashButton = el.querySelector<HTMLButtonElement>('#dash-btn')!;
@@ -671,15 +793,41 @@ export class UI {
     r.kills!.textContent = String(sim.kills);
     r.coins!.textContent = String(sim.coins);
     r.level!.textContent = String(p.level);
+    const eventView = rewardEventTimerView(sim.rewardBuff);
+    if (r.rewardEvent) {
+      r.rewardEvent.hidden = !eventView.show;
+      r.rewardEvent.classList.toggle('show', eventView.show);
+      if (eventView.show) {
+        r.rewardEventLabel!.textContent = eventView.label;
+        const nextTime = `${eventView.seconds}`;
+        if (r.rewardEventTime!.textContent !== nextTime) {
+          r.rewardEventTime!.textContent = nextTime;
+          r.rewardEventTime!.classList.remove('tick');
+          r.rewardEvent.classList.remove('tick');
+          void r.rewardEventTime!.offsetWidth;
+          r.rewardEventTime!.classList.add('tick');
+          r.rewardEvent.classList.add('tick');
+        }
+        const ring = 2 * Math.PI * 42;
+        r.rewardEventProgress?.style.setProperty('stroke-dasharray', `${ring}`);
+        r.rewardEventProgress?.style.setProperty('stroke-dashoffset', `${ring * (1 - eventView.progress)}`);
+        r.rewardEvent.style.setProperty('--reward-progress', String(eventView.progress));
+      }
+    }
     r.xpFill!.style.width = `${Math.min(100, (p.xp / p.xpNext) * 100)}%`;
     r.xpBar!.setAttribute('aria-valuemax', String(p.xpNext));
     r.xpBar!.setAttribute('aria-valuenow', String(Math.min(p.xp, p.xpNext)));
-    const hpPct = Math.max(0, (p.hp / p.maxHp) * 100);
-    r.hpFill!.style.width = `${hpPct}%`;
+    // Player HP: the fill chases real health with a fast glide so the width
+    // never snaps. The bar stays a single pitch-green with plain numerals
+    // inside it — no gold/orange/red gradient, no ghost trail, no sheen.
+    const hpTarget = p.maxHp > 0 ? clamp(p.hp / p.maxHp, 0, 1) : 0;
+    const hudNow = performance.now();
+    const dt = this.hudLastT > 0 ? clamp((hudNow - this.hudLastT) / 1000, 0.001, 0.1) : 0.016;
+    this.hudLastT = hudNow;
+    this.hpDisplay += (hpTarget - this.hpDisplay) * (1 - Math.exp(-dt * 9));
+    r.hpFill!.style.width = `${this.hpDisplay * 100}%`;
     r.hpBar!.setAttribute('aria-valuemax', String(p.maxHp));
     r.hpBar!.setAttribute('aria-valuenow', String(Math.max(0, p.hp)));
-    r.hpFill!.classList.toggle('low', hpPct < 35);
-    r.hpFill!.classList.toggle('hit', p.hurtT > 0);
     r.hpText!.textContent = `${Math.ceil(p.hp)} / ${p.maxHp}`;
     // ability dock
     const sig = Object.entries(p.abilities)
@@ -690,7 +838,7 @@ export class UI {
       r.dock!.innerHTML = Object.entries(p.abilities)
         .map(([id, lvl]) => {
           const def = ABILITIES[id as AbilityId];
-          return `<div class="ability-slot lane-${def.lane}" data-ability="${id}" title="${def.name} Lv${lvl} · ${def.lane.toUpperCase()}"><img src="${iconUrl(id as AbilityId)}" alt="${def.name}"><span class="cooldown-mask" aria-hidden="true"></span><span class="cooldown-value" aria-hidden="true"></span><span class="lvl">${lvl}</span></div>`;
+          return `<div class="ability-slot lane-${def.lane}" data-ability="${id}" title="${def.name} Lv${lvl} · ${def.lane.toUpperCase()}"><img src="${abilityCardArtUrl(id as AbilityId)}" alt="${def.name}" draggable="false"><span class="cooldown-mask" aria-hidden="true"></span><span class="cooldown-value" aria-hidden="true"></span><span class="lvl">${lvl}</span></div>`;
         })
         .join('');
     }
@@ -808,6 +956,20 @@ export class UI {
 
   /* ---------------- level up ---------------- */
 
+  /** Draft/pause teardown parks focus on #pause-btn unless we drop it
+   * twice: once now, again after the browser's delayed restore. */
+  releaseGameplayFocus(): void {
+    blurHudKeyboardFocus();
+    requestAnimationFrame(() => blurHudKeyboardFocus());
+    window.setTimeout(() => blurHudKeyboardFocus(), 0);
+  }
+
+  private focusDraftCard(card: HTMLButtonElement | undefined): void {
+    if (!card) return;
+    card.focus({ preventScroll: false });
+    card.scrollIntoView({ block: 'center', inline: 'nearest' });
+  }
+
   showLevelUp(
     options: UpgradeOption[],
     onReroll: () => { options: UpgradeOption[]; remaining: number } | null,
@@ -827,6 +989,7 @@ export class UI {
     const closeDraft = () => {
       this.draftCleanup?.();
       el.remove();
+      this.releaseGameplayFocus();
     };
     const renderCards = (opts: UpgradeOption[]) => {
       const cards = opts
@@ -873,7 +1036,7 @@ export class UI {
           lastCardIndex = Number(c.dataset.idx) || 0;
         });
       });
-      if (el.isConnected) wrap.querySelector<HTMLButtonElement>('.upgrade-card')?.focus({ preventScroll: true });
+      if (el.isConnected) this.focusDraftCard(wrap.querySelector<HTMLButtonElement>('.upgrade-card') ?? undefined);
     };
     el.innerHTML = `
       <h1 class="screen-title" style="color:var(--gold)">${bossLoot ? 'Boss Loot' : 'Level Up!'}</h1>
@@ -902,7 +1065,9 @@ export class UI {
     updateRerollButton();
     renderCards(options);
     this.root.appendChild(el);
-    el.querySelector<HTMLButtonElement>('.upgrade-card')?.focus({ preventScroll: true });
+    const firstCard = el.querySelector<HTMLButtonElement>('.upgrade-card') ?? undefined;
+    this.focusDraftCard(firstCard);
+    requestAnimationFrame(() => this.focusDraftCard(firstCard));
     const handleDraftKeydown = (event: KeyboardEvent) => {
       if (!(event instanceof KeyboardEvent)) return;
       const key = event.key.toLowerCase();
@@ -914,18 +1079,24 @@ export class UI {
       if (key === 'enter' || key === ' ') {
         if (onRerollControl && !rerollButton.disabled) rerollButton.click();
         else cards[current >= 0 ? current : Math.min(lastCardIndex, cards.length - 1)]?.click();
-      } else if ((key === 'arrowdown' || key === 's') && !rerollButton.disabled) {
-        rerollButton.focus({ preventScroll: true });
+      } else if (current < 0 && !onRerollControl) {
+        const from = Math.min(lastCardIndex, cards.length - 1);
+        if (key === 'arrowright' || key === 'd') this.focusDraftCard(cards[(from + 1) % cards.length]);
+        else if (key === 'arrowleft' || key === 'a') this.focusDraftCard(cards[(from - 1 + cards.length) % cards.length]);
+        else this.focusDraftCard(cards[from]);
+      } else if ((key === 'arrowdown' || key === 's') && !onRerollControl && !rerollButton.disabled) {
+        rerollButton.focus({ preventScroll: false });
+        rerollButton.scrollIntoView({ block: 'nearest' });
       } else if ((key === 'arrowup' || key === 'w') && onRerollControl) {
-        cards[Math.min(lastCardIndex, cards.length - 1)]?.focus({ preventScroll: true });
+        this.focusDraftCard(cards[Math.min(lastCardIndex, cards.length - 1)]);
       } else if (key === 'arrowleft' || key === 'a' || key === 'arrowup' || key === 'w') {
         const from = current >= 0 ? current : Math.min(lastCardIndex, cards.length - 1);
-        cards[(from - 1 + cards.length) % cards.length]?.focus({ preventScroll: true });
+        this.focusDraftCard(cards[(from - 1 + cards.length) % cards.length]);
       } else if (key === 'arrowright' || key === 'd') {
         const from = current >= 0 ? current : Math.min(lastCardIndex, cards.length - 1);
-        cards[(from + 1) % cards.length]?.focus({ preventScroll: true });
+        this.focusDraftCard(cards[(from + 1) % cards.length]);
       } else if ((key === 'arrowdown' || key === 's') && onRerollControl) {
-        cards[Math.min(lastCardIndex, cards.length - 1)]?.focus({ preventScroll: true });
+        this.focusDraftCard(cards[Math.min(lastCardIndex, cards.length - 1)]);
       }
       event.preventDefault();
       event.stopImmediatePropagation();
@@ -976,18 +1147,35 @@ export class UI {
     const resume = () => this.hooks.onResume();
     el.querySelector('[data-act="resume"]')!.addEventListener('click', resume);
     el.querySelector('[data-act="restart"]')!.addEventListener('click', () => this.hooks.onRestart());
-    el.querySelector('[data-act="mute"]')?.addEventListener('click', () => this.hooks.onToggleMute());
-    el.querySelector('[data-act="reduced-vfx"]')?.addEventListener('click', () => this.hooks.onToggleReducedVfx());
-    el.querySelector('[data-act="haptics"]')?.addEventListener('click', () => this.hooks.onToggleHaptics());
+    el.querySelector('[data-act="mute"]')?.addEventListener('click', () => {
+      this.focusAfterRender = 'data-act="mute"';
+      this.hooks.onToggleMute();
+    });
+    el.querySelector('[data-act="reduced-vfx"]')?.addEventListener('click', () => {
+      this.focusAfterRender = 'data-act="reduced-vfx"';
+      this.hooks.onToggleReducedVfx();
+    });
+    el.querySelector('[data-act="haptics"]')?.addEventListener('click', () => {
+      this.focusAfterRender = 'data-act="haptics"';
+      this.hooks.onToggleHaptics();
+    });
     el.querySelector('[data-act="quit"]')!.addEventListener('click', () => this.hooks.onQuitToMenu());
     this.root.appendChild(el);
     this.bindDialog(el, resume);
+    this.restoreFocusAfterRender(['data-act'], false);
     this.bindMenuNav(el);
   }
 
   hidePause(): void {
     this.dialogCleanup?.();
     this.root.querySelector('#pause-screen')?.remove();
+    this.releaseGameplayFocus();
+  }
+
+  closeLevelUp(): void {
+    this.draftCleanup?.();
+    this.root.querySelector('#levelup-screen')?.remove();
+    this.releaseGameplayFocus();
   }
 
   /* ---------------- result ---------------- */
@@ -1026,7 +1214,7 @@ export class UI {
     el.querySelector('[data-act="club"]')!.addEventListener('click', () => this.hooks.onOpenClub());
     el.querySelector('[data-act="menu"]')!.addEventListener('click', () => this.hooks.onQuitToMenu());
     this.root.appendChild(el);
-    this.bindMenuNav(el);
+    this.bindMenuNav(el, true);
   }
 
   /* ---------------- club (shop + skins) ---------------- */
@@ -1099,8 +1287,26 @@ export class UI {
         requestAnimationFrame(focusNextTab);
       });
       button.addEventListener('keydown', (event) => {
+        const vertical = event.key === 'ArrowDown' || event.key === 'ArrowUp'
+          || event.key === 'w' || event.key === 'W' || event.key === 's' || event.key === 'S';
+        if (vertical) {
+          // move into / out of the panel: nearest-in from the tab would only
+          // ever reach the centered Back button, leaving the shop list
+          // unreachable for keyboard players. With nothing buyable, fall
+          // through to the standard ring (Back) instead of eating the key.
+          const controls = [...el.querySelectorAll<HTMLElement>('#club-panel button:not([disabled])')];
+          if (controls.length > 0) {
+            event.preventDefault();
+            event.stopImmediatePropagation();
+            const down = event.key === 'ArrowDown' || event.key === 's' || event.key === 'S';
+            const target = down ? controls[0] : controls[controls.length - 1];
+            target?.focus({ preventScroll: true });
+            return;
+          }
+        }
         if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
         event.preventDefault();
+        event.stopImmediatePropagation();
         const nextIndex = event.key === 'Home'
           ? 0
           : event.key === 'End'
@@ -1110,21 +1316,45 @@ export class UI {
       });
     });
     el.querySelectorAll('[data-buy]').forEach((b) =>
-      b.addEventListener('click', () => this.hooks.onBuyTrack((b as HTMLElement).dataset.buy as MetaTrackId)),
+      b.addEventListener('click', () => {
+        this.focusAfterRender = `data-buy="${(b as HTMLElement).dataset.buy}"`;
+        this.hooks.onBuyTrack((b as HTMLElement).dataset.buy as MetaTrackId);
+      }),
     );
     el.querySelectorAll('[data-buyskin]').forEach((b) =>
-      b.addEventListener('click', () => this.hooks.onBuySkin((b as HTMLElement).dataset.buyskin!)),
+      b.addEventListener('click', () => {
+        this.focusAfterRender = `data-buyskin="${(b as HTMLElement).dataset.buyskin}"`;
+        this.hooks.onBuySkin((b as HTMLElement).dataset.buyskin!);
+      }),
     );
     el.querySelectorAll('[data-equip]').forEach((b) =>
       b.addEventListener('click', () => {
         const t = b as HTMLElement;
         const sid = t.dataset.equip!;
+        this.focusAfterRender = `data-equip="${sid}"`;
         const pid = t.dataset.player!;
         this.hooks.onEquipSkin(pid, this.save.equippedSkin(pid) === sid ? null : sid);
       }),
     );
     el.querySelector('[data-act="back"]')!.addEventListener('click', () => this.hooks.onCloseClub());
+    // W/ArrowUp from inside the panel returns to the owning tab instead of the
+    // geometrically nearest one: the shop items sit on the opposite side of the
+    // grid, so nearest-in would strand the ring on a different section.
+    el.addEventListener('keydown', (event) => {
+      const up = event.key === 'ArrowUp' || event.key === 'w' || event.key === 'W';
+      if (!up) return;
+      const active = document.activeElement;
+      if (!(active instanceof HTMLElement) || !el.contains(active) || !active.closest('#club-panel')) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      el.querySelector<HTMLButtonElement>('[role="tab"][aria-selected="true"]')
+        ?.focus({ preventScroll: true });
+    });
     this.root.appendChild(el);
-    this.bindMenuNav(el);
+    // Purchases advance the ring to the next buyable item so the buying spree
+    // keeps flowing; equip toggles keep the ring on the same control.
+    this.restoreFocusAfterRender(['data-buy', 'data-buyskin'], true);
+    this.restoreFocusAfterRender(['data-equip'], false);
+    this.bindMenuNav(el, true);
   }
 }

@@ -27,6 +27,10 @@ export interface Atlas {
   frames: number;
   feetY: number; // pixels from frame top to the feet baseline
   flippable: boolean; // may be horizontally mirrored for left movement
+  /** Tallest opaque body height across frames (measured strips only). */
+  bodyH?: number;
+  /** Lowest opaque body row across frames (measured strips only). */
+  bodyBottom?: number;
 }
 
 const cache = new Map<string, Atlas>();
@@ -74,44 +78,6 @@ function buildFrostAtlas(source: HTMLCanvasElement, fw: number, fh: number, fram
     ice.addColorStop(1, 'rgba(77,174,225,0.84)');
     ctx.fillStyle = ice;
     ctx.fillRect(0, 0, fw, fh);
-
-    // Branching crystals are drawn source-atop, which automatically fits
-    // every line to this exact pose rather than spilling into transparent air.
-    ctx.globalCompositeOperation = 'source-atop';
-    ctx.lineCap = 'round';
-    ctx.lineJoin = 'round';
-    const w = right - left;
-    const h = bottom - top;
-    const roots = [
-      [left + w * 0.18, bottom - h * 0.08, left + w * 0.48, top + h * 0.43, left + w * 0.72, top + h * 0.18],
-      [right - w * 0.12, bottom - h * 0.2, left + w * 0.58, top + h * 0.58, left + w * 0.36, top + h * 0.24],
-    ];
-    for (let branch = 0; branch < roots.length; branch++) {
-      const [x0, y0, x1, y1, x2, y2] = roots[branch];
-      ctx.strokeStyle = branch === 0 ? 'rgba(247,255,255,1)' : 'rgba(21,177,231,1)';
-      ctx.lineWidth = Math.max(2, fw / 48);
-      ctx.beginPath();
-      ctx.moveTo(x0, y0);
-      ctx.lineTo(x1, y1);
-      ctx.lineTo(x2, y2);
-      ctx.stroke();
-      const mx = (x0 + x1) / 2;
-      const my = (y0 + y1) / 2;
-      ctx.beginPath();
-      ctx.moveTo(mx, my);
-      ctx.lineTo(mx + (branch ? -1 : 1) * w * 0.17, my - h * 0.1);
-      ctx.moveTo(x1, y1);
-      ctx.lineTo(x1 + (branch ? 1 : -1) * w * 0.14, y1 - h * 0.13);
-      ctx.stroke();
-    }
-    ctx.fillStyle = 'rgba(247,255,255,0.9)';
-    for (let crystal = 0; crystal < 5; crystal++) {
-      const cx = left + w * (0.18 + crystal * 0.155);
-      const cy = top + h * (0.2 + ((crystal * 3 + frame) % 5) * 0.14);
-      ctx.beginPath();
-      ctx.arc(cx, cy, Math.max(1, fw / 92), 0, Math.PI * 2);
-      ctx.fill();
-    }
 
     out.drawImage(cell, frame * fw, 0);
   }
@@ -170,6 +136,8 @@ export interface StripAtlasOptions {
   flippable?: boolean;
   buildEffects?: boolean;
   alignOpaqueBottom?: boolean;
+  /** Measure each frame's opaque body bounds (bodyH/bodyBottom metrics). */
+  measureBody?: boolean;
 }
 
 /** Downward-only correction for generated run frames whose whole body was
@@ -191,6 +159,166 @@ export function opaqueFrameBaselineOffset(
     }
   }
   return bottom < 0 ? 0 : Math.max(0, Math.min(height - 1 - bottom, feetY - (bottom + 1)));
+}
+
+/** Lift interior coverage so authored characters do not read as see-through.
+ *  Hairline anti-alias at the silhouette stays soft. */
+export function hardenInteriorAlpha(pixels: Uint8ClampedArray, width: number, height: number): void {
+  const lumaOf = (r: number, g: number, b: number) => r * 0.2126 + g * 0.7152 + b * 0.0722;
+  const leftoverWhite = (r: number, g: number, b: number) =>
+    lumaOf(r, g, b) > 175 && Math.max(r, g, b) - Math.min(r, g, b) < 70;
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const i = (y * width + x) * 4;
+      const a = pixels[i + 3];
+      if (a <= 28 || a >= 248) continue;
+      let neighbors = 0;
+      for (let oy = -1; oy <= 1; oy++) {
+        for (let ox = -1; ox <= 1; ox++) {
+          if (ox === 0 && oy === 0) continue;
+          const nx = x + ox;
+          const ny = y + oy;
+          if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
+          if (pixels[(ny * width + nx) * 4 + 3] > 40) neighbors++;
+        }
+      }
+      if (neighbors >= 3 && leftoverWhite(pixels[i], pixels[i + 1], pixels[i + 2])) {
+        let br = -1;
+        let bg = 0;
+        let bb = 0;
+        for (let oy = -1; oy <= 1 && br < 0; oy++) {
+          for (let ox = -1; ox <= 1; ox++) {
+            if (ox === 0 && oy === 0) continue;
+            const nx = x + ox;
+            const ny = y + oy;
+            if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
+            const ni = (ny * width + nx) * 4;
+            if (pixels[ni + 3] < 200) continue;
+            if (leftoverWhite(pixels[ni], pixels[ni + 1], pixels[ni + 2])) continue;
+            br = pixels[ni];
+            bg = pixels[ni + 1];
+            bb = pixels[ni + 2];
+            break;
+          }
+        }
+        if (br >= 0) {
+          pixels[i] = br;
+          pixels[i + 1] = bg;
+          pixels[i + 2] = bb;
+        }
+      }
+      if (neighbors >= 5) pixels[i + 3] = 255;
+      else if (neighbors >= 3) pixels[i + 3] = Math.min(255, a + 70);
+    }
+  }
+}
+
+const nearWhite = (r: number, g: number, b: number, a: number): boolean => {
+  if (a <= 40) return false;
+  const min = Math.min(r, g, b);
+  const max = Math.max(r, g, b);
+  return min > 168 && max - min < 52 && r * 0.2126 + g * 0.7152 + b * 0.0722 > 180;
+};
+
+const skinTone = (r: number, g: number, b: number, a: number): boolean =>
+  a > 80 && r > 125 && r > g * 1.04 && g > b && r - b > 28;
+
+/** Punch leftover white blobs in the arm/hand crease to real transparency
+ *  so the live background shows through, on every loaded body strip. */
+export function punchSkinAdjacentWhiteGaps(
+  pixels: Uint8ClampedArray,
+  width: number,
+  height: number,
+  frameWidth = width,
+): void {
+  const frames = Math.max(1, Math.floor(width / frameWidth));
+  for (let frame = 0; frame < frames; frame++) {
+    punchWhiteGapsInFrame(pixels, width, height, frame * frameWidth, frameWidth);
+  }
+}
+
+function punchWhiteGapsInFrame(
+  pixels: Uint8ClampedArray,
+  stride: number,
+  height: number,
+  x0: number,
+  frameWidth: number,
+): void {
+  const y0 = Math.floor(height * 0.32);
+  const y1 = Math.floor(height * 0.72);
+  const at = (x: number, y: number) => (y * stride + x0 + x) * 4;
+  const seen = new Uint8Array(frameWidth * height);
+  const stack: number[] = [];
+  const cells: number[] = [];
+  for (let y = y0; y < y1; y++) {
+    for (let x = 0; x < frameWidth; x++) {
+      const seenAt = y * frameWidth + x;
+      if (seen[seenAt]) continue;
+      const i = at(x, y);
+      if (!nearWhite(pixels[i], pixels[i + 1], pixels[i + 2], pixels[i + 3])) continue;
+      stack.length = 0;
+      cells.length = 0;
+      stack.push(x, y);
+      seen[seenAt] = 1;
+      let minX = x;
+      let maxX = x;
+      let minY = y;
+      let maxY = y;
+      let touchesSkin = false;
+      while (stack.length) {
+        const cy = stack.pop()!;
+        const cx = stack.pop()!;
+        cells.push(cx, cy);
+        if (cx < minX) minX = cx;
+        if (cx > maxX) maxX = cx;
+        if (cy < minY) minY = cy;
+        if (cy > maxY) maxY = cy;
+        for (let n = 0; n < 4; n++) {
+          const nx = cx + (n === 0 ? 1 : n === 1 ? -1 : 0);
+          const ny = cy + (n === 2 ? 1 : n === 3 ? -1 : 0);
+          if (nx < 0 || ny < 0 || nx >= frameWidth || ny >= height) continue;
+          const ni = at(nx, ny);
+          if (skinTone(pixels[ni], pixels[ni + 1], pixels[ni + 2], pixels[ni + 3])) touchesSkin = true;
+          if (seen[ny * frameWidth + nx]) continue;
+          if (!nearWhite(pixels[ni], pixels[ni + 1], pixels[ni + 2], pixels[ni + 3])) continue;
+          seen[ny * frameWidth + nx] = 1;
+          stack.push(nx, ny);
+        }
+      }
+      const compH = maxY - minY + 1;
+      const compW = maxX - minX + 1;
+      const count = cells.length / 2;
+      if (!touchesSkin || count > 200) continue;
+      if (compH > 26 || compW > 24) continue;
+      let fillR = 210;
+      let fillG = 150;
+      let fillB = 100;
+      for (let c = 0; c < cells.length; c += 2) {
+        const cx = cells[c];
+        const cy = cells[c + 1];
+        for (let oy = -2; oy <= 2; oy++) {
+          for (let ox = -2; ox <= 2; ox++) {
+            const nx = cx + ox;
+            const ny = cy + oy;
+            if (nx < 0 || ny < 0 || nx >= frameWidth || ny >= height) continue;
+            const ni = at(nx, ny);
+            if (skinTone(pixels[ni], pixels[ni + 1], pixels[ni + 2], pixels[ni + 3])) {
+              fillR = pixels[ni];
+              fillG = pixels[ni + 1];
+              fillB = pixels[ni + 2];
+            }
+          }
+        }
+      }
+      for (let c = 0; c < cells.length; c += 2) {
+        const pi = at(cells[c], cells[c + 1]);
+        pixels[pi] = fillR;
+        pixels[pi + 1] = fillG;
+        pixels[pi + 2] = fillB;
+        pixels[pi + 3] = 255;
+      }
+    }
+  }
 }
 
 /**
@@ -234,6 +362,12 @@ export function loadStripAtlas(
       const canvas = makeCanvas(img.width, frameHeight);
       const ctx = canvas.getContext('2d')!;
       ctx.drawImage(img, 0, 0);
+      if (options.measureBody) {
+        const data = ctx.getImageData(0, 0, canvas.width, frameHeight);
+        hardenInteriorAlpha(data.data, canvas.width, frameHeight);
+        punchSkinAdjacentWhiteGaps(data.data, canvas.width, frameHeight, frameWidth);
+        ctx.putImageData(data, 0, 0);
+      }
       if (options.alignOpaqueBottom) {
         for (let frame = 0; frame < frameCount; frame++) {
           const data = ctx.getImageData(frame * frameWidth, 0, frameWidth, frameHeight);
@@ -275,6 +409,31 @@ export function loadStripAtlas(
         feetY,
         flippable: options.flippable ?? false,
       };
+      if (options.measureBody) {
+        let bodyH = 0;
+        let bodyBottom = -1;
+        for (let frame = 0; frame < frameCount; frame++) {
+          const data = ctx.getImageData(frame * frameWidth, 0, frameWidth, frameHeight);
+          const px = data.data;
+          let top = frameHeight;
+          let bottom = -1;
+          for (let y = 0; y < frameHeight; y++) {
+            for (let x = 0; x < frameWidth; x++) {
+              if (px[(y * frameWidth + x) * 4 + 3] <= 16) continue;
+              if (y < top) top = y;
+              if (y > bottom) bottom = y;
+            }
+          }
+          if (bottom >= 0) {
+            if (bottom > bodyBottom) bodyBottom = bottom;
+            if (bottom - top + 1 > bodyH) bodyH = bottom - top + 1;
+          }
+        }
+        if (bodyBottom >= 0) {
+          atlas.bodyH = bodyH;
+          atlas.bodyBottom = bodyBottom;
+        }
+      }
       stripCache.set(key, atlas);
       stripLastUsed.set(key, ++stripUseClock);
       stripPending.delete(key);
@@ -319,11 +478,12 @@ export function trimStripAtlasCache(idPrefix: string, keepId: string, maxEntries
 
 /** Kick off loading all player locomotion and attack strips. */
 export function primePlayerStrips(playerIds: string[]): void {
+  const options = { measureBody: true };
   for (const id of playerIds) {
-    void loadStripAtlas(id, playerArtUrl(`art/players/${id}.png`));
-    void loadStripAtlas(`${id}-run`, playerArtUrl(`art/players/${id}-run.png`));
-    void loadStripAtlas(`${id}-idle`, playerArtUrl(`art/players/${id}-idle.png`));
-    void loadStripAtlas(`${id}-kick`, playerArtUrl(`art/players/${id}-kick.png`));
+    void loadStripAtlas(id, playerArtUrl(`art/players/${id}.png`), undefined, options);
+    void loadStripAtlas(`${id}-run`, playerArtUrl(`art/players/${id}-run.png`), undefined, options);
+    void loadStripAtlas(`${id}-idle`, playerArtUrl(`art/players/${id}-idle.png`), undefined, options);
+    void loadStripAtlas(`${id}-kick`, playerArtUrl(`art/players/${id}-kick.png`), undefined, options);
   }
 }
 

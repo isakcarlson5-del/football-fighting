@@ -27,6 +27,21 @@ export function remapRadialDeadzone(
   };
 }
 
+export const MOVEMENT_KEYS = ['w', 'a', 's', 'd', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright'];
+
+export function gameplayOverlayOpen(doc: Document = document): boolean {
+  return !!(doc.getElementById('levelup-screen') || doc.getElementById('pause-screen'));
+}
+
+/** After a draft/pause the browser often parks focus on #pause-btn (the
+ * top HUD control). ArrowUp then looks "stuck" until the player presses
+ * Down to leave it. Drop that leftover so WASD is movement again. */
+export function blurHudKeyboardFocus(doc: Document = document): void {
+  const leftover = doc.activeElement;
+  if (!(leftover instanceof HTMLElement)) return;
+  if (leftover.closest('#hud, #levelup-screen, #pause-screen')) leftover.blur();
+}
+
 export class Input {
   keys = new Set<string>();
   /** Movement axis, -1..1 each. */
@@ -41,7 +56,15 @@ export class Input {
   constructor(target: Window) {
     target.addEventListener('keydown', (e) => {
       const k = e.key.toLowerCase();
-      if (['arrowup', 'arrowdown', 'arrowleft', 'arrowright', ' '].includes(k)) e.preventDefault();
+      const typing =
+        e.target instanceof HTMLInputElement ||
+        e.target instanceof HTMLTextAreaElement ||
+        e.target instanceof HTMLSelectElement;
+      const overlay = gameplayOverlayOpen();
+      const movement = MOVEMENT_KEYS.includes(k);
+      if (!typing && (movement || k === ' ')) e.preventDefault();
+      if (overlay && movement) return;
+      if (movement) blurHudKeyboardFocus();
       if (!this.keys.has(k)) this.pressed.add(k);
       this.keys.add(k);
     });

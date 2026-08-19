@@ -13,7 +13,7 @@ export default defineConfig({
     baseURL: 'http://localhost:5199',
     viewport: { width: 1280, height: 800 },
     screenshot: 'only-on-failure',
-    launchOptions: executablePath ? { executablePath } : undefined,
+    launchOptions: executablePath ? { executablePath, args: ['--disable-audio-output'] } : undefined,
   },
   webServer: {
     command: 'node server/community-server.mjs --dev --ephemeral --port 5199 --admin-token test-vip-token-123456789 --no-rate-limit',

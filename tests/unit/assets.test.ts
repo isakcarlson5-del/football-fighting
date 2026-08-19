@@ -14,8 +14,8 @@ const playerIds = ['messi', 'ronaldo', 'neymar', 'yamal'];
 const specialPickupIds = ['magnet', 'bomb', 'freeze'];
 const trainingCardIds = ['power', 'speed', 'maxhp', 'regen', 'magnet', 'armor', 'heal', 'coins'];
 const guardIds = ['bodyguard-rookie', 'bodyguard', 'bodyguard-heavy', 'bodyguard-scout'];
-const projectileIds = ['golden-boot-v2', 'curveball-v2'];
-const combatVfxIds = ['orbit-impact-v2', 'orbit-skid-v2'];
+const projectileIds = ['golden-boot-v2', 'curveball-v2', 'molotov'];
+const combatVfxIds = ['orbit-impact-v2', 'orbit-skid-v2', 'molotov-burst'];
 const animatedVfxIds = [
   'contact-hit-strip',
   'player-hurt-strip',
@@ -30,6 +30,7 @@ const animatedVfxIds = [
   'drone-shot-strip',
   'var-scan-shot-strip',
   'ability-upgrade-strip',
+  'molotov-flame-strip',
 ];
 const subtleVfxAssets = [
   ['kick-dust-motes', 128, 128],
@@ -90,6 +91,49 @@ function maxPngAlphaInTopRows(path: string, rowCount: number): number {
     previous = row;
   }
   return maxAlpha;
+}
+
+function decodePngRgba(path: string): { width: number; height: number; data: Buffer } {
+  const bytes = readFileSync(path);
+  const { width, height, colorType } = pngHeader(path);
+  expect(colorType).toBe(6);
+  const chunks: Buffer[] = [];
+  for (let offset = 8; offset < bytes.length;) {
+    const length = bytes.readUInt32BE(offset);
+    const type = bytes.toString('ascii', offset + 4, offset + 8);
+    if (type === 'IDAT') chunks.push(bytes.subarray(offset + 8, offset + 8 + length));
+    offset += 12 + length;
+    if (type === 'IEND') break;
+  }
+  const raw = inflateSync(Buffer.concat(chunks));
+  const stride = width * 4;
+  const data = Buffer.alloc(stride * height);
+  let previous = Buffer.alloc(stride);
+  let cursor = 0;
+  const paeth = (a: number, b: number, c: number) => {
+    const p = a + b - c;
+    const pa = Math.abs(p - a);
+    const pb = Math.abs(p - b);
+    const pc = Math.abs(p - c);
+    return pa <= pb && pa <= pc ? a : pb <= pc ? b : c;
+  };
+  for (let y = 0; y < height; y++) {
+    const filter = raw[cursor++];
+    const row = Buffer.from(raw.subarray(cursor, cursor + stride));
+    cursor += stride;
+    for (let x = 0; x < stride; x++) {
+      const left = x >= 4 ? row[x - 4] : 0;
+      const up = previous[x];
+      const upperLeft = x >= 4 ? previous[x - 4] : 0;
+      if (filter === 1) row[x] = (row[x] + left) & 255;
+      else if (filter === 2) row[x] = (row[x] + up) & 255;
+      else if (filter === 3) row[x] = (row[x] + Math.floor((left + up) / 2)) & 255;
+      else if (filter === 4) row[x] = (row[x] + paeth(left, up, upperLeft)) & 255;
+    }
+    row.copy(data, y * stride);
+    previous = row;
+  }
+  return { width, height, data };
 }
 
 function webpHeader(path: string): { width: number; height: number; alpha: boolean } {
@@ -231,5 +275,29 @@ describe('generated locomotion art', () => {
 
   it.each(trainingCardIds)('%s has its own generated upgrade-card illustration', (id) => {
     expect(statSync(resolve(`public/art/cards/${id}.webp`)).size).toBeGreaterThan(20_000);
+  });
+
+  it.each(['messi.png', 'messi-idle.png', 'messi-run.png', 'messi-kick.png'])(
+    '%s keeps authored skin instead of hot-red fill',
+    (file) => {
+      const { width, height, data } = decodePngRgba(resolve(`public/art/players/${file}`));
+      let hotRed = 0;
+      for (let i = 0; i < data.length; i += 4) {
+        if (data[i + 3] <= 40) continue;
+        if (data[i] > 180 && data[i + 1] < 80 && data[i + 2] < 60) hotRed++;
+      }
+      expect(width).toBeGreaterThan(0);
+      expect(height).toBe(320);
+      expect(hotRed).toBeLessThan(500);
+    },
+  );
+
+  it('keeps molotov burst corners transparent so the blaze is not a white plate', () => {
+    const { width, height, data } = decodePngRgba(resolve('public/art/vfx/molotov-burst.png'));
+    expect({ width, height }).toEqual({ width: 256, height: 256 });
+    const corners = [0, width - 1, (height - 1) * width, height * width - 1];
+    for (const index of corners) {
+      expect(data[index * 4 + 3]).toBeLessThan(16);
+    }
   });
 });

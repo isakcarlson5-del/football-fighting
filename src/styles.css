@@ -840,48 +840,180 @@ input:focus-visible,
   color: var(--sky);
 }
 
+#reward-event {
+  --reward-progress: 1;
+  position: absolute;
+  top: calc(96px + env(safe-area-inset-top));
+  left: 50%;
+  width: 176px;
+  height: 176px;
+  transform: translateX(-50%);
+  pointer-events: none;
+  opacity: 0;
+}
+#reward-event.show {
+  opacity: 1;
+  animation: reward-event-enter 0.85s cubic-bezier(0.22, 0.9, 0.28, 1) both;
+}
+#reward-event[hidden] {
+  display: none;
+}
+.reward-event-ring {
+  position: absolute;
+  inset: 0;
+  width: 176px;
+  height: 176px;
+  transform: rotate(-90deg);
+}
+#reward-event.tick .reward-event-ring {
+  animation: reward-event-ring-tick 0.7s ease-out;
+}
+.reward-event-track,
+.reward-event-progress {
+  fill: none;
+  stroke-linecap: round;
+}
+.reward-event-track {
+  stroke: #0a0d18;
+  stroke-width: 9;
+}
+.reward-event-progress {
+  stroke: var(--gold);
+  stroke-width: 8;
+  stroke-dasharray: 263.89;
+  stroke-dashoffset: 0;
+}
+.reward-event-face {
+  position: absolute;
+  inset: 20px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  border-radius: 50%;
+  background: var(--gold);
+  border: 4px solid #0a0d18;
+  box-shadow: inset 0 0 0 2px rgba(10, 13, 24, 0.12);
+  font-family: 'Archivo Black', 'Arial Black', sans-serif;
+  text-transform: uppercase;
+  color: var(--navy);
+  animation: reward-event-idle 2.15s ease-in-out infinite alternate;
+}
+#reward-event.tick .reward-event-face {
+  animation:
+    reward-event-face-tick 0.7s ease-out,
+    reward-event-idle 2.15s ease-in-out infinite alternate;
+}
+.reward-event-kicker {
+  font-family: 'Space Grotesk', sans-serif;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  opacity: 0.62;
+}
+.reward-event-time {
+  font-size: 48px;
+  line-height: 0.88;
+  letter-spacing: 0.02em;
+}
+.reward-event-time.tick {
+  animation: reward-event-tick 0.7s ease-out;
+}
+.reward-event-label {
+  max-width: 104px;
+  font-size: 9px;
+  line-height: 1.05;
+  letter-spacing: 0.04em;
+  text-align: center;
+}
+@keyframes reward-event-enter {
+  from { opacity: 0; transform: translateX(-50%) scale(0.92); }
+  to { opacity: 1; transform: translateX(-50%) scale(1); }
+}
+@keyframes reward-event-idle {
+  from { filter: brightness(1); box-shadow: inset 0 0 0 2px rgba(10, 13, 24, 0.12); }
+  to { filter: brightness(1.05); box-shadow: inset 0 0 0 2px rgba(10, 13, 24, 0.12); }
+}
+@keyframes reward-event-tick {
+  0% { transform: scale(1); opacity: 1; }
+  35% { transform: scale(1.08); opacity: 1; }
+  100% { transform: scale(1); }
+}
+@keyframes reward-event-ring-tick {
+  0% { transform: rotate(-90deg); filter: brightness(1); }
+  40% { transform: rotate(-90deg); filter: brightness(1.12); }
+  100% { transform: rotate(-90deg); filter: brightness(1); }
+}
+@keyframes reward-event-face-tick {
+  0% { transform: scale(1); }
+  35% { transform: scale(1.03); }
+  100% { transform: scale(1); }
+}
+
 #hp-wrap {
   position: absolute;
   left: calc(14px + env(safe-area-inset-left));
   bottom: calc(14px + env(safe-area-inset-bottom));
-  width: min(300px, 44vw);
-  background: rgba(10, 13, 24, 0.82);
-  border: 3px solid #2e3a5c;
-  border-radius: 14px;
-  padding: 10px 12px;
+  width: min(380px, 46vw);
+  background: rgba(11, 16, 32, 0.92);
+  backdrop-filter: blur(8px);
+  /* Same black frame and hard poster shadow as the Kick Off button, so the
+     in-game health bar speaks the main menu's language. A chalk hairline
+     rings the black frame so the edges read clearly against the dark turf. */
+  border: 5px solid #05070f;
+  border-radius: 16px;
+  padding: 12px 14px;
+  box-shadow: var(--shadow), 0 0 0 2px rgba(10, 13, 24, 0.85), 0 0 20px rgba(0, 0, 0, 0.3);
+  transform: rotate(-1deg);
 }
 #hp-label {
   display: flex;
   justify-content: space-between;
-  font-size: 11px;
+  /* Plain gold type: no stroke, no drop shadow. */
+  color: var(--gold);
+  font-family: 'Archivo Black', sans-serif;
+  font-weight: 900;
+  font-size: 14px;
   letter-spacing: 0.14em;
   text-transform: uppercase;
-  margin-bottom: 5px;
-  opacity: 0.9;
+  margin-bottom: 8px;
 }
 #hp-bar {
-  height: 14px;
-  background: #0e1322;
-  border-radius: 7px;
+  position: relative;
+  height: 28px;
+  background: #05070f;
+  border-radius: 15px;
   overflow: hidden;
+  /* Dark frame instead of the light one, so the bar sits inside the panel
+     rather than floating on it. */
+  border: 4px solid #0a0d18;
+  box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.6);
 }
 #hp-fill {
+  position: relative;
+  z-index: 1;
   height: 100%;
   width: 100%;
-  background: linear-gradient(90deg, #2fbf62, var(--green));
-  border-radius: 7px;
-  transition: width 0.12s ease, background 0.2s;
+  /* One flat pitch-green: no gradient, no trail, no sheen. */
+  background: #2fce6f;
+  border-radius: 11px;
 }
-#hp-fill.low {
-  background: linear-gradient(90deg, #c01030, var(--red));
-}
-#hp-fill.hit {
-  animation: hp-hit .32s ease-out;
-}
-@keyframes hp-hit {
-  0% { filter: brightness(2.6); box-shadow: 0 0 22px rgba(232,40,63,.95); }
-  45% { transform: scaleY(1.38); background: #ff2445; }
-  100% { filter: brightness(1); box-shadow: none; transform: scaleY(1); }
+#hp-text {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* Plain numerals on the bar itself: no stroke, no glow. */
+  color: #ffffff;
+  font-family: 'Space Grotesk', system-ui, sans-serif;
+  font-weight: 700;
+  font-size: 14px;
+  letter-spacing: 0.08em;
+  line-height: 1;
+  pointer-events: none;
 }
 
 #ability-dock {
@@ -889,15 +1021,15 @@ input:focus-visible,
   right: calc(14px + env(safe-area-inset-right));
   bottom: calc(14px + env(safe-area-inset-bottom));
   display: flex;
-  gap: 8px;
+  gap: 10px;
 }
 #dash-btn {
   --dash-cooldown: 0deg;
   position: absolute;
   right: calc(18px + env(safe-area-inset-right));
-  bottom: calc(84px + env(safe-area-inset-bottom));
-  width: 76px;
-  height: 76px;
+  bottom: calc(122px + env(safe-area-inset-bottom));
+  width: 88px;
+  height: 88px;
   padding: 0;
   overflow: visible;
   border-radius: 50%;
@@ -912,10 +1044,10 @@ input:focus-visible,
 #dash-btn img {
   position: absolute;
   z-index: 1;
-  width: 56px;
-  height: 56px;
-  left: 7px;
-  top: 7px;
+  width: 64px;
+  height: 64px;
+  left: 10px;
+  top: 10px;
   border-radius: 50%;
 }
 #dash-btn .dash-cooldown {
@@ -1055,26 +1187,46 @@ body.touch #dash-btn .dash-hint::after {
   50% { box-shadow: 0 8px 24px rgba(0, 0, 0, 0.38), 0 0 18px rgba(128, 237, 153, 0.52); }
 }
 .ability-slot {
-  width: 54px;
-  height: 54px;
-  border-radius: 13px;
+  width: 84px;
+  height: 84px;
+  border-radius: 18px;
   background: rgba(10, 13, 24, 0.82);
   border: 2.5px solid #2e3a5c;
   position: relative;
   display: flex;
   align-items: center;
   justify-content: center;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.05);
 }
+/* The full illustrated card art fills the slot, framed by the lane border.
+   Square card plates are shown whole and centred, like the draft cards. */
 .ability-slot img {
-  width: 44px;
-  height: 44px;
+  position: absolute;
+  inset: 3px;
+  width: calc(100% - 6px);
+  height: calc(100% - 6px);
+  object-fit: cover;
+  object-position: center;
+  border-radius: 14px;
+  border: 2px solid rgba(245, 241, 230, 0.14);
+  filter: saturate(1.06) contrast(1.04);
+}
+/* lane-tinted art frames echo the draft-card colour language in miniature */
+.ability-slot.lane-ground img {
+  border-color: rgba(55, 214, 122, 0.5);
+}
+.ability-slot.lane-aerial img {
+  border-color: rgba(76, 201, 240, 0.5);
+}
+.ability-slot.lane-hybrid img {
+  border-color: rgba(168, 255, 77, 0.55);
 }
 .ability-slot .cooldown-mask {
   position: absolute;
-  inset: 2px;
-  border-radius: 10px;
+  inset: 3px;
+  border-radius: 14px;
   pointer-events: none;
-  background: conic-gradient(from 0deg, rgba(4, 8, 16, 0.82) 0deg var(--ability-cooldown, 0deg), transparent var(--ability-cooldown, 0deg) 360deg);
+  background: conic-gradient(from 0deg, rgba(4, 8, 16, 0.84) 0deg var(--ability-cooldown, 0deg), transparent var(--ability-cooldown, 0deg) 360deg);
   transition: opacity 80ms linear;
 }
 .ability-slot .cooldown-value {
@@ -1084,9 +1236,9 @@ body.touch #dash-btn .dash-hint::after {
   place-items: center;
   color: #fff;
   font-family: 'Archivo Black', sans-serif;
-  font-size: 17px;
+  font-size: 18px;
   line-height: 1;
-  text-shadow: 0 2px 4px rgba(0, 0, 0, 0.9);
+  text-shadow: 0 2px 6px rgba(0, 0, 0, 0.95);
   pointer-events: none;
 }
 .ability-slot[data-state='ready'] {
@@ -1103,14 +1255,14 @@ body.touch #dash-btn .dash-hint::after {
 }
 .ability-slot .lvl {
   position: absolute;
-  right: -5px;
-  bottom: -5px;
+  right: -6px;
+  bottom: -6px;
   background: var(--gold);
   color: var(--navy);
   font-family: 'Archivo Black', sans-serif;
-  font-size: 11px;
-  border-radius: 7px;
-  padding: 1px 6px;
+  font-size: 12px;
+  border-radius: 8px;
+  padding: 2px 7px;
   border: 2px solid #0a0d18;
 }
 /* attack-lane tags: GROUND hugs the pitch, AERIAL flies over near mobs */
@@ -1606,14 +1758,20 @@ body.touch #pause-btn {
 body.touch #dash-btn {
   right: calc(18px + env(safe-area-inset-right));
   bottom: calc(92px + env(safe-area-inset-bottom));
-  width: 82px;
-  height: 82px;
+  width: 94px;
+  height: 94px;
+}
+/* Touch on a large viewport still needs to clear the taller ability dock. */
+@media (min-width: 721px) {
+  body.touch #dash-btn {
+    bottom: calc(122px + env(safe-area-inset-bottom));
+  }
 }
 body.touch #dash-btn img {
-  width: 60px;
-  height: 60px;
-  left: 8px;
-  top: 8px;
+  width: 68px;
+  height: 68px;
+  left: 10px;
+  top: 10px;
 }
 
 /* ---------- misc ---------- */
@@ -1681,11 +1839,14 @@ kbd {
   #levelup-screen .upgrade-card { padding: 14px; gap: 8px; }
   #levelup-screen .upgrade-card img.ability-art { width: 104px; height: 104px; }
   .upgrade-card .uc-desc { min-height: 44px; }
-  #hp-wrap { bottom: calc(12px + env(safe-area-inset-bottom)); left: calc(10px + env(safe-area-inset-left)); width: min(230px, 52vw); }
+  #hp-wrap { bottom: calc(12px + env(safe-area-inset-bottom)); left: calc(10px + env(safe-area-inset-left)); width: min(270px, 56vw); }
   #ability-dock { right: calc(10px + env(safe-area-inset-right)); bottom: calc(12px + env(safe-area-inset-bottom)); }
   #dash-btn { right: calc(14px + env(safe-area-inset-right)); bottom: calc(82px + env(safe-area-inset-bottom)); }
-  .ability-slot { width: 46px; height: 46px; }
-  .ability-slot img { width: 38px; height: 38px; }
+  .ability-slot { width: 52px; height: 52px; border-radius: 14px; border-width: 2px; }
+  .ability-slot img { inset: 2.5px; width: calc(100% - 5px); height: calc(100% - 5px); border-radius: 12px; border-width: 1.5px; }
+  .ability-slot .cooldown-mask { inset: 2.5px; border-radius: 12px; }
+  .ability-slot .cooldown-value { font-size: 12px; }
+  .ability-slot .lvl { right: -4px; bottom: -4px; font-size: 10px; padding: 1px 5px; }
   #boss-plate {
     width: min(var(--boss-plate-width, 280px), 62vw);
     padding: 5px 9px 7px;

@@ -24,7 +24,7 @@ import {
   type Atlas,
 } from '../core/sprites';
 import { BOSSES, ENEMIES, FREEZE_DURATION, SKINS, type BossId, type EnemyDef, type PlayerDef } from './data';
-import { ARENA_H, ARENA_W, BOSS_INTRO_DURATION, BOSS_MELEE_LUNGE_DURATION, DASH_ANTICIPATION_DURATION, DASH_RECOVERY_DURATION, ENEMY_MELEE_LUNGE_DURATION, enemyAirLift, enemyRunCycleDistance, guardRunCycleDistance, guardRunPresentation, hybridBossBodyContact, KICK_AIM_LOCK_DELAY, KICK_CONTACT_DELAY, KICK_DURATION, MELEE_RECOVERY_DURATION, PLAYER_PIVOT_DURATION, type Enemy, type Guard, type Pickup, type Sim } from './sim';
+import { ARENA_H, ARENA_W, BOSS_INTRO_DURATION, BOSS_MELEE_LUNGE_DURATION, DASH_ANTICIPATION_DURATION, DASH_RECOVERY_DURATION, ENEMY_MELEE_LUNGE_DURATION, enemyAirLift, enemyRunCycleDistance, guardRunCycleDistance, guardRunPresentation, HEAL_FX_DURATION, hybridBossBodyContact, KICK_AIM_LOCK_DELAY, KICK_CONTACT_DELAY, KICK_DURATION, MELEE_RECOVERY_DURATION, PLAYER_PIVOT_DURATION, type Enemy, type Guard, type Pickup, type Sim } from './sim';
 import type { Save } from './meta';
 
 /** Runtime art bible. Values are consumed by the renderer so perspective,
@@ -32,7 +32,7 @@ import type { Save } from './meta';
 export const ART_DIRECTION_PROFILE = Object.freeze({
   projectionTilt: 0.62,
   lightCast: Object.freeze({ x: 0.78, y: 0.56 }),
-  scale: Object.freeze({ player: 1.68, standardEnemy: 1.52, ally: 1.56, elite: 1.22 }),
+  scale: Object.freeze({ player: 1.78, standardEnemy: 1.52, ally: 1.56, elite: 1.22 }),
   aerial: Object.freeze({ baseLift: 38, bobAmplitude: 4 }),
   saturation: Object.freeze({ minimum: 0.72, maximum: 1.08 }),
   bossScale: Object.freeze({ minimum: 2.08, maximum: 3 }),
@@ -355,7 +355,7 @@ export function hybridStadiumParallax(camera: number, centre: number): number {
 /** Visual-only height for hostile projectiles in the hybrid arena. Bottle
  * lobs rise and settle through a single readable arc; electric darts retain a
  * taut low flight path so players can distinguish their timing at a glance. */
-export function hybridHostileProjectileElevation(kind: 'bottle' | 'electric' | 'scan', life: number, maxLife = 2.2): number {
+export function hybridHostileProjectileElevation(kind: 'bottle' | 'electric' | 'scan' | 'molotov', life: number, maxLife = 2.2): number {
   const remaining = Math.max(0, Number.isFinite(life) ? life : 0);
   if (kind === 'electric') return 28;
   if (kind === 'scan') return 34;
@@ -876,8 +876,18 @@ export class Renderer {
   private abilityUpgradeSpr: HTMLImageElement | null = null;
   private captainsWhistleSpr: HTMLImageElement | null = null;
   private bottleSpr: HTMLCanvasElement;
+  private molotovBottleSpr: HTMLImageElement | null = null;
+  private molotovBurstSpr: HTMLImageElement | null = null;
+  private molotovFlameSpr: HTMLImageElement | null = null;
   private atlasCache = new Map<string, Atlas>();
+  /** Measured body height of each player's standing art, used as the default
+   *  size reference so running cycles render at the same height as idle. */
+  private playerIdleBodyH = new Map<string, number>();
   private crowdSeed: number[] = [];
+  /** 1 sheen / 2 tint / 3 gleam — user picks from live captures. */
+  private healFxVariant: 1 | 2 | 3 = 1;
+  private healScratch: HTMLCanvasElement | null = null;
+  private healScratchCtx: CanvasRenderingContext2D | null = null;
   private flashWarn = 0;
   private flashWhiteT = 0;
   private lossStartedAt = -1;
@@ -1037,6 +1047,15 @@ export class Renderer {
     });
     this.loadPickupSprite('art/abilities/keeper-halo-strip-v2.png', (img) => {
       this.keeperHaloSpr = img;
+    });
+    this.loadPickupSprite('art/projectiles/molotov.png', (img) => {
+      this.molotovBottleSpr = img;
+    });
+    this.loadPickupSprite('art/vfx/molotov-burst.png', (img) => {
+      this.molotovBurstSpr = img;
+    });
+    this.loadPickupSprite('art/vfx/molotov-flame-strip.png', (img) => {
+      this.molotovFlameSpr = img;
     });
     this.loadPickupSprite('art/vfx/var-scan-shot-strip.png', (img) => {
       this.varScanShotSpr = img;
@@ -1340,6 +1359,14 @@ export class Renderer {
   /** Exposes only the active construction mode for deterministic browser QA. */
   getArenaRenderMode(): { liveStadium: boolean; hybridDepth: boolean } {
     return { liveStadium: this.liveStadium, hybridDepth: this.hybridDepth };
+  }
+
+  setHealFxVariant(variant: 1 | 2 | 3): void {
+    this.healFxVariant = variant;
+  }
+
+  getHealFxVariant(): 1 | 2 | 3 {
+    return this.healFxVariant;
   }
 
   /** Read-only camera proof for deterministic browser QA. */
@@ -2484,13 +2511,13 @@ export class Renderer {
     if (kicking) {
       const kickStrip = getStripAtlas(`${def.id}-kick`, tint);
       if (kickStrip) return { atlas: kickStrip, kind: 'kick' };
-      void loadStripAtlas(`${def.id}-kick`, playerArtUrl(`art/players/${def.id}-kick.png`), tint);
+      void loadStripAtlas(`${def.id}-kick`, playerArtUrl(`art/players/${def.id}-kick.png`), tint, { measureBody: true });
     }
     if (!running) {
       const idleStrip = getStripAtlas(`${def.id}-idle`, tint);
       if (idleStrip) return { atlas: idleStrip, kind: 'idle' };
       // trigger a lazy load; until idle art exists, hold a neutral frame
-      void loadStripAtlas(`${def.id}-idle`, playerArtUrl(`art/players/${def.id}-idle.png`), tint);
+      void loadStripAtlas(`${def.id}-idle`, playerArtUrl(`art/players/${def.id}-idle.png`), tint, { measureBody: true });
     }
     if (running) {
       const directionalId = `player-directional-${def.id}-${direction}`;
@@ -2517,18 +2544,20 @@ export class Renderer {
             maxFrames: 12,
             flippable: false,
             buildEffects: false,
+            alignOpaqueBottom: true,
+            measureBody: true,
           },
         ).then(() => trimStripAtlasCache('player-directional-', nextId, 8));
       }
       const runStrip = getStripAtlas(`${def.id}-run`, tint);
       if (runStrip) return { atlas: runStrip, kind: 'run' };
-      void loadStripAtlas(`${def.id}-run`, playerArtUrl(`art/players/${def.id}-run.png`), tint);
+      void loadStripAtlas(`${def.id}-run`, playerArtUrl(`art/players/${def.id}-run.png`), tint, { measureBody: true });
     }
     // prefer the generated 2.5D strip; fall back to the procedural atlas
     const strip = getStripAtlas(def.id, tint);
     if (strip) return { atlas: strip, kind: running ? 'run' : 'run-held' };
     // trigger a lazy load (primed at boot; skin variants load on demand)
-    void loadStripAtlas(def.id, playerArtUrl(`art/players/${def.id}.png`), tint);
+    void loadStripAtlas(def.id, playerArtUrl(`art/players/${def.id}.png`), tint, { measureBody: true });
     const key = `p:${def.id}:${skinId ?? 'base'}`;
     let a = this.atlasCache.get(key);
     if (!a) {
@@ -2639,6 +2668,7 @@ export class Renderer {
     if (!this.plate) this.drawCrowd(ctx, toSX, toSY, sx + b.x0, sy / TILT + b.y0, vw, vh / TILT, time);
     if (this.liveStadium) this.drawLiveShowpieceStadium(ctx, b, sx, sy, vw, vh, time);
     if (this.hybridDepth) this.drawHybridStadiumParallax(ctx, b, sx, sy, vw, vh);
+    if (this.liveStadium) this.drawLiveCrowd(ctx, b, sx, sy, vw, vh, time);
     if (this.liveStadium) this.drawPitchEdgeOcclusion(ctx, toSX, toSY);
     if (this.hybridDepth) this.drawHybridPitchRimBack(ctx, toSX, toSY);
     if (this.hybridDepth) this.drawHybridTechnicalZone(ctx, toSX, toSY, time);
@@ -3541,7 +3571,14 @@ export class Renderer {
         // Lift only between planted poses. Contact frames retain the exact
         // delivered feet baseline, so the runner reads as stepping, not sliding.
         const bobY = step ? -(1 - step.strength) * 1.5 : 0;
-        const sc = PLAYER_ENTITY_SCALE * (80 / atlas.fh) * (this.hybridDepth ? hybridEntityDepthScale(p.y) : 1);
+        // Measured body metrics normalize every locomotion cycle to the
+        // standing art's height: sprinting keeps the idle silhouette instead
+        // of shrinking the hero (directional art is authored smaller in-frame).
+        const bodyH = atlas.bodyH ?? atlas.fh;
+        const refBodyH = this.playerIdleBodyH.get(def.id) ?? bodyH;
+        if (vis.kind === 'idle' || vis.kind === 'run-held') this.playerIdleBodyH.set(def.id, bodyH);
+        const sizeComp = clamp(refBodyH / bodyH, 0.92, 1.18);
+        const sc = PLAYER_ENTITY_SCALE * (80 / atlas.fh) * sizeComp * (this.hybridDepth ? hybridEntityDepthScale(p.y) : 1);
         const dw = atlas.fw * sc;
         const dh = atlas.fh * sc;
         playerOcclusionPose = {
@@ -3625,23 +3662,27 @@ export class Renderer {
         if (p.face < 0 && atlas.flippable) ctx.scale(-1, 1);
         const visibleAlpha = blink ? 0.45 : 1;
         if (directionalBlend) {
-          ctx.globalAlpha = visibleAlpha * (1 - directionalBlend.mix);
-          ctx.drawImage(atlas.canvas, frame * atlas.fw, 0, atlas.fw, atlas.fh, -dw / 2, -atlas.feetY * sc + bobY, dw, dh);
-          ctx.globalAlpha = visibleAlpha * directionalBlend.mix;
-          ctx.drawImage(
-            atlas.canvas,
-            directionalBlend.nextFrame * atlas.fw,
-            0,
-            atlas.fw,
-            atlas.fh,
-            -dw / 2,
-            -atlas.feetY * sc + bobY,
-            dw,
-            dh,
-          );
+          const drawFrame = directionalBlend.mix >= 0.5 ? directionalBlend.nextFrame : frame;
+          ctx.globalAlpha = visibleAlpha;
+          ctx.drawImage(atlas.canvas, drawFrame * atlas.fw, 0, atlas.fw, atlas.fh, -dw / 2, -atlas.feetY * sc + bobY, dw, dh);
         } else {
           ctx.globalAlpha = visibleAlpha;
           ctx.drawImage(atlas.canvas, frame * atlas.fw, 0, atlas.fw, atlas.fh, -dw / 2, -atlas.feetY * sc + bobY, dw, dh);
+        }
+        if (p.healT > 0) {
+          const u = clamp(1 - p.healT / HEAL_FX_DURATION, 0, 1);
+          const spriteTop = -atlas.feetY * sc + bobY;
+          this.drawHealWave(
+            ctx,
+            atlas,
+            directionalBlend && directionalBlend.mix >= 0.5 ? directionalBlend.nextFrame : frame,
+            -dw / 2,
+            spriteTop,
+            dw,
+            dh,
+            u,
+            visibleAlpha,
+          );
         }
         ctx.restore();
         if (this.abilityUpgradeStartedAt >= 0) {
@@ -3727,7 +3768,7 @@ export class Renderer {
           frame,
           x,
           y - lift,
-          (keeperLvl >= 5 ? 74 : 68) * depthScale,
+          (keeperLvl >= 5 ? 62 : 57) * depthScale,
           angle + Math.PI / 2,
           this.reducedVfx ? 0.72 : 0.96,
           false,
@@ -3877,9 +3918,11 @@ export class Renderer {
     for (const b of sim.bottles) {
       if (!b.active) continue;
       const bx = toSX(b.x);
-      const elevation = this.hybridDepth
-        ? hybridHostileProjectileElevation(b.kind, b.life, b.maxLife)
-        : b.kind === 'scan' ? 34 : b.kind === 'electric' ? 28 : 12;
+      const elevation = b.kind === 'molotov'
+        ? Math.max(0, b.z)
+        : this.hybridDepth
+          ? hybridHostileProjectileElevation(b.kind, b.life, b.maxLife)
+          : b.kind === 'scan' ? 34 : b.kind === 'electric' ? 28 : 12;
       const depthScale = this.hybridDepth ? hybridEntityDepthScale(b.y) : 1;
       const by = toSY(b.y) - elevation;
       if (this.hybridDepth) {
@@ -3904,11 +3947,48 @@ export class Renderer {
         const age = Math.max(0, 1.45 - b.life);
         const shotFrame = age < 0.08 ? 0 : 1 + (Math.floor(time * 22 + age * 9) % 4);
         this.drawVfxFrame(ctx, this.droneShotSpr, shotFrame, 0, 0, 72 * depthScale, a, 0.98, true, 0.44);
+      } else if (b.kind === 'molotov') {
+        const a = Math.atan2(b.vy * TILT, b.vx);
+        const age = Math.max(0, b.maxLife - b.life);
+        ctx.rotate(a + Math.sin(age * 21) * 0.22);
+        if (this.molotovBottleSpr) {
+          const bottle = 56 * depthScale;
+          ctx.drawImage(this.molotovBottleSpr, -bottle / 2, -bottle / 2, bottle, bottle);
+        }
       } else {
         ctx.rotate(time * 9);
         ctx.drawImage(this.bottleSpr, -6 * depthScale, -10 * depthScale, 12 * depthScale, 20 * depthScale);
       }
       ctx.restore();
+    }
+
+    /* hostile molotov blazes */
+    for (const z of sim.fireZones) {
+      if (!z.active) continue;
+      const zDepth = this.hybridDepth ? hybridEntityDepthScale(z.y) : 1;
+      const age = 1 - z.life / z.maxLife;
+      const flicker = 0.82 + 0.36 * Math.sin(time * 23 + z.x * 0.13 + z.y * 0.07);
+      const igniteBoost = age < 0.18 ? 1.45 : 1;
+      const size = z.r * 2 * igniteBoost * flicker * zDepth;
+      const alpha = clamp(Math.min(1, age * 4, (1 - age) * 2.4 + 0.35), 0, 1);
+      const sx = toSX(z.x);
+      const sy = toSY(z.y);
+      if (age < 0.22 && this.molotovBurstSpr) {
+        ctx.save();
+        ctx.globalAlpha = alpha;
+        ctx.drawImage(this.molotovBurstSpr, sx - size / 2, sy - size / 2, size, size);
+        ctx.restore();
+      }
+      const flameFrame = Math.floor(time * 11 + z.x * 0.07) % 6;
+      const flameSize = z.r * 0.95 * flicker * zDepth;
+      if (this.molotovFlameSpr) {
+        this.drawVfxFrame(ctx, this.molotovFlameSpr, flameFrame, sx, sy - flameSize * 0.28, flameSize, 0, alpha);
+      } else if (this.molotovBurstSpr && age >= 0.22) {
+        ctx.save();
+        ctx.globalAlpha = alpha;
+        ctx.drawImage(this.molotovBurstSpr, sx - size / 2, sy - size / 2, size, size);
+        ctx.restore();
+      }
     }
 
     if (this.keeperBlockStartedAt >= 0) {
@@ -3922,7 +4002,7 @@ export class Renderer {
           frame,
           toSX(this.keeperBlockX),
           toSY(this.keeperBlockY) - 30,
-          this.keeperBlockCounter ? 138 : 108,
+          this.keeperBlockCounter ? 114 : 90,
           progress * 0.32,
           clamp((0.48 - age) * 3.4, 0, 1),
           false,
@@ -4284,6 +4364,276 @@ export class Renderer {
     ctx.setTransform(1, 0, 0, 1, 0, 0);
   }
 
+  /** Green heal wave clipped to the current pose so idle and run match. */
+  private drawHealWave(
+    ctx: CanvasRenderingContext2D,
+    atlas: Atlas,
+    frame: number,
+    dx: number,
+    dy: number,
+    dw: number,
+    dh: number,
+    u: number,
+    visibleAlpha: number,
+  ): void {
+    const w = Math.max(1, Math.ceil(dw));
+    const h = Math.max(1, Math.ceil(dh));
+    if (!this.healScratch || this.healScratch.width < w || this.healScratch.height < h) {
+      this.healScratch = document.createElement('canvas');
+      this.healScratch.width = w;
+      this.healScratch.height = h;
+      this.healScratchCtx = this.healScratch.getContext('2d');
+    }
+    const s = this.healScratchCtx;
+    if (!s) return;
+    s.clearRect(0, 0, this.healScratch.width, this.healScratch.height);
+    s.globalCompositeOperation = 'source-over';
+    s.globalAlpha = 1;
+    s.drawImage(atlas.canvas, frame * atlas.fw, 0, atlas.fw, atlas.fh, 0, 0, dw, dh);
+    s.globalCompositeOperation = 'source-in';
+    const fade = u < 0.08 ? u / 0.08 : u > 0.92 ? (1 - u) / 0.08 : 1;
+    const trip = (u * 4) % 2;
+    const travel = trip < 1 ? trip : 2 - trip;
+    const sweep = dh * (0.96 - travel * 1.08);
+    ctx.save();
+    ctx.globalAlpha = visibleAlpha;
+    ctx.strokeStyle = `rgba(40, 255, 120, ${1 * fade})`;
+    ctx.lineWidth = 7;
+    ctx.beginPath();
+    ctx.ellipse(dx + dw / 2, dy + dh * 0.92, dw * (0.5 + travel * 0.16), dh * 0.16, 0, 0, TAU);
+    ctx.stroke();
+    ctx.fillStyle = `rgba(30, 240, 100, ${0.38 * fade})`;
+    ctx.beginPath();
+    ctx.ellipse(dx + dw / 2, dy + dh * 0.92, dw * 0.4, dh * 0.12, 0, 0, TAU);
+    ctx.fill();
+    s.fillStyle = `rgba(20, 230, 90, ${0.78 * fade})`;
+    s.fillRect(0, 0, dw, dh);
+    const band = s.createLinearGradient(0, sweep, 0, sweep + dh * 0.5);
+    band.addColorStop(0, 'rgba(40, 255, 120, 0)');
+    band.addColorStop(0.22, `rgba(70, 255, 140, ${1 * fade})`);
+    band.addColorStop(0.48, `rgba(210, 255, 220, ${1 * fade})`);
+    band.addColorStop(1, 'rgba(40, 255, 120, 0)');
+    s.fillStyle = band;
+    s.fillRect(0, sweep, dw, dh * 0.5);
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.drawImage(this.healScratch, 0, 0, dw, dh, dx, dy, dw, dh);
+    ctx.fillStyle = `rgba(150, 255, 180, ${1 * fade})`;
+    ctx.font = `bold ${Math.round(24 + fade * 8)}px sans-serif`;
+    ctx.textAlign = 'center';
+    for (let mote = 0; mote < 6; mote++) {
+      const rise = dy + dh * 0.88 - (u + mote * 0.12) * dh * 1.2;
+      const drift = dx + dw / 2 + Math.sin(u * 8 + mote * 1.6) * dw * 0.42;
+      ctx.fillText('+', drift, rise);
+    }
+    ctx.restore();
+  }
+
+  /** Readable swaying spectators on the stand lip, drawn after stadium
+   * construction so rails and portals cannot hide them. */
+  private drawLiveCrowd(
+    ctx: CanvasRenderingContext2D,
+    bounds: { x0: number; y0: number; x1: number; y1: number },
+    sx: number,
+    sy: number,
+    vw: number,
+    vh: number,
+    time: number,
+  ): void {
+    const left = -bounds.x0 - sx;
+    const right = ARENA_W - bounds.x0 - sx;
+    const top = (-bounds.y0 * TILT) - sy;
+    const bottom = ((ARENA_H - bounds.y0) * TILT) - sy;
+    const pitchWidth = Math.max(1, right - left);
+    const pitchHeight = Math.max(1, bottom - top);
+    const shirts = ['#e24b4b', '#3d86e0', '#f0c63a', '#f4eee4', '#47b45e', '#9b6ed4', '#f28a2e'];
+    const hair = ['#2a1c14', '#5a3518', '#1a1a1a', '#8a5a28', '#3d2414'];
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(0, 0, vw, vh);
+    ctx.rect(left, top, pitchWidth, pitchHeight);
+    ctx.clip('evenodd');
+    ctx.lineCap = 'round';
+
+    const drawFan = (hx: number, hy: number, scale: number, i: number, seedA: number, seedB: number): void => {
+      if (hx < -18 || hx > vw + 18 || hy < -22 || hy > vh + 18) return;
+      const motion = i % 12;
+      const phase = time * (1.2 + seedB * 1.8) + i * 1.73;
+      const cheer = 0.35 + 0.65 * Math.max(0, Math.sin(phase * 0.9 + seedA * 4.1));
+      const sway = Math.sin(phase * 0.74 + seedB * 3.2) * (2.6 + seedA * 2.6);
+      const mexican = Math.max(0, Math.sin(hx * 0.03 - time * 2.55));
+      const waveLift = mexican * mexican * 8.5;
+      const groupCheer = Math.floor(i / 7) % 4 === Math.floor(time * 0.55) % 4;
+      let lift = waveLift + cheer * 2.2;
+      let lean = sway * 0.28;
+      let seated = false;
+      if (motion === 1) lean = sway * 1.15;
+      else if (motion === 2 || groupCheer) lift += cheer * 8.2;
+      else if (motion === 4) {
+        seated = cheer < 0.72;
+        lift += seated ? cheer * 0.8 : cheer * 3.4;
+      } else if (motion === 8) lift += cheer * 1.6;
+      else if (motion === 9) lift += Math.abs(Math.sin(phase * 3.2)) * 7.2;
+      else if (motion === 6) lift += cheer * 4.4;
+      const x = hx + lean;
+      const y = hy - lift;
+      const shirt = shirts[i % shirts.length];
+      const accent = shirts[(i + 3) % shirts.length];
+      const bodyH = (seated ? 8.4 : 14.4) * scale;
+      const bodyW = (motion === 10 ? 7.6 : 9.1) * scale;
+      const headR = 3.3 * scale;
+      const shoulderY = y - bodyH * 0.48;
+      const armW = 1.55 * scale;
+      ctx.fillStyle = 'rgba(8,12,10,0.28)';
+      ctx.beginPath();
+      ctx.ellipse(x, hy + 1.4, bodyW * 0.48, 1.6 * scale, 0, 0, TAU);
+      ctx.fill();
+      if (!seated) {
+        ctx.strokeStyle = '#1c2430';
+        ctx.lineWidth = 1.7 * scale;
+        const stomp = motion === 9 ? Math.sin(phase * 3.2) * 1.4 * scale : 0;
+        ctx.beginPath();
+        ctx.moveTo(x - 1.7 * scale, y + 1);
+        ctx.lineTo(x - 2.4 * scale, y + 6.4 * scale + Math.max(0, -stomp));
+        ctx.moveTo(x + 1.7 * scale, y + 1);
+        ctx.lineTo(x + 2.4 * scale, y + 6.4 * scale + Math.max(0, stomp));
+        ctx.stroke();
+      }
+      ctx.fillStyle = shirt;
+      ctx.fillRect(x - bodyW / 2, y - bodyH * 0.72, bodyW, bodyH);
+      ctx.lineCap = 'round';
+      ctx.lineWidth = armW;
+      const arm = (sx: number, sy: number, ex: number, ey: number, color = '#e8c9a0'): void => {
+        ctx.strokeStyle = color;
+        ctx.beginPath();
+        ctx.moveTo(sx, sy);
+        ctx.lineTo(ex, ey);
+        ctx.stroke();
+      };
+      const bothUp = motion === 2 || groupCheer || waveLift > 5.5;
+      if (bothUp) {
+        arm(x - bodyW * 0.42, shoulderY, x - bodyW * 1.05, y - bodyH * 1.12 - cheer * 2, shirt);
+        arm(x + bodyW * 0.42, shoulderY, x + bodyW * 1.05, y - bodyH * 1.12 - cheer * 2, shirt);
+      } else if (motion === 0) {
+        arm(x - bodyW * 0.46, shoulderY, x - bodyW * 0.62 + sway * 0.15, y + 1.2);
+        arm(x + bodyW * 0.46, shoulderY, x + bodyW * 0.62 + sway * 0.15, y + 1.2);
+      } else if (motion === 1) {
+        arm(x - bodyW * 0.4, shoulderY, x - bodyW * 0.95, y - bodyH * 0.15);
+        arm(x + bodyW * 0.4, shoulderY, x + bodyW * 0.55 + sway, y - bodyH * 0.55);
+      } else if (motion === 3) {
+        const flap = Math.sin(phase * 5.2);
+        arm(x - bodyW * 0.42, shoulderY, x - bodyW * 0.55, y + 1);
+        arm(x + bodyW * 0.42, shoulderY, x + bodyW * 0.9, y - bodyH * (0.7 + flap * 0.35), '#f2ead8');
+      } else if (motion === 5) {
+        const clap = Math.sin(phase * 7.2) * 2.4 * scale;
+        arm(x - bodyW * 0.2, y - bodyH * 0.22, x - clap, y - bodyH * 0.02);
+        arm(x + bodyW * 0.2, y - bodyH * 0.22, x + clap, y - bodyH * 0.02);
+      } else if (motion === 6) {
+        const leftX = x - bodyW * 0.9;
+        const rightX = x + bodyW * 0.9;
+        const scarfY = y - bodyH * 1.05 - cheer * 2;
+        arm(x - bodyW * 0.4, shoulderY, leftX, scarfY, shirt);
+        arm(x + bodyW * 0.4, shoulderY, rightX, scarfY, shirt);
+        ctx.strokeStyle = accent;
+        ctx.lineWidth = 2.2 * scale;
+        ctx.beginPath();
+        ctx.moveTo(leftX, scarfY);
+        ctx.lineTo(rightX, scarfY);
+        ctx.stroke();
+      } else if (motion === 7) {
+        arm(x - bodyW * 0.45, shoulderY, x - bodyW * 0.55, y + 1);
+        arm(x + bodyW * 0.35, shoulderY, x + headR * 0.2, y - bodyH * 0.95);
+        ctx.fillStyle = '#c45a4a';
+        ctx.beginPath();
+        ctx.ellipse(x + headR * 0.15, y - bodyH * 0.98, 1.3 * scale, 1.7 * scale, 0, 0, TAU);
+        ctx.fill();
+      } else if (motion === 8) {
+        arm(x - bodyW * 0.4, shoulderY, x - bodyW * 0.7, y + 0.6);
+        arm(x + bodyW * 0.4, shoulderY, x + bodyW * 1.15, y - bodyH * 0.85, '#f2ead8');
+      } else if (motion === 10) {
+        const look = Math.sin(phase * 0.9) * headR * 0.7;
+        arm(x - bodyW * 0.4, shoulderY, x - bodyW * 0.55, y + 1);
+        arm(x + bodyW * 0.4, shoulderY, x + bodyW * 0.55, y + 1);
+        ctx.fillStyle = '#1a1c20';
+        ctx.fillRect(x + look - 1.4 * scale, y - bodyH * 0.88, 2.6 * scale, 1.8 * scale);
+        if (Math.sin(phase * 2.1) > 0.82) {
+          const flash = ctx.createRadialGradient(x + look, y - bodyH * 0.9, 0, x + look, y - bodyH * 0.9, 5 * scale);
+          flash.addColorStop(0, 'rgba(255,248,220,0.7)');
+          flash.addColorStop(1, 'rgba(255,248,220,0)');
+          ctx.fillStyle = flash;
+          ctx.beginPath();
+          ctx.arc(x + look, y - bodyH * 0.9, 5 * scale, 0, TAU);
+          ctx.fill();
+        }
+      } else if (motion === 11) {
+        const flap = Math.sin(phase * 4.4);
+        arm(x - bodyW * 0.42, shoulderY, x - bodyW * 0.55, y + 1);
+        arm(x + bodyW * 0.4, shoulderY, x + bodyW * 0.85, y - bodyH * 0.95, '#efe8d8');
+        ctx.fillStyle = accent;
+        ctx.beginPath();
+        ctx.moveTo(x + bodyW * 0.85, y - bodyH * 0.95);
+        ctx.lineTo(x + bodyW * 1.55 + flap * 3, y - bodyH * 0.72);
+        ctx.lineTo(x + bodyW * 0.85, y - bodyH * 0.48);
+        ctx.closePath();
+        ctx.fill();
+      } else {
+        arm(x - bodyW * 0.45, shoulderY, x - bodyW * 0.58, y + 1);
+        arm(x + bodyW * 0.45, shoulderY, x + bodyW * 0.58, y + 1);
+      }
+      const look = motion === 10 ? Math.sin(phase * 0.9) * headR * 0.55 : motion === 1 ? lean * 0.15 : 0;
+      const headY = y - bodyH * 0.72 - headR * 0.55;
+      ctx.fillStyle = '#e3b48c';
+      ctx.beginPath();
+      ctx.arc(x + look, headY, headR, 0, TAU);
+      ctx.fill();
+      ctx.fillStyle = hair[i % hair.length];
+      ctx.beginPath();
+      ctx.ellipse(x + look, headY - headR * 0.35, headR * 0.92, headR * 0.62, 0, Math.PI, 0);
+      ctx.fill();
+    };
+
+    const farRows = 8;
+    const farCols = 62;
+    for (let row = 0; row < farRows; row++) {
+      for (let col = 0; col < farCols; col++) {
+        const i = row * farCols + col;
+        const seedA = this.crowdSeed[(i * 2) % this.crowdSeed.length] ?? 0.5;
+        const seedB = this.crowdSeed[(i * 2 + 1) % this.crowdSeed.length] ?? 0.5;
+        const x = left + 18 + (col + 0.5 + (seedA - 0.5) * 0.35) * (pitchWidth - 36) / farCols;
+        const y = top - 20 - row * 16 - seedB * 3;
+        drawFan(x, y, 1.46 - row * 0.08, i, seedA, seedB);
+      }
+    }
+    const nearRows = 6;
+    const nearCols = 56;
+    for (let row = 0; row < nearRows; row++) {
+      for (let col = 0; col < nearCols; col++) {
+        const i = 200 + row * nearCols + col;
+        const seedA = this.crowdSeed[(i * 2) % this.crowdSeed.length] ?? 0.5;
+        const seedB = this.crowdSeed[(i * 2 + 1) % this.crowdSeed.length] ?? 0.5;
+        const x = left + 22 + (col + 0.5 + (seedA - 0.5) * 0.35) * (pitchWidth - 44) / nearCols;
+        const y = bottom + 22 + row * 16 + seedB * 3;
+        drawFan(x, y, 1.52 - row * 0.08, i, seedA, seedB);
+      }
+    }
+    const sideRows = 6;
+    const sideCols = 30;
+    for (const side of [-1, 1] as const) {
+      for (let row = 0; row < sideRows; row++) {
+        for (let col = 0; col < sideCols; col++) {
+          const i = 400 + (side > 0 ? 80 : 0) + row * sideCols + col;
+          const seedA = this.crowdSeed[(i * 2) % this.crowdSeed.length] ?? 0.5;
+          const seedB = this.crowdSeed[(i * 2 + 1) % this.crowdSeed.length] ?? 0.5;
+          const edge = side < 0 ? left : right;
+          const x = edge + side * (18 + row * 14 + seedA * 3);
+          const y = top + 16 + (col + 0.5 + (seedB - 0.5) * 0.3) * (pitchHeight - 32) / sideCols;
+          drawFan(x, y, 1.4 - row * 0.08, i, seedA, seedB);
+        }
+      }
+    }
+    ctx.restore();
+  }
+
   private drawCrowd(
     ctx: CanvasRenderingContext2D,
     toSX: (wx: number) => number,
@@ -4316,7 +4666,7 @@ export class Renderer {
         x = wx0 + vw + 30 + rz * 240;
         y = wy0 + rx * vh;
       }
-      const jump = Math.abs(Math.sin(time * 2.4 + i * 1.7)) * 5;
+      const jump = Math.abs(Math.sin(time * (1.3 + (i % 7) * 0.18) + i * 1.7)) * (i % 3 === 0 ? 7 : 3.5);
       ctx.fillStyle = colors[i % colors.length];
       ctx.fillRect(toSX(x), toSY(y) - jump, 6, 6);
     }
@@ -4572,35 +4922,6 @@ export class Renderer {
         glow.addColorStop(1, 'rgba(255,244,198,0)');
         ctx.fillStyle = glow;
         ctx.fillRect(x - radius, y - radius, radius * 2, radius * 2);
-      }
-      // Tiny paired torso/head motions reinforce the baked spectators instead
-      // of adding free-floating particles. Only selected seeds animate and the
-      // surround clip prevents all overlap with the pitch.
-      if (i % 5 === 1 || i % 11 === 3) {
-        const cheer = Math.max(0, Math.sin(phase * 0.46 + seedA * 3.1));
-        const lift = cheer * (0.75 + seedB * 1.2);
-        const shirtColors = [
-          'rgba(207,54,70,0.27)',
-          'rgba(45,112,181,0.27)',
-          'rgba(232,181,52,0.25)',
-          'rgba(226,228,218,0.24)',
-        ];
-        ctx.fillStyle = 'rgba(219,181,142,0.24)';
-        ctx.beginPath();
-        ctx.arc(x, y - 3.2 - lift, 1.15, 0, TAU);
-        ctx.fill();
-        ctx.fillStyle = shirtColors[i % shirtColors.length];
-        ctx.fillRect(x - 1.5, y - 1.6 - lift, 3, 3.2);
-        if (cheer > 0.62) {
-          ctx.strokeStyle = shirtColors[(i + 1) % shirtColors.length];
-          ctx.lineWidth = 0.72;
-          ctx.beginPath();
-          ctx.moveTo(x - 1.1, y - 1.1 - lift);
-          ctx.lineTo(x - 2.8, y - 4.2 - lift);
-          ctx.moveTo(x + 1.1, y - 1.1 - lift);
-          ctx.lineTo(x + 2.8, y - 4.2 - lift);
-          ctx.stroke();
-        }
       }
       if (i % 7 === 0) {
         const wave = Math.sin(phase) * 2.5;

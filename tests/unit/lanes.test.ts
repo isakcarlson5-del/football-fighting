@@ -24,8 +24,33 @@ function far(sim: Sim, dist: number, angle = 0): { x: number; y: number } {
   return { x: sim.player.x + Math.cos(angle) * dist, y: sim.player.y + Math.sin(angle) * dist };
 }
 
+describe('ability cooldown meters', () => {
+  it('stays idle until the ability is actually used', () => {
+    const sim = makeSim(); // Messi: strike L1
+    clearField(sim);
+    step(sim, 30);
+    // run start + targetless frames: no spin, no countdown
+    expect(sim.getAbilityTiming('strike').remaining).toBe(0);
+    // an enemy in range triggers the first real kick, then the meter runs
+    sim.debugSpawn('invader', far(sim, 200).x, sim.player.y);
+    step(sim, 1);
+    expect(sim.getAbilityTiming('strike').remaining).toBeGreaterThan(0);
+  });
+
+  it('keeps target-scan retries off the HUD for seeker and blast abilities', () => {
+    const sim = makeSim();
+    clearField(sim);
+    sim.player.abilities = { strike: 1, curveball: 1, bootseekers: 1, blast: 1 };
+    step(sim, 30);
+    // no targets anywhere: the meters must not tick just because the sim polls
+    expect(sim.getAbilityTiming('curveball').remaining).toBe(0);
+    expect(sim.getAbilityTiming('bootseekers').remaining).toBe(0);
+    expect(sim.getAbilityTiming('blast').remaining).toBe(0);
+  });
+});
+
 describe('attack lanes', () => {
-  it('aerial targeting prefers far ranged threats over near melee', () => {
+  it('aerial targeting shoots the nearest threat regardless of lane', () => {
     const sim = makeSim();
     clearField(sim);
     const nearP = far(sim, 120);
@@ -33,25 +58,28 @@ describe('attack lanes', () => {
     sim.debugSpawn('invader', nearP.x, nearP.y);
     sim.debugSpawn('lobber', farP.x, farP.y);
     const pick = sim.pickAerialTarget(sim.player.x, sim.player.y);
-    expect(sim.enemies[pick].def.id).toBe('lobber');
+    expect(sim.enemies[pick].def.id).toBe('invader');
   });
 
-  it('between two far targets the ranged one wins over the plain chaser', () => {
+  it('between two far targets the nearer one wins over the ranged one', () => {
     const sim = makeSim();
     clearField(sim);
     sim.debugSpawn('invader', far(sim, 300).x, sim.player.y);
     sim.debugSpawn('lobber', far(sim, 500).x, sim.player.y);
     const pick = sim.pickAerialTarget(sim.player.x, sim.player.y);
-    expect(sim.enemies[pick].def.id).toBe('lobber');
+    expect(sim.enemies[pick].def.id).toBe('invader');
   });
 
-  it('falls back to a near target when nothing is in the far band', () => {
+  it('still shoots a lone far target and rejects targets beyond aerial range', () => {
     const sim = makeSim();
     clearField(sim);
-    sim.debugSpawn('invader', far(sim, 130).x, sim.player.y);
+    sim.debugSpawn('invader', far(sim, 800).x, sim.player.y);
     const pick = sim.pickAerialTarget(sim.player.x, sim.player.y);
     expect(pick).toBeGreaterThanOrEqual(0);
     expect(sim.enemies[pick].def.id).toBe('invader');
+    clearField(sim);
+    sim.debugSpawn('invader', far(sim, 1000).x, sim.player.y);
+    expect(sim.pickAerialTarget(sim.player.x, sim.player.y)).toBe(-1);
   });
 
   it('volleys distribute onto living targets instead of overkill-stacking (reservation)', () => {
@@ -154,7 +182,9 @@ describe('attack lanes', () => {
     sim.player.pressureCd = 0;
     step(sim, 1);
     expect(sim.pressures.some((ring) => ring.active)).toBe(false);
-    expect(sim.player.pressureCd).toBeCloseTo(0.16, 5);
+    // the empty-pitch poll is a retry tick, kept off the HUD meter
+    expect(sim.player.pressureRetry).toBeCloseTo(0.16, 5);
+    expect(sim.player.pressureCd).toBeLessThanOrEqual(0);
 
     sim.debugSpawn('invader', sim.player.x + 120, sim.player.y);
     const enemy = sim.enemies.find((entry) => entry.active)!;
@@ -243,7 +273,9 @@ describe('attack lanes', () => {
     step(sim, 1);
 
     expect(drone.hp).toBe(500);
-    expect(sim.player.blastCd).toBeCloseTo(0.16, 5);
+    // outside air radius: a retry tick, not a HUD cooldown
+    expect(sim.player.blastRetry).toBeCloseTo(0.16, 5);
+    expect(sim.player.blastCd).toBeLessThanOrEqual(0);
     expect(sim.events.some((event) => event.type === 'blast')).toBe(false);
     expect(sim.impacts.some((impact) => impact.active && impact.kind === 'blastair')).toBe(false);
   });
@@ -306,7 +338,8 @@ describe('attack lanes', () => {
 
     expect(sim.pressures.some((ring) => ring.active)).toBe(true);
     expect(sim.events.some((event) => event.type === 'blast')).toBe(false);
-    expect(sim.player.blastCd).toBeCloseTo(0.22, 5);
+    expect(sim.player.blastRetry).toBeCloseTo(0.22, 5);
+    expect(sim.player.blastCd).toBeLessThanOrEqual(0);
   });
 
   it('permanent aerial drones ignore ground rings but take hybrid close-blast damage', () => {

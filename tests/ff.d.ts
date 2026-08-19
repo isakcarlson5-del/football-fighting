@@ -15,7 +15,7 @@ declare global {
       getSave(): Save;
       getFps(): number;
       getTimingMetrics(): { simulatedTime: number; discardedTime: number; tempoRatio: number };
-      getInputState(): { ax: number; ay: number; joyActive: boolean; joyX: number; joyY: number };
+      getInputState(): { ax: number; ay: number; joyActive: boolean; joyX: number; joyY: number; keys: string[]; focus: string };
       getArenaRenderMode(): { liveStadium: boolean; hybridDepth: boolean };
       getReducedVfx(): boolean;
       getCameraState(): { x: number; y: number; lookX: number; lookY: number; viewWorldH: number };
@@ -35,6 +35,7 @@ declare global {
       debugDropPickup(kind: 'xp' | 'coin' | 'heal' | 'trophy' | 'magnet' | 'bomb' | 'freeze', dx: number, dy: number): void;
       showAbilityCards(ids: AbilityId[]): void;
       showTrainingCards(ids: Array<StatId | 'heal' | 'coins'>): void;
+      setHealFxVariant(variant: 1 | 2 | 3): void;
     };
     __ART_READY?: boolean;
   }

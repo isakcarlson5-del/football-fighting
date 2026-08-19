@@ -178,6 +178,7 @@ function showUpgradeDraft(
 ): void {
   const draftSim = sim;
   if (!draftSim) return;
+  input.keys.clear();
   ui.showLevelUp(
     options,
     () => {
@@ -244,6 +245,8 @@ const ui = new UI(uiRoot, {
         showUpgradeDraft(sim.rollUpgrades(), () => sim!.rollUpgrades());
       } else {
         runState = 'playing';
+        input.keys.clear();
+        ui.releaseGameplayFocus();
       }
       return;
     }
@@ -252,6 +255,8 @@ const ui = new UI(uiRoot, {
       showUpgradeDraft(sim.rollUpgrades(), () => sim!.rollUpgrades());
     } else {
       runState = 'playing';
+      input.keys.clear();
+      ui.releaseGameplayFocus();
     }
   },
   onBuyTrack(id: MetaTrackId) {
@@ -348,6 +353,8 @@ function startRun(): void {
   discardedStepTime = 0;
   ui.buildHud();
   ui.banner('Kick Off!');
+  sim.debugHoldRewardEvent = true;
+  sim.rewardBuff = { kind: 'both', t: 30, label: 'DOUBLE XP + COINS' };
 }
 
 function endRun(won: boolean): void {
@@ -391,6 +398,13 @@ function drainEvents(): void {
         break;
       case 'coin':
         if (throttled('coin', 100)) audio.coin();
+        break;
+      case 'heal':
+        if (throttled('heal', 80)) audio.xp();
+        break;
+      case 'rewardBuff':
+        ui.banner(ev.label);
+        if (throttled('rewardBuff', 200)) audio.levelup();
         break;
       case 'trophy':
         audio.levelup();
@@ -609,7 +623,11 @@ window.addEventListener('keydown', (e) => {
       const card = cards[idx] as HTMLElement | undefined;
       card?.click();
     }
-  } else if (appState === 'menu' && k === 'enter' && document.querySelector('#menu-screen')) {
+  } else if (appState === 'menu' && k === 'enter' && document.querySelector('#menu-screen')
+    && document.activeElement === document.body) {
+    // Enter starts the match only when no menu control holds focus; a
+    // focused button (e.g. Refresh/VIP in the leaderboard) keeps its own
+    // activation path instead of being hijacked into a quick start.
     ui.showSelect();
     appState = 'select';
   }
@@ -674,7 +692,7 @@ function frame(now: number): void {
         // a level-up overlay must never block the end-of-run flow
         if (runState === 'levelup') {
           runState = 'playing';
-          document.getElementById('levelup-screen')?.remove();
+          ui.closeLevelUp();
         }
         if (overTimer < 0) {
           overTimer = 1.4; // let the final whistle moment breathe
@@ -744,7 +762,7 @@ interface FfDebug {
   getSave(): Save;
   getFps(): number;
   getTimingMetrics(): { simulatedTime: number; discardedTime: number; tempoRatio: number };
-  getInputState(): { ax: number; ay: number; joyActive: boolean; joyX: number; joyY: number };
+  getInputState(): { ax: number; ay: number; joyActive: boolean; joyX: number; joyY: number; keys: string[]; focus: string };
   getArenaRenderMode(): { liveStadium: boolean; hybridDepth: boolean };
   getReducedVfx(): boolean;
   getCameraState(): { x: number; y: number; lookX: number; lookY: number; viewWorldH: number };
@@ -758,6 +776,7 @@ interface FfDebug {
   showAbilityCards(ids: AbilityId[]): void;
   showTrainingCards(ids: Array<StatId | 'heal' | 'coins'>): void;
   fireWhistleFx(): void;
+  setHealFxVariant(variant: 1 | 2 | 3): void;
 }
 const ff: FfDebug = {
   getState: () => ({ app: appState, run: runState }),
@@ -791,6 +810,10 @@ const ff: FfDebug = {
     joyActive: input.joyActive,
     joyX: input.joyX,
     joyY: input.joyY,
+    keys: [...input.keys],
+    focus: document.activeElement instanceof HTMLElement
+      ? (document.activeElement.id || document.activeElement.className || document.activeElement.tagName)
+      : String(document.activeElement),
   }),
   getArenaRenderMode: () => renderer.getArenaRenderMode(),
   getReducedVfx: () => renderer.getReducedVfx(),
@@ -838,6 +861,9 @@ const ff: FfDebug = {
     if (!sim) return;
     sim.player.whistlePulse = -1;
     sim.player.whistleCd = 0;
+  },
+  setHealFxVariant: (variant) => {
+    renderer.setHealFxVariant(variant);
   },
 };
 (window as unknown as { __FF: FfDebug }).__FF = ff;
@@ -1694,6 +1720,7 @@ if (debugStage === 'active-dash') {
   ff.startRun('messi');
   const stagedSim = ff.getSim();
   if (stagedSim) {
+    stagedSim.debugDirectorPaused = true;
     stagedSim.player.abilities = {};
     stagedSim.player.maxHp = 99_999;
     stagedSim.player.hp = 99_999;
@@ -1821,6 +1848,7 @@ if (debugStage === 'active-dash') {
   ff.startRun('messi');
   const stagedSim = ff.getSim();
   if (stagedSim) {
+    stagedSim.debugDirectorPaused = true;
     stagedSim.player.abilities = { strike: 4, orbit: 4, whistle: 3, curveball: 3 };
     stagedSim.player.maxHp = 99_999;
     stagedSim.player.hp = 99_999;
@@ -1862,6 +1890,7 @@ if (debugStage === 'active-dash') {
   ff.startRun('messi');
   const stagedSim = ff.getSim();
   if (stagedSim) {
+    stagedSim.debugDirectorPaused = true;
     stagedSim.player.abilities = {};
     stagedSim.player.maxHp = 99_999;
     stagedSim.player.hp = 99_999;

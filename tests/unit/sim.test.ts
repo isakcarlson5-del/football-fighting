@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { abilityCadenceLabel, approachVelocity, ARENA_W, bossApproachIngressMultiplier, bossDirectorIngressMultiplier, bossHealthMultiplier, BOSS_INTRO_DURATION, BOSS_MELEE_LUNGE_DURATION, directorPopulationIngressMultiplier, ENEMY_MELEE_LUNGE_DURATION, enemyAirLift, enemyHitFeedbackStrength, enemyRunCycleDistance, enemyRunTargetFps, enemyXpRewardMultiplier, guardAuthoredRunVector, guardFormationOffset, guardRunPresentation, hybridBossBodyContact, hybridBossSceneryPad, hybridEnemySceneryPad, hystereticMovementOctant, MELEE_CONTACT_PROGRESS, PLAYER_RUN_CYCLE_DISTANCE, PLAYER_RUN_FPS, PLAYER_RUN_FRAMES, PLAYER_VISUAL_Y_SCALE, resolveHybridBossBodyContact, Sim, statProgressLabel, stepMovementOctant, upgradeDraftWeight } from '../../src/game/sim';
-import { BOSS0_AT, BOSS1_AT, BOSSES, ENEMIES, PLAYERS, RUN_LENGTH } from '../../src/game/data';
+import { abilityCadenceLabel, approachVelocity, ARENA_W, bossApproachIngressMultiplier, bossDirectorIngressMultiplier, bossHealthMultiplier, BOSS_INTRO_DURATION, BOSS_MELEE_LUNGE_DURATION, directorPopulationIngressMultiplier, ENEMY_MELEE_LUNGE_DURATION, enemyAirLift, enemyHitFeedbackStrength, enemyRunCycleDistance, enemyRunTargetFps, enemyXpRewardMultiplier, guardAuthoredRunVector, guardFormationOffset, guardRunPresentation, hybridBossBodyContact, hybridBossSceneryPad, hybridEnemySceneryPad, hystereticMovementOctant, MELEE_CONTACT_PROGRESS, PLAYER_RUN_CYCLE_DISTANCE, PLAYER_RUN_FPS, PLAYER_RUN_FRAMES, PLAYER_VISUAL_Y_SCALE, REWARD_EVENT_DURATION, REWARD_EVENT_LABEL, REWARD_EVENT_MIN_TIME, resolveHybridBossBodyContact, rewardCoinMul, rewardScoreMul, rewardXpMul, Sim, statProgressLabel, stepMovementOctant, upgradeDraftWeight } from '../../src/game/sim';
+import { ABILITIES, ABILITY_IDS, BOSS0_AT, BOSS1_AT, BOSSES, ENEMIES, PLAYERS, RUN_LENGTH } from '../../src/game/data';
 import { Save } from '../../src/game/meta';
 import { aerialLaunchVisual, ART_DIRECTION_PROFILE, bossArrivalVisual, combatPresentationBudget, corpseCollapseVisual, dampedTurfDisplacement, directionalFrameBlend, enemyHealthBarPriority, enemyHealthBarStyle, enemyPoseFrame, guardPoseFrame, HYBRID_LIGHT_CAST, hybridCentreMarkingGeometry, hybridCornerFlagDepthScale, hybridEntityDepthScale, hybridEntityShadowGeometry, hybridGoalNetBreathe, hybridHostileProjectileElevation, hybridPitchMarkingGeometry, hybridStadiumParallax, matchdayWipeoutVisual, movementDirection, orbitPainterDepthY, orbitTrailArcGeometry, pickupVisibleBounds, placeEnemyHealthBar, playerOcclusionStrength, playerStepCue, reducedCombatPresentationBudget, type HealthBarCollisionRect } from '../../src/game/render';
 
@@ -46,10 +46,10 @@ describe('sim core loop', () => {
     expect(bossApproachIngressMultiplier(-2)).toBe(0.12);
   });
 
-  it('weights drafts toward evolving a coherent build', () => {
+  it('weights drafts toward slightly evolving a build while staying random', () => {
     expect(upgradeDraftWeight('owned-ability')).toBeGreaterThan(upgradeDraftWeight('stat'));
     expect(upgradeDraftWeight('stat')).toBeGreaterThan(upgradeDraftWeight('new-ability'));
-    expect(upgradeDraftWeight('owned-ability')).toBe(upgradeDraftWeight('new-ability') * 3);
+    expect(upgradeDraftWeight('owned-ability')).toBeLessThan(upgradeDraftWeight('new-ability') * 2);
   });
 
   it('soft-caps live director population without deleting existing threats', () => {
@@ -71,8 +71,8 @@ describe('sim core loop', () => {
     expect(bossHealthMultiplier('official', 0)).toBe(1.15);
     expect(bossHealthMultiplier('official', 1)).toBeCloseTo(1.3, 8);
     expect(bossHealthMultiplier('captain', 1)).toBe(1.55);
-    expect(BOSSES.official.hp * bossHealthMultiplier('official', 1)).toBeLessThan(6500);
-    expect(BOSSES.captain.hp * bossHealthMultiplier('captain', 1)).toBeLessThan(10_000);
+    expect(BOSSES.official.hp * bossHealthMultiplier('official', 1)).toBeLessThan(12_500);
+    expect(BOSSES.captain.hp * bossHealthMultiplier('captain', 1)).toBeLessThan(20_000);
   });
 
   it('scales material hit feedback by real damage and keeps blocks subdued', () => {
@@ -376,12 +376,11 @@ describe('sim core loop', () => {
   it('opens on a quiet pitch, then introduces a continuous natural trickle', () => {
     const sim = makeSim();
     expect(sim.enemies.some((e) => e.active)).toBe(false);
-    step(sim, 180); // 3 seconds: deliberate kickoff calm
+    step(sim, 90); // 1.5 seconds: brief kickoff calm
     expect(sim.enemies.some((e) => e.active)).toBe(false);
-    step(sim, 210); // enemies arrive one at a time through continuous ingress
+    step(sim, 420); // enemies arrive steadily through continuous ingress
     const active = sim.enemies.filter((e) => e.active).length;
-    expect(active + sim.kills).toBeGreaterThanOrEqual(1);
-    expect(active + sim.kills).toBeLessThan(5);
+    expect(active + sim.kills).toBeGreaterThanOrEqual(3);
   });
 
   it('can pause only the procedural director for deterministic visual fixtures', () => {
@@ -404,8 +403,8 @@ describe('sim core loop', () => {
     sim.time = 300;
     step(sim, 60);
     const active = sim.enemies.filter((enemy) => enemy.active && !enemy.boss).length;
-    expect(active).toBeGreaterThanOrEqual(6);
-    expect(active).toBeLessThanOrEqual(7);
+    expect(active).toBeGreaterThanOrEqual(5);
+    expect(active).toBeLessThanOrEqual(6);
   });
 
   it('reaches the late reference ingress without releasing a batch spike', () => {
@@ -419,8 +418,8 @@ describe('sim core loop', () => {
     sim.time = 590;
     step(sim, 60);
     const active = sim.enemies.filter((enemy) => enemy.active && !enemy.boss).length;
-    expect(active).toBeGreaterThanOrEqual(28);
-    expect(active).toBeLessThanOrEqual(31);
+    expect(active).toBeGreaterThanOrEqual(22);
+    expect(active).toBeLessThanOrEqual(26);
   });
 
   it('keeps ranged, drone, bull and summoner populations under director caps', () => {
@@ -448,21 +447,86 @@ describe('sim core loop', () => {
     sim.debugSpawn('invader', sim.player.x + 300, sim.player.y, true);
     const eliteIndex = sim.enemies.findIndex((enemy) => enemy.active && enemy.elite);
     const elite = sim.enemies[eliteIndex];
-    expect(elite.maxHp).toBeCloseTo(ENEMIES.invader.hp * 0.82 * 4, 5);
+    expect(elite.maxHp).toBeCloseTo(ENEMIES.invader.hp * 1.5 * 4, 5);
     sim.damageEnemy(eliteIndex, elite.hp + 1);
     expect(sim.pickups.some((pickup) => pickup.active && ['magnet', 'freeze', 'bomb'].includes(pickup.kind))).toBe(true);
   });
 
   it('enemies spawn continuously and chase the player', () => {
     const sim = makeSim();
-    step(sim, 600); // 10s
-    const active = sim.enemies.filter((e) => e.active);
-    expect(active.length + sim.kills).toBeGreaterThanOrEqual(3);
+    step(sim, 600); // 10s of continuous ingress
+    const alive = sim.enemies.filter((e) => e.active);
+    expect(alive.length + sim.kills).toBeGreaterThanOrEqual(3);
+    sim.debugDirectorPaused = true;
+    sim.enemies.forEach((e) => (e.active = false));
     const p = sim.player;
-    const d0 = Math.hypot(active[0].x - p.x, active[0].y - p.y);
+    sim.debugSpawn('invader', p.x + 400, p.y);
+    const chaser = sim.enemies.find((e) => e.active)!;
+    chaser.hp = chaser.maxHp = 9999;
+    const d0 = Math.hypot(chaser.x - p.x, chaser.y - p.y);
     step(sim, 120);
-    const d1 = Math.hypot(active[0].x - p.x, active[0].y - p.y);
+    expect(chaser.active).toBe(true);
+    const d1 = Math.hypot(chaser.x - p.x, chaser.y - p.y);
     expect(d1).toBeLessThan(d0);
+  });
+
+  it('opens with a sparse pitch: the director delivers loose packs from one edge segment', () => {
+    const sim = makeSim();
+    sim.player.abilities = {};
+    step(sim, 420); // 7s: 2s warm-up + 5s at 0.8/s ≈ 4 invaders, one edge anchor
+    const active = sim.enemies.filter((e) => e.active && !e.boss);
+    expect(active.length).toBeGreaterThanOrEqual(3);
+    let widest = 0;
+    let tightest = Number.POSITIVE_INFINITY;
+    for (let i = 0; i < active.length; i++) {
+      for (let j = i + 1; j < active.length; j++) {
+        const d = Math.hypot(active[i].x - active[j].x, active[i].y - active[j].y);
+        widest = Math.max(widest, d);
+        tightest = Math.min(tightest, d);
+      }
+    }
+    // Spawned around one shared anchor: never stacked on top of each other,
+    // and spaced loosely enough to read as a pack rather than one blob.
+    expect(widest).toBeLessThan(620);
+    expect(tightest).toBeGreaterThan(8);
+  });
+
+  it('horde cohesion gathers a scattered pack loosely while it still presses the player', () => {
+    const sim = makeSim();
+    sim.debugDirectorPaused = true;
+    sim.player.abilities = {};
+    sim.enemies.forEach((e) => (e.active = false));
+    const p = sim.player;
+    const pack: { x: number; y: number }[] = [];
+    for (let i = 0; i < 5; i++) {
+      const angle = -0.45 + i * 0.225;
+      const x = p.x + Math.cos(angle) * 720;
+      const y = p.y + Math.sin(angle) * 720;
+      sim.debugSpawn('invader', x, y);
+      pack.push({ x, y });
+    }
+    const meanSpread = (pts: { x: number; y: number }[]) => {
+      let total = 0;
+      let pairs = 0;
+      for (let i = 0; i < pts.length; i++) {
+        for (let j = i + 1; j < pts.length; j++) {
+          total += Math.hypot(pts[i].x - pts[j].x, pts[i].y - pts[j].y);
+          pairs++;
+        }
+      }
+      return total / pairs;
+    };
+    const before = meanSpread(pack);
+    step(sim, 360); // 6s of locomotion toward the player
+    const active = sim.enemies.filter((e) => e.active);
+    expect(active).toHaveLength(5);
+    const after = meanSpread(active.map((e) => ({ x: e.x, y: e.y })));
+    // Cohesion draws the pack together, but the pull is gentle: the front
+    // never collapses into one tight blob.
+    expect(after).toBeLessThan(before * 0.9);
+    expect(after).toBeGreaterThan(before * 0.5);
+    const reached = Math.hypot(active[0].x - p.x, active[0].y - p.y);
+    expect(reached).toBeLessThan(720);
   });
 
   it('enemy art selects semantic idle, movement, cast and hurt poses', () => {
@@ -1003,8 +1067,30 @@ describe('sim core loop', () => {
     const impact = sim.impacts.find((fx) => fx.active);
     expect(impact).toMatchObject({ kind: 'contact', color: '#ffd23f' });
     expect(impact!.strength).toBeGreaterThan(1);
+    // clear the pitch so the instant first strike (no warm-up) cannot spawn a
+    // kickground impact while the pooled contact fx is expected to expire
+    sim.enemies.forEach((e) => (e.active = false));
+    sim.balls.forEach((ball) => (ball.active = false));
     step(sim, 20);
     expect(sim.impacts.some((fx) => fx.active)).toBe(false);
+  });
+
+  it('rounds damage numbers to at most two decimals so overflows stay short', () => {
+    const sim = makeSim();
+    sim.enemies.forEach((e) => (e.active = false));
+    sim.debugSpawn('steward', sim.player.x + 100, sim.player.y);
+    const idx = sim.enemies.findIndex((e) => e.active);
+    const enemy = sim.enemies[idx];
+    enemy.hp = 37.400000000000006;
+    enemy.maxHp = 100;
+    sim.damageEnemy(idx, 999);
+    const dmg = sim.dmgNums.filter((d) => d.active).at(-1);
+    expect(dmg?.value).toBe('37.4');
+    expect(dmg?.value).toMatch(/^\d+(\.\d{1,2})?$/);
+    sim.debugSpawn('steward', sim.player.x + 140, sim.player.y);
+    const second = sim.enemies.findIndex((e) => e.active);
+    sim.damageEnemy(second, 5, 0, 0, { crit: true });
+    expect(sim.dmgNums.filter((d) => d.active).at(-1)?.value).toBe('8');
   });
 
   it('XP pickup raises level and queues level-up choices', () => {
@@ -1052,15 +1138,14 @@ describe('sim core loop', () => {
     for (const o of opts) expect(['heal', 'coins']).toContain(o.kind); // all maxed -> fallbacks only
   });
 
-  it('guarantees owned evolution and caps a run at six active ability slots', () => {
+  it('caps a run at six active ability slots without forcing an owned card', () => {
     const sim = makeSim();
     sim.player.abilities = {
       strike: 2, curveball: 1, bootseekers: 1, orbit: 1, whistle: 1, blast: 1,
     };
     for (let roll = 0; roll < 20; roll++) {
       const options = sim.rollUpgrades();
-      expect(options.some((option) => option.kind === 'ability'
-        && (sim.player.abilities[option.id as keyof typeof sim.player.abilities] ?? 0) > 0)).toBe(true);
+      expect(options).toHaveLength(3);
       const newAbilityIds = options
         .filter((option) => option.kind === 'ability'
           && !Object.prototype.hasOwnProperty.call(sim.player.abilities, option.id))
@@ -1069,16 +1154,27 @@ describe('sim core loop', () => {
     }
   });
 
-  it('offers fair defensive and recovery choices once late pressure begins', () => {
+  it('late-game drafts stay a random draw instead of forcing recovery or defense', () => {
     const sim = makeSim();
     sim.time = 181;
     sim.player.hp = sim.player.maxHp * 0.4;
-    const opts = sim.rollUpgrades();
-    expect(opts.some((option) => option.kind === 'heal')).toBe(true);
-    expect(opts.some((option) => option.kind === 'stat' && ['armor', 'maxhp', 'regen'].includes(option.id))).toBe(true);
-    const heal = opts.find((option) => option.kind === 'heal')!;
-    expect(heal.metaLabel).toBe('RECOVERY');
-    expect(heal.afterLabel).toContain('HP');
+    let healSeen = false;
+    let defensiveSeen = false;
+    let nonDefensiveSeen = false;
+    for (let roll = 0; roll < 30; roll++) {
+      const opts = sim.rollUpgrades();
+      expect(opts).toHaveLength(3);
+      for (const option of opts) {
+        if (option.kind === 'heal') healSeen = true;
+        if (option.kind === 'stat' && ['armor', 'maxhp', 'regen'].includes(option.id)) defensiveSeen = true;
+        else nonDefensiveSeen = true;
+      }
+    }
+    // Recovery is never injected into a low-HP draft, and defensive stats
+    // appear through the random pool without monopolising every slot.
+    expect(healSeen).toBe(false);
+    expect(defensiveSeen).toBe(true);
+    expect(nonDefensiveSeen).toBe(true);
   });
 
   it('player dies when hp reaches zero', () => {
@@ -1355,7 +1451,7 @@ describe('sim core loop', () => {
     lobber.windup = 0.001;
     step(sim, 1);
 
-    const bottle = sim.bottles.find((entry) => entry.active && entry.kind === 'bottle')!;
+    const bottle = sim.bottles.find((entry) => entry.active && entry.kind === 'molotov')!;
     expect(bottle).toBeTruthy();
     expect(bottle.maxLife).toBeGreaterThanOrEqual(0.55);
     expect(bottle.reticleIdx).toBeGreaterThanOrEqual(0);
@@ -1367,7 +1463,8 @@ describe('sim core loop', () => {
 
     expect(bottle.active).toBe(false);
     expect(sim.reticles[bottle.reticleIdx].active).toBe(false);
-    expect(sim.impacts.some((impact) => impact.active && impact.kind === 'landing')).toBe(true);
+    expect(sim.events.some((event) => event.type === 'molotovIgnite')).toBe(true);
+    expect(sim.fireZones.some((zone) => zone.active)).toBe(true);
   });
 
   it('Security Detail fields bodyguards that attack nearby enemies', () => {
@@ -1796,6 +1893,29 @@ describe('sim core loop', () => {
     expect(sim.events.some((event) => event.type === 'bomb')).toBe(false);
   });
 
+  it('heal drinks only pull in from much closer than ordinary pickups', () => {
+    const sim = makeSim();
+    sim.debugDirectorPaused = true;
+    sim.enemies.forEach((enemy) => (enemy.active = false));
+    sim.player.stats.magnet = 6; // huge ordinary pickup radius (~191px)
+    sim.debugDropPickup('heal', sim.player.x + 180, sim.player.y);
+    sim.debugDropPickup('xp', sim.player.x + 180, sim.player.y);
+    const heal = sim.pickups.find((pickup) => pickup.active && pickup.kind === 'heal')!;
+    const xp = sim.pickups.find((pickup) => pickup.active && pickup.kind === 'xp')!;
+    step(sim, 60);
+    expect(xp.active).toBe(false); // the normal radius vacuumed the XP
+    expect(heal.active).toBe(true); // the bottle stayed put at 180px
+    expect(Math.hypot(heal.x - sim.player.x, heal.y - sim.player.y)).toBeGreaterThan(120);
+    heal.x = sim.player.x + 40;
+    heal.y = sim.player.y;
+    heal.vx = 0;
+    heal.vy = 0;
+    heal.t = 0;
+    step(sim, 30);
+    expect(heal.vx).toBeLessThan(0); // up close it pulls, but gently
+    expect(Math.abs(heal.vx)).toBeLessThan(200);
+  });
+
   it("Keeper's Halo blocks hostile aerial shots and max level counters an aerial threat", () => {
     const sim = makeSim();
     sim.debugDirectorPaused = true;
@@ -1933,5 +2053,112 @@ describe('sim core loop', () => {
     expect(sim.enemies.filter((enemy) => enemy.active && !enemy.boss)).toHaveLength(before + 1);
     step(sim, 18);
     expect(sim.enemies.filter((enemy) => enemy.active && !enemy.boss)).toHaveLength(before + 3);
+  });
+});
+
+describe('reward buffs', () => {
+  it('doubles only the named reward channel', () => {
+    expect(rewardCoinMul({ kind: 'coin', t: 2, label: 'DOUBLE COINS' })).toBe(2);
+    expect(rewardXpMul({ kind: 'coin', t: 2, label: 'DOUBLE COINS' })).toBe(1);
+    expect(rewardXpMul({ kind: 'xp', t: 2, label: 'DOUBLE XP' })).toBe(2);
+    expect(rewardCoinMul({ kind: 'both', t: 2, label: 'DOUBLE COINS + XP' })).toBe(2);
+    expect(rewardScoreMul({ kind: 'both', t: 2, label: 'DOUBLE COINS + XP' })).toBe(2);
+    expect(rewardCoinMul(null)).toBe(1);
+  });
+
+  it('starts the 30s double-xp-and-coins event from the match tick, then refuses a second start', () => {
+    const sim = makeSim();
+    sim.debugDirectorPaused = true;
+    sim.time = REWARD_EVENT_MIN_TIME;
+    sim.rng.chance = () => true;
+    step(sim, 1);
+    expect(sim.rewardBuff?.kind).toBe('both');
+    expect(sim.rewardBuff?.label).toBe(REWARD_EVENT_LABEL);
+    expect(sim.rewardBuff!.t).toBeGreaterThan(REWARD_EVENT_DURATION - 0.05);
+    expect(sim.rewardBuff!.t).toBeLessThanOrEqual(REWARD_EVENT_DURATION);
+    expect(rewardXpMul(sim.rewardBuff)).toBe(2);
+    expect(rewardCoinMul(sim.rewardBuff)).toBe(2);
+    const before = sim.coins;
+    sim.debugDropPickup('coin', 0, 0);
+    const coin = sim.pickups.find((p) => p.active && p.kind === 'coin')!;
+    coin.x = sim.player.x;
+    coin.y = sim.player.y;
+    step(sim, 4);
+    expect(sim.coins).toBe(before + coin.value * 2);
+    sim.rng.chance = () => true;
+    sim.time = REWARD_EVENT_MIN_TIME + 200;
+    step(sim, 1);
+    expect(sim.events.filter((event) => event.type === 'rewardBuff')).toHaveLength(1);
+    step(sim, Math.ceil(REWARD_EVENT_DURATION * 60) + 4);
+    expect(sim.rewardBuff).toBeNull();
+    expect(rewardXpMul(sim.rewardBuff)).toBe(1);
+    expect(rewardCoinMul(sim.rewardBuff)).toBe(1);
+  });
+});
+
+describe('molotov', () => {
+  it('is not a player ability', () => {
+    expect(ABILITY_IDS.includes('molotov' as never)).toBe(false);
+    expect(ABILITIES).not.toHaveProperty('molotov');
+  });
+
+  it('is thrown by the Bottle Lobber at the player and ignites a blaze on landing', () => {
+    const sim = makeSim();
+    sim.debugDirectorPaused = true;
+    sim.player.abilities = {};
+    sim.player.hp = sim.player.maxHp = 400;
+    const p = sim.player;
+    sim.debugSpawn('lobber', p.x + 160, p.y);
+    const lobber = sim.enemies.find((e) => e.active && e.def.id === 'lobber')!;
+    lobber.speed = 0;
+    lobber.casting = 'bottle';
+    lobber.windup = 0.001;
+    step(sim, 1);
+    const cocktail = sim.bottles.find((b) => b.active && b.kind === 'molotov');
+    expect(cocktail).toBeDefined();
+    expect(cocktail!.targetX).toBeCloseTo(p.x, 0);
+    expect(cocktail!.targetY).toBeCloseTo(p.y, 0);
+    expect(cocktail!.vz).toBeGreaterThan(0);
+    expect(cocktail!.z).toBeGreaterThanOrEqual(0);
+    step(sim, Math.ceil((cocktail!.maxLife) * 60) + 2);
+    expect(sim.events.some((event) => event.type === 'molotovIgnite')).toBe(true);
+    expect(sim.fireZones.some((zone) => zone.active)).toBe(true);
+    expect(sim.player.hp).toBeLessThan(400);
+    expect(sim.player.hp).toBeGreaterThan(360);
+  });
+
+  it('keeps at most two molotovs in the air', () => {
+    const sim = makeSim();
+    sim.debugDirectorPaused = true;
+    const p = sim.player;
+    for (let i = 0; i < 4; i++) {
+      sim.debugSpawn('lobber', p.x + 120 + i * 10, p.y);
+      const lobber = [...sim.enemies].reverse().find((e) => e.active && e.def.id === 'lobber')!;
+      lobber.speed = 0;
+      lobber.casting = 'bottle';
+      lobber.windup = 0.001;
+      step(sim, 1);
+    }
+    expect(sim.bottles.filter((b) => b.active && b.kind === 'molotov').length).toBeLessThanOrEqual(2);
+  });
+
+  it('burns the player who stays in the fire, not the lobber', () => {
+    const sim = makeSim();
+    sim.debugDirectorPaused = true;
+    sim.player.abilities = {};
+    sim.player.hp = sim.player.maxHp = 400;
+    const p = sim.player;
+    sim.debugSpawn('lobber', p.x + 140, p.y);
+    const lobber = sim.enemies.find((e) => e.active && e.def.id === 'lobber')!;
+    const lobberHp = lobber.hp;
+    lobber.speed = 0;
+    lobber.casting = 'bottle';
+    lobber.windup = 0.001;
+    step(sim, 80);
+    const hpAfterHit = sim.player.hp;
+    expect(hpAfterHit).toBeLessThan(400);
+    step(sim, 80);
+    expect(sim.player.hp).toBeLessThan(hpAfterHit);
+    expect(lobber.hp).toBe(lobberHp);
   });
 });

@@ -55,12 +55,13 @@ export function bossApproachIngressMultiplier(secondsUntilBoss: number): number 
   return 0.12 + 0.88 * (secondsUntilBoss / 45);
 }
 
-/** Draft weight keeps runs coherent: owned tools should evolve more often
- * than the pool introduces another level-one icon. */
+/** Draft weights keep runs genuinely random: every draw is equal, with only
+ *  a very slight lean toward owned tools so a build can evolve without
+ *  railroading the player into one track. */
 export function upgradeDraftWeight(kind: 'new-ability' | 'owned-ability' | 'stat'): number {
   if (kind === 'new-ability') return 12;
-  if (kind === 'owned-ability') return 36;
-  return 18;
+  if (kind === 'owned-ability') return 14;
+  return 13;
 }
 
 /** Soft readability ceiling for ordinary enemies. Difficulty still grows via
@@ -78,6 +79,35 @@ export function directorPopulationIngressMultiplier(activeOrdinary: number, time
  * pace with that investment instead of forcing density to carry progression. */
 export function enemyXpRewardMultiplier(time: number): number {
   return 1 + difficultyProgress(time) * 1.8;
+}
+
+export const STREAK_KILL_COUNT = 10;
+export const STREAK_KILL_WINDOW = 8;
+export const REWARD_EVENT_DURATION = 30;
+export const REWARD_EVENT_MIN_TIME = 80;
+export const REWARD_EVENT_INTERVAL = 50;
+export const REWARD_EVENT_CHANCE = 0.012;
+export const REWARD_EVENT_LABEL = 'DOUBLE XP + COINS';
+export const HEAL_FX_DURATION = 1.6;
+
+export type RewardBuffKind = 'both' | 'coin' | 'xp';
+
+export interface RewardBuff {
+  kind: RewardBuffKind;
+  t: number;
+  label: string;
+}
+
+export function rewardCoinMul(buff: RewardBuff | null): number {
+  return buff && (buff.kind === 'both' || buff.kind === 'coin') ? 2 : 1;
+}
+
+export function rewardXpMul(buff: RewardBuff | null): number {
+  return buff && (buff.kind === 'both' || buff.kind === 'xp') ? 2 : 1;
+}
+
+export function rewardScoreMul(buff: RewardBuff | null): number {
+  return buff && buff.kind === 'both' ? 2 : 1;
 }
 
 /** Boss bases already encode encounter order. This modest independent scale
@@ -232,7 +262,7 @@ export const AERIAL_OVERHEAT_DURATION = 1.35;
 export const ELITE_HP_MULT = 4;
 export const ELITE_DAMAGE_MULT = 1.35;
 export const ELITE_XP_MULT = 4;
-export const CAPTAIN_MELEE_MAX = 62;
+export const CAPTAIN_MELEE_MAX = 84;
 export const CAPTAIN_CHARGE_MAX = 72;
 
 export function enemyAirLift(airT: number, airMaxT: number): number {
@@ -350,6 +380,10 @@ export function guardFormationOffset(
 const MAX_ENEMIES = 240;
 const BOSS_RESERVED_ENEMY_SLOTS = 1;
 const MAX_SPAWNS_PER_STEP = 3;
+/** Local crowd radius used by horde cohesion so packs advance as a loose
+ *  shared front instead of collapsing into one point. Members inside this
+ *  radius feel the pull; the pull fades as the pack tightens. */
+const HORDE_COHESION_RADIUS = 420;
 const RANGED_MAX_ALIVE = 6;
 const DRONE_MAX_ALIVE = 4;
 const VARCAM_MAX_ALIVE = 2;
@@ -632,17 +666,35 @@ export interface Seeker {
 
 export interface Bottle {
   active: boolean;
-  kind: 'bottle' | 'electric' | 'scan';
+  kind: 'bottle' | 'electric' | 'scan' | 'molotov';
   x: number;
   y: number;
+  z: number;
   vx: number;
   vy: number;
+  vz: number;
   dmg: number;
   life: number;
   maxLife: number;
   targetX: number;
   targetY: number;
   reticleIdx: number;
+  /** molotov impact payload */
+  splashR: number;
+  burn: number;
+  dps: number;
+}
+
+/** Hostile molotov ground blaze. Burns the player if they stay in it. */
+export interface FireZone {
+  active: boolean;
+  x: number;
+  y: number;
+  r: number;
+  dps: number;
+  life: number;
+  maxLife: number;
+  tick: number;
 }
 
 export interface Pickup {
@@ -807,6 +859,8 @@ export type SimEvent =
   | { type: 'seekerHit'; kind: 'curveball' | 'goldenboot'; x: number; y: number }
   | { type: 'dash' }
   | { type: 'hurt' }
+  | { type: 'heal' }
+  | { type: 'rewardBuff'; label: string }
   | { type: 'punch' }
   | { type: 'vuvuzela'; x: number; y: number }
   | { type: 'flash'; x: number; y: number }
@@ -814,6 +868,7 @@ export type SimEvent =
   | { type: 'zap'; x: number; y: number }
   | { type: 'keeperBlock'; x: number; y: number; counter: boolean }
   | { type: 'scanImpact'; x: number; y: number }
+  | { type: 'molotovIgnite'; x: number; y: number }
   | { type: 'upgradeFx'; max: boolean }
   | { type: 'bullCharge'; x: number; y: number }
   | { type: 'bossStep'; boss: BossId }
@@ -880,6 +935,12 @@ export interface PlayerState {
   bootseekersCd: number;
   whistleCd: number;
   whistlePulse: number;
+  /** Target-scan ticks are kept off the HUD: the dock only ever reflects
+   * cooldown after the ability has actually been used, never a retry poll. */
+  curveballRetry: number;
+  bootseekersRetry: number;
+  pressureRetry: number;
+  blastRetry: number;
   pressureCd: number;
   pressureQueue: number; // staggered pulses still to release
   pressureQueueT: number;
@@ -913,6 +974,7 @@ export interface PlayerState {
   keeperBlockCd: number;
   /** Generated Captain's Heart activation clip after a max-HP draft. */
   heartFxT: number;
+  healT: number;
 }
 
 export interface UpgradeOption {
@@ -965,11 +1027,16 @@ export class Sim {
   over: 'playing' | 'won' | 'lost' = 'playing';
   kills = 0;
   coins = 0;
+  rewardBuff: RewardBuff | null = null;
+  private rewardEventUsed = false;
+  private killTimes: number[] = [];
+  private nextRandomBuffAt = REWARD_EVENT_MIN_TIME;
   player!: PlayerState;
   enemies: Enemy[] = [];
   balls: Ball[] = [];
   seekers: Seeker[] = [];
   bottles: Bottle[] = [];
+  fireZones: FireZone[] = [];
   pickups: Pickup[] = [];
   guards: Guard[] = [];
   particles: Particle[] = [];
@@ -1012,8 +1079,12 @@ export class Sim {
   /** Fractional spawn tokens. A capped budget prevents hitch recovery bursts. */
   private spawnBudget = 0;
   private eliteAcc = 0;
+  /** Horde spawn anchor: consecutive spawns share one edge segment so a run
+   *  opens with packs assembling instead of enemies drizzling in everywhere. */
+  private spawnAnchor = { x: 40, y: 40, side: -1, born: -999, count: 0 };
   /** Deterministic visual-fixture switch; normal runs never enable it. */
   debugDirectorPaused = false;
+  debugHoldRewardEvent = false;
   private def: PlayerDef;
   private deferred: { t: number; fn: () => void }[] = [];
   private powerMult = 1;
@@ -1091,18 +1162,22 @@ export class Sim {
       slowT: 0,
       abilities: { [def.startAbility]: 1 },
       stats: { power: 0, speed: 0, maxhp: 0, regen: 0, magnet: 0, armor: 0 },
-      strikeCd: 0.4,
-      curveballCd: 1.1,
-      bootseekersCd: 1.8,
-      whistleCd: 2,
+      strikeCd: 0,
+      curveballCd: 0,
+      bootseekersCd: 0,
+      whistleCd: 0,
       whistlePulse: -1,
-      pressureCd: 1.2,
-      pressureQueue: 0,
-      pressureQueueT: 0,
-      pressureCastLevel: 0,
+      curveballRetry: 0,
+      bootseekersRetry: 0,
+      pressureRetry: 0,
+      blastRetry: 0,
+      pressureCd: 0,
+  pressureQueue: 0,
+  pressureQueueT: 0,
+  pressureCastLevel: 0,
       pressureCastX: ARENA_W / 2,
       pressureCastY: ARENA_H / 2,
-      blastCd: 1.6,
+      blastCd: 0,
       kickT: 0,
       kickTargetIdx: -1,
       aimDx: 1,
@@ -1121,6 +1196,7 @@ export class Sim {
       keeperAngle: 0,
       keeperBlockCd: 0,
       heartFxT: 0,
+      healT: 0,
     };
     if (def.id === 'neymar') this.player.dashCds = [0];
     this.spawnInitial();
@@ -1223,7 +1299,8 @@ export class Sim {
       vx: 0, vy: 0, speed: 420, turnRate: 4, targetIdx: -1, dmg: 0, splash: 0,
       knock: 0, life: 0, maxLife: 3, chain: 0, angle: 0, phase: 0,
     });
-    for (let i = 0; i < 200; i++) this.bottles.push({ active: false, kind: 'bottle', x: 0, y: 0, vx: 0, vy: 0, dmg: 0, life: 0, maxLife: 0, targetX: 0, targetY: 0, reticleIdx: -1 });
+    for (let i = 0; i < 200; i++) this.bottles.push({ active: false, kind: 'bottle', x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 0, dmg: 0, life: 0, maxLife: 0, targetX: 0, targetY: 0, reticleIdx: -1, splashR: 0, burn: 0, dps: 0 });
+    for (let i = 0; i < 40; i++) this.fireZones.push({ active: false, x: 0, y: 0, r: 0, dps: 0, life: 0, maxLife: 0, tick: 0 });
     for (let i = 0; i < 500; i++) this.pickups.push({ active: false, kind: 'xp', tier: 1, x: 0, y: 0, vx: 0, vy: 0, value: 1, t: 0 });
     for (let i = 0; i < 600; i++) this.particles.push({ active: false, x: 0, y: 0, vx: 0, vy: 0, life: 0, maxLife: 1, size: 2, color: '#fff', grav: 0 });
     for (let i = 0; i < 96; i++) this.impacts.push({ active: false, x: 0, y: 0, life: 0, maxLife: 0.2, angle: 0, strength: 1, color: '#fff', kind: 'contact' });
@@ -1313,23 +1390,21 @@ export class Sim {
 
   private pickSpawnPos(): { x: number; y: number } {
     const p = this.player;
+    // Keep consecutive spawns anchored to one edge segment for a while: each
+    // pack member arrives loosely spaced (never stacked), then horde cohesion
+    // in locomotion lets them advance as one spread-out front.
+    if (this.time - this.spawnAnchor.born > 5 || this.spawnAnchor.count >= 4) {
+      const side = this.rng.int(0, 3);
+      this.spawnAnchor.side = side;
+      this.spawnAnchor.x = side === 2 ? 60 : side === 3 ? ARENA_W - 60 : this.rng.range(60, ARENA_W - 60);
+      this.spawnAnchor.y = side === 0 ? 60 : side === 1 ? ARENA_H - 60 : this.rng.range(60, ARENA_H - 60);
+      this.spawnAnchor.born = this.time;
+      this.spawnAnchor.count = 0;
+    }
+    this.spawnAnchor.count++;
     for (let tries = 0; tries < 12; tries++) {
-      const edge = this.rng.int(0, 3);
-      let x = 0;
-      let y = 0;
-      if (edge === 0) {
-        x = this.rng.range(40, ARENA_W - 40);
-        y = 40;
-      } else if (edge === 1) {
-        x = this.rng.range(40, ARENA_W - 40);
-        y = ARENA_H - 40;
-      } else if (edge === 2) {
-        x = 40;
-        y = this.rng.range(40, ARENA_H - 40);
-      } else {
-        x = ARENA_W - 40;
-        y = this.rng.range(40, ARENA_H - 40);
-      }
+      const x = clamp(this.spawnAnchor.x + this.rng.range(-200, 200), 46, ARENA_W - 46);
+      const y = clamp(this.spawnAnchor.y + this.rng.range(-200, 200), 46, ARENA_H - 46);
       if (dist2(x, y, p.x, p.y) > 420 * 420) return { x, y };
     }
     return { x: 40, y: 40 };
@@ -1675,7 +1750,7 @@ export class Sim {
     dmg: number,
     kx = 0,
     ky = 0,
-    opts?: { stun?: number; crit?: boolean; source?: 'orbit'; feedback?: boolean },
+    opts?: { stun?: number; crit?: boolean; source?: 'orbit' | 'molotov'; feedback?: boolean },
   ): void {
     const e = this.enemies[i];
     if (!e.active || e.hp <= 0) return;
@@ -1703,6 +1778,7 @@ export class Sim {
       ? clamp(Math.max(force / 360, e.flashStrength * 0.72), 0.2, 1.25)
       : 0.1;
     if (opts?.source === 'orbit') e.orbitHitT = 0.38;
+    if (opts?.source === 'molotov') e.orbitHitT = 0.3;
     e.kx += kx;
     e.ky += ky;
     // a heavy shove launches the enemy briefly airborne: ground effects sweep
@@ -1726,13 +1802,14 @@ export class Sim {
     if (!e.active) return;
     e.active = false;
     this.kills++;
+    this.noteKillForRewards();
     this.dropLoot(e);
     this.spawnCorpse(e);
     this.burst(e.x, e.y, e.boss ? 26 : e.elite ? 14 : 6, e.boss ? '#ffd23f' : '#e8b88a');
     this.events.push({ type: 'kill', x: e.x, y: e.y, elite: e.elite || !!e.boss });
     if (e.boss) {
       const def = BOSSES[e.boss];
-      this.coins += def.coins;
+      this.coins += def.coins * rewardCoinMul(this.rewardBuff);
       this.bossAlive = null;
       this.player.iframes = Math.max(this.player.iframes, 1.25);
       this.events.push({ type: 'bossDie', x: e.x, y: e.y, coins: def.coins });
@@ -1864,7 +1941,7 @@ export class Sim {
     d.active = true;
     d.x = x + this.rng.range(-6, 6);
     d.y = y;
-    d.value = String(value);
+    d.value = String(Number(value.toFixed(2)));
     d.life = 0.7;
     d.crit = crit;
   }
@@ -1985,28 +2062,61 @@ export class Sim {
     }
   }
 
-  /** Bottle Lobber's throw (after the visible wind-up). */
+  /** Molotov Lobber's throw (after the visible wind-up). Aimed at you. */
   private throwBottle(e: Enemy): void {
+    let airborne = 0;
+    for (const existing of this.bottles) {
+      if (existing.active && existing.kind === 'molotov') airborne++;
+    }
+    if (airborne >= 2) return;
     const b = this.alloc(this.bottles);
     if (!b) return;
     const p = this.player;
     b.active = true;
-    b.kind = 'bottle';
+    b.kind = 'molotov';
     b.x = e.x;
     b.y = e.y;
+    b.z = 0;
     const lead = 0.4;
     const tx = p.x + p.moveVx * lead;
     const ty = p.y + p.moveVy * lead;
     const dd = Math.hypot(tx - e.x, ty - e.y) || 1;
-    const flight = clamp(dd / 280, 0.55, 1.55);
+    const flight = Math.max(0.55, Math.min(1.15, dd / 560));
     b.vx = (tx - e.x) / flight;
     b.vy = (ty - e.y) / flight;
-    b.dmg = e.damage;
+    b.vz = 0.5 * LOB_GRAVITY * flight;
+    b.dmg = Math.max(3, (e.damage || 7) * 0.4);
     b.life = flight;
     b.maxLife = flight;
     b.targetX = tx;
     b.targetY = ty;
+    b.splashR = 54;
+    b.burn = 1.5;
+    b.dps = 5;
     b.reticleIdx = this.reticle(tx, ty, flight, -1, 'landing');
+  }
+
+  /** Landing: burn the player if they are in the splash, then leave a blaze. */
+  private igniteMolotov(b: Bottle): void {
+    const p = this.player;
+    const splash = Math.max(48, b.splashR || 88);
+    if (dist2(b.x, b.y, p.x, p.y) < (splash + 18) * (splash + 18)) {
+      this.hurtPlayer(b.dmg || 3);
+    }
+    this.burst(b.x, b.y, 16, '#ff8a1e');
+    this.ring(b.x, b.y, splash, '#ff8a1e');
+    this.events.push({ type: 'molotovIgnite', x: b.x, y: b.y });
+    const z = this.alloc(this.fireZones);
+    if (z) {
+      z.active = true;
+      z.x = b.x;
+      z.y = b.y;
+      z.r = splash * 0.8;
+      z.dps = b.dps || 12;
+      z.life = b.burn || 2.6;
+      z.maxLife = b.burn || 2.6;
+      z.tick = 0;
+    }
   }
 
   /** Shock Drone fires a fast, readable electric dart at a short player lead. */
@@ -2022,6 +2132,8 @@ export class Sim {
     b.kind = 'electric';
     b.x = e.x;
     b.y = e.y;
+    b.z = 0;
+    b.vz = 0;
     b.vx = ((tx - e.x) / d) * 460;
     b.vy = ((ty - e.y) / d) * 460;
     b.dmg = e.damage;
@@ -2051,6 +2163,8 @@ export class Sim {
       b.kind = 'scan';
       b.x = e.x;
       b.y = e.y;
+      b.z = 0;
+      b.vz = 0;
       b.vx = Math.cos(angle) * speed;
       b.vy = Math.sin(angle) * speed;
       b.dmg = e.damage;
@@ -2159,32 +2273,6 @@ export class Sim {
           : { kind: 'coins', id: 'coins', name: 'Signing Bonus', desc: '+25 coins, straight into the club account.', color: '#ffd23f', level: 0 },
       );
     }
-    const incompleteOwned = ownedAbilityIds
-      .filter((id) => (p.abilities[id] ?? 0) < ABILITIES[id].levels.length)
-      .sort((a, b) => (p.abilities[b] ?? 0) - (p.abilities[a] ?? 0));
-    const hasOwnedEvolution = picks.some((option) => option.kind === 'ability'
-      && (p.abilities[option.id as AbilityId] ?? 0) > 0);
-    if (!hasOwnedEvolution && incompleteOwned.length > 0) {
-      picks[0] = this.makeAbilityUpgradeOption(incompleteOwned[0]);
-    }
-    const needsRecovery = p.hp / Math.max(1, p.maxHp) < 0.55;
-    if (needsRecovery && !picks.some((option) => option.kind === 'heal')) {
-      picks[picks.length - 1] = this.makeHealUpgradeOption();
-    }
-    const defensiveIds: StatId[] = ['armor', 'maxhp', 'regen'];
-    const defensiveRanks = p.stats.armor + p.stats.maxhp + p.stats.regen;
-    const needsDefensiveChoice = this.time >= 180 && defensiveRanks < 12
-      && !picks.some((option) => option.kind === 'stat' && defensiveIds.includes(option.id as StatId));
-    if (needsDefensiveChoice) {
-      const defensiveId = p.stats.armor < 4 ? 'armor'
-        : p.stats.maxhp < 4 ? 'maxhp'
-          : p.stats.regen < 4 ? 'regen'
-            : defensiveIds.find((id) => p.stats[id] < STATS[id].max);
-      if (defensiveId) {
-        const targetIndex = needsRecovery ? Math.max(0, picks.length - 2) : picks.length - 1;
-        picks[targetIndex] = this.makeStatUpgradeOption(defensiveId);
-      }
-    }
     return picks;
   }
 
@@ -2240,14 +2328,54 @@ export class Sim {
       }
     } else if (opt.kind === 'heal') {
       p.hp = Math.min(p.maxHp, p.hp + 30);
+      p.healT = HEAL_FX_DURATION;
+      this.events.push({ type: 'heal' });
     } else {
-      this.coins += opt.name === 'Legend Bonus' ? 75 : 25;
+      this.coins += (opt.name === 'Legend Bonus' ? 75 : 25) * rewardCoinMul(this.rewardBuff);
     }
+  }
+
+  private startRewardBuff(): void {
+    if (this.rewardEventUsed) return;
+    if (this.rewardBuff && this.rewardBuff.t > 0) return;
+    this.rewardEventUsed = true;
+    this.rewardBuff = { kind: 'both', t: REWARD_EVENT_DURATION, label: REWARD_EVENT_LABEL };
+    this.events.push({ type: 'rewardBuff', label: this.rewardBuff.label });
+  }
+
+  private noteKillForRewards(): void {
+    this.killTimes.push(this.time);
+    const cut = this.time - STREAK_KILL_WINDOW;
+    this.killTimes = this.killTimes.filter((t) => t >= cut);
+  }
+
+  private tickRewardBuffs(dt: number): void {
+    if (this.debugHoldRewardEvent) {
+      const remaining = this.rewardBuff && this.rewardBuff.t > 0
+        ? this.rewardBuff.t - dt
+        : REWARD_EVENT_DURATION;
+      this.rewardBuff = {
+        kind: 'both',
+        t: remaining <= 0 ? REWARD_EVENT_DURATION : remaining,
+        label: REWARD_EVENT_LABEL,
+      };
+      return;
+    }
+    if (this.rewardBuff) {
+      this.rewardBuff.t -= dt;
+      if (this.rewardBuff.t <= 0) this.rewardBuff = null;
+    }
+    if (this.rewardEventUsed) return;
+    if (this.time < this.nextRandomBuffAt) return;
+    this.nextRandomBuffAt = this.time + REWARD_EVENT_INTERVAL;
+    if (this.time < REWARD_EVENT_MIN_TIME) return;
+    if (!this.rng.chance(REWARD_EVENT_CHANCE)) return;
+    this.startRewardBuff();
   }
 
   private gainXp(v: number): void {
     const p = this.player;
-    p.xp += v * this.xpMult;
+    p.xp += v * this.xpMult * rewardXpMul(this.rewardBuff);
     while (p.xp >= p.xpNext) {
       p.xp -= p.xpNext;
       p.level += 1;
@@ -2288,7 +2416,7 @@ export class Sim {
 
   /* ---------------- abilities ---------------- */
 
-  /* AERIAL lane: far-band targeting with damage reservation */
+  /* AERIAL lane: nearest-target strike with damage reservation */
 
   /** Damage already inbound on enemy `idx` from every aerial projectile. */
   private reservedDmg(idx: number): number {
@@ -2298,64 +2426,48 @@ export class Sim {
     return sum;
   }
 
-  /** Aerial lobs prefer threats outside this near band (they fly over closer mobs). */
-  static AERIAL_NEAR_BAND = 260;
   static AERIAL_MAX_RANGE = 900;
 
-  /** One targeting policy for both the preferred far band and its close-range
-   * fallback. Neither pass may select an enemy already projected to die from
-   * inbound damage. */
-  private pickEligibleAerialTarget(fromX: number, fromY: number, minRange: number): number {
-    const band2 = minRange * minRange;
-    const max2 = Sim.AERIAL_MAX_RANGE * Sim.AERIAL_MAX_RANGE;
-    let best = -1;
-    let bestScore = -Infinity;
-    for (let i = 0; i < this.enemies.length; i++) {
-      const e = this.enemies[i];
-      if (!e.active) continue;
-      const d2 = dist2(fromX, fromY, e.x, e.y);
-      if (d2 < band2 || d2 > max2) continue;
-      const reserved = this.reservedDmg(i);
-      if (reserved >= e.hp) continue; // projected dead: leave it
-      let score = 0;
-      if (['support', 'summoner', 'ranged', 'cone', 'flanker', 'aerial'].includes(e.def.behavior)) score += 400;
-      if (e.boss) score += 500;
-      else if (e.elite) score += 160;
-      // Regulation-time horde pressure remains unchanged. Once full time has
-      // actually elapsed, aerial attacks lock the living final boss so sudden
-      // death resolves as a focused duel instead of spending several extra
-      // minutes clearing ordinary targets that no longer respawn.
-      if (this.suddenDeath && e.boss === 'captain') score += 10_000;
-      score -= reserved * 7; // spread salvos before projected death
-      score -= Math.sqrt(d2) * 0.5;
-      if (score > bestScore) {
-        bestScore = score;
-        best = i;
-      }
-    }
-    return best;
-  }
-
   /**
-   * Picks the best far-band target for an aerial lob: ranged/support threats
-   * first, then bosses/elites, then the nearest of those. A close threat is a
-   * legal fallback only when no eligible far threat remains.
+   * Picks the natural strike target: the nearest living threat inside aerial
+   * range. Inbound balls already reserved on a target push the pick to the
+   * next-closest enemy so volleys fan out across the nearest members of a
+   * pack instead of overkilling one survivor.
    */
   pickAerialTarget(fromX: number, fromY: number): number {
-    let closeBoss = -1;
-    let closeBossDistance = Sim.AERIAL_NEAR_BAND * Sim.AERIAL_NEAR_BAND;
-    for (let index = 0; index < this.enemies.length; index++) {
-      const enemy = this.enemies[index];
-      if (!enemy.active || !enemy.boss || this.reservedDmg(index) >= enemy.hp) continue;
-      const distance = dist2(fromX, fromY, enemy.x, enemy.y);
-      if (distance <= closeBossDistance) {
-        closeBoss = index;
-        closeBossDistance = distance;
-      }
+    // Regulation-time pressure stays nearest-first. Once full time has
+    // actually elapsed, aerial attacks lock the living final boss so sudden
+    // death resolves as a focused duel instead of spending several extra
+    // minutes clearing ordinary targets that no longer respawn.
+    if (this.suddenDeath) {
+      const captain = this.enemies.findIndex((enemy) => enemy.active && enemy.boss === 'captain');
+      if (captain >= 0) return captain;
     }
-    if (closeBoss >= 0) return closeBoss;
-    const far = this.pickEligibleAerialTarget(fromX, fromY, Sim.AERIAL_NEAR_BAND);
-    return far >= 0 ? far : this.pickEligibleAerialTarget(fromX, fromY, 0);
+    return this.pickNearestAerialTarget(fromX, fromY);
+  }
+
+  /** Nearest living threat within aerial range, spread by damage reservation. */
+  private pickNearestAerialTarget(fromX: number, fromY: number): number {
+    const max2 = Sim.AERIAL_MAX_RANGE * Sim.AERIAL_MAX_RANGE;
+    let best = -1;
+    let bestD2 = Infinity;
+    for (let pass = 0; pass < 2; pass++) {
+      for (let i = 0; i < this.enemies.length; i++) {
+        const e = this.enemies[i];
+        if (!e.active) continue;
+        const d2 = dist2(fromX, fromY, e.x, e.y);
+        if (d2 > max2) continue;
+        const reserved = this.reservedDmg(i);
+        if (reserved >= e.hp) continue; // projected dead: leave it
+        if (pass === 0 && reserved > 0) continue; // prefer untouched targets
+        if (d2 < bestD2) {
+          best = i;
+          bestD2 = d2;
+        }
+      }
+      if (best >= 0) return best;
+    }
+    return best;
   }
 
   /** Starts the readable wind-up; the ball is created on the strip's contact frame. */
@@ -2977,6 +3089,7 @@ export class Sim {
     // Regulation time ends at 90'. Gameplay may continue in sudden death, but
     // result rewards and the HUD must not invent minutes beyond full time.
     this.time = Math.min(RUN_LENGTH, this.time + worldDt);
+    this.tickRewardBuffs(dt);
     for (let i = this.deferred.length - 1; i >= 0; i--) {
       this.deferred[i].t -= playerCombatDt;
       if (this.deferred[i].t <= 0) {
@@ -2991,12 +3104,17 @@ export class Sim {
     p.pivotT = Math.max(0, p.pivotT - dt);
     if (!this.debugHostileHold) p.hurtT = Math.max(0, p.hurtT - dt);
     p.heartFxT = Math.max(0, p.heartFxT - dt);
+    p.healT = Math.max(0, p.healT - dt);
     p.strikeCd -= playerCombatDt;
     p.curveballCd -= playerCombatDt;
     p.bootseekersCd -= playerCombatDt;
     p.whistleCd -= playerCombatDt;
     p.pressureCd -= playerCombatDt;
     p.blastCd -= playerCombatDt;
+    p.curveballRetry -= playerCombatDt;
+    p.bootseekersRetry -= playerCombatDt;
+    p.pressureRetry -= playerCombatDt;
+    p.blastRetry -= playerCombatDt;
     p.orbitBreakCd = Math.max(0, p.orbitBreakCd - playerCombatDt);
     p.keeperBlockCd = Math.max(0, p.keeperBlockCd - playerCombatDt);
     p.kickT = Math.max(0, p.kickT - playerCombatDt);
@@ -3229,22 +3347,24 @@ export class Sim {
       && p.dashRecoveryT <= 0
     ) {
       const lvl = this.abilityLevel('strike');
-      p.strikeCd = [0, 0.9, 0.9, 0.8, 0.8, 0.65][lvl];
-      if (this.nearestEnemy(p.x, p.y, Sim.AERIAL_MAX_RANGE) >= 0) this.fireStrike();
+      if (this.nearestEnemy(p.x, p.y, Sim.AERIAL_MAX_RANGE) >= 0) {
+        p.strikeCd = [0, 0.9, 0.9, 0.8, 0.8, 0.65][lvl];
+        this.fireStrike();
+      }
     }
-    if (p.curveballCd <= 0 && this.abilityLevel('curveball') > 0) {
+    if (p.curveballCd <= 0 && p.curveballRetry <= 0 && this.abilityLevel('curveball') > 0) {
       const lvl = this.abilityLevel('curveball');
       if (this.nearestEnemy(p.x, p.y, Sim.AERIAL_MAX_RANGE) >= 0) {
         p.curveballCd = [0, 3.4, 3.2, 3.0, 2.7, 2.35][lvl];
         this.fireCurveball();
-      } else p.curveballCd = 0.18;
+      } else p.curveballRetry = 0.18;
     }
-    if (p.bootseekersCd <= 0 && this.abilityLevel('bootseekers') > 0) {
+    if (p.bootseekersCd <= 0 && p.bootseekersRetry <= 0 && this.abilityLevel('bootseekers') > 0) {
       const lvl = this.abilityLevel('bootseekers');
       if (this.nearestEnemy(p.x, p.y, Sim.AERIAL_MAX_RANGE) >= 0) {
         p.bootseekersCd = [0, 4.5, 4.3, 4.0, 3.6, 3.1][lvl];
         this.fireBootSeekers();
-      } else p.bootseekersCd = 0.18;
+      } else p.bootseekersRetry = 0.18;
     }
     if (p.whistleCd <= 0 && this.abilityLevel('whistle') > 0) {
       const lvl = this.abilityLevel('whistle');
@@ -3252,7 +3372,7 @@ export class Sim {
       this.fireWhistle();
     }
     let pressureCastThisFrame = false;
-    if (p.pressureCd <= 0 && this.abilityLevel('pressure') > 0) {
+    if (p.pressureCd <= 0 && p.pressureRetry <= 0 && this.abilityLevel('pressure') > 0) {
       const lvl = this.abilityLevel('pressure');
       const triggerR = [0, 150, 170, 170, 205, 225][lvl] + 60;
       if (this.hasGroundThreat(p.x, p.y, triggerR)) {
@@ -3260,18 +3380,18 @@ export class Sim {
         this.firePressure();
         pressureCastThisFrame = true;
       } else {
-        p.pressureCd = 0.16;
+        p.pressureRetry = 0.16;
       }
     }
-    if (p.blastCd <= 0 && this.abilityLevel('blast') > 0) {
+    if (p.blastCd <= 0 && p.blastRetry <= 0 && this.abilityLevel('blast') > 0) {
       const lvl = this.abilityLevel('blast');
       if (pressureCastThisFrame) {
         // Keep the two large close-range reads distinct instead of stacking
         // their rings, hit flashes and sound on the same rendered frame.
-        p.blastCd = 0.22;
+        p.blastRetry = 0.22;
       } else if (this.fireBlast()) {
         p.blastCd = [0, 4.8, 4.8, 4.4, 3.8, 3.2][lvl];
-      } else p.blastCd = 0.16;
+      } else p.blastRetry = 0.16;
     }
     // orbit damage + press
     const orbitLvl = this.abilityLevel('orbit');
@@ -3345,7 +3465,7 @@ export class Sim {
       this.spawnBudget = Math.min(this.spawnBudget, 0.999);
     } else {
       if (this.time < RUN_LENGTH) {
-        if (this.time <= 3.5) {
+        if (this.time <= 2) {
           this.spawnBudget = 0;
         } else {
           this.spawnBudget = Math.min(
@@ -3618,19 +3738,66 @@ export class Sim {
       } else {
         // ---- locomotion + behavior specials ----
         const sp = e.speed * e.haste * slowMult;
-        // separation from neighbors
+        // pair spacing: a soft spring holds pack members a readable distance
+        // apart while a hard core prevents physical overlap. Horde identity
+        // comes from shared spawn anchors and a common chase point, so packs
+        // advance as a wide loose front instead of one tight ball. The soft
+        // push is capped below the chase speed so a crowded horde always
+        // keeps pressing instead of locking into a jammed clump.
         let sx = 0;
         let sy = 0;
-        const n = this.query(e.x, e.y, e.radius + 18, this.scratch);
+        let tx = 0;
+        let ty = 0;
+        const n = this.query(e.x, e.y, 175, this.scratch);
         for (let s = 0; s < n; s++) {
           const o = this.enemies[this.scratch[s]];
-          if (o === e || !o.active) continue;
+          if (o === e || !o.active || o.boss || o.def.behavior === 'aerial') continue;
           const od2 = dist2(e.x, e.y, o.x, o.y);
+          if (od2 <= 0.01) continue;
+          const od = Math.sqrt(od2);
           const min = e.radius + o.radius;
-          if (od2 < min * min && od2 > 0.01) {
-            const od = Math.sqrt(od2);
-            sx += ((e.x - o.x) / od) * (min - od) * 2.4;
-            sy += ((e.y - o.y) / od) * (min - od) * 2.4;
+          const ux = (e.x - o.x) / od;
+          const uy = (e.y - o.y) / od;
+          if (od < min) {
+            sx += ux * (min - od) * 2.4;
+            sy += uy * (min - od) * 2.4;
+          } else {
+            tx += ux * sp * 1.6 * (1 - od / 175);
+            ty += uy * sp * 1.6 * (1 - od / 175);
+          }
+        }
+        const tl = Math.hypot(tx, ty);
+        if (tl > sp * 0.7) {
+          tx *= (sp * 0.7) / tl;
+          ty *= (sp * 0.7) / tl;
+        }
+        sx += tx;
+        sy += ty;
+        // horde cohesion: a weak pull keeps stragglers attached to the local
+        // crowd so packs advance as one loose front while every member keeps
+        // pressing the player. The pull fades as the pack tightens and the
+        // pair spring above is what actually stops it from collapsing.
+        let hx = 0;
+        let hy = 0;
+        {
+          const hn = this.query(e.x, e.y, HORDE_COHESION_RADIUS, this.scratch);
+          let cn = 0;
+          let cx = 0;
+          let cy = 0;
+          for (let h = 0; h < hn; h++) {
+            const o = this.enemies[this.scratch[h]];
+            if (o === e || !o.active || o.boss || o.def.behavior === 'aerial') continue;
+            cx += o.x;
+            cy += o.y;
+            cn++;
+          }
+          if (cn > 0) {
+            const cdx = cx / cn - e.x;
+            const cdy = cy / cn - e.y;
+            const cd = Math.hypot(cdx, cdy) || 1;
+            const pull = 0.12 * Math.min(1, cd / HORDE_COHESION_RADIUS);
+            hx = (cdx / cd) * sp * pull;
+            hy = (cdy / cd) * sp * pull;
           }
         }
         const beh = e.def.behavior;
@@ -3640,8 +3807,8 @@ export class Sim {
         } else if (e.airT > 0) {
           // mid-leap: momentum carries the leap (no steering)
         } else if (beh === 'chase' || beh === 'wall' || beh === 'thumper' || beh === 'leaper') {
-          e.x += ((dx / d) * (sp - press) + sx) * dt;
-          e.y += ((dy / d) * (sp - press) + sy) * dt;
+          e.x += ((dx / d) * (sp - press) + sx + hx) * dt;
+          e.y += ((dy / d) * (sp - press) + sy + hy) * dt;
           if (beh === 'wall' && d < e.radius + 16) {
             // Banner Wall body-blocks: shove the player out of the wall
             p.x = e.x + (dx / d) * (e.radius + 16);
@@ -3670,8 +3837,8 @@ export class Sim {
             }
           }
         } else if (beh === 'support') {
-          e.x += ((dx / d) * (sp * 0.65 - press) + sx) * dt;
-          e.y += ((dy / d) * (sp * 0.65 - press) + sy) * dt;
+          e.x += ((dx / d) * (sp * 0.65 - press) + sx + hx) * dt;
+          e.y += ((dy / d) * (sp * 0.65 - press) + sy + hy) * dt;
         } else if (beh === 'ranged' || beh === 'cone' || beh === 'summoner') {
           // keep distance and pester
           const want = beh === 'ranged' ? 240 : beh === 'cone' ? 250 : 300;
@@ -3710,8 +3877,8 @@ export class Sim {
           }
         } else if (beh === 'charger') {
           // Bulls stalk just outside melee range, then lock a readable charge.
-          e.x += ((dx / d) * sp * 0.72 + sx) * dt;
-          e.y += ((dy / d) * sp * 0.72 + sy) * dt;
+          e.x += ((dx / d) * sp * 0.72 + sx + hx) * dt;
+          e.y += ((dy / d) * sp * 0.72 + sy + hy) * dt;
           e.rangedCd -= dt;
           if (e.rangedCd <= 0 && d > 120 && d < 620) {
             e.rangedCd = 4.6;
@@ -3896,20 +4063,29 @@ export class Sim {
       b.life -= dt;
       b.x += b.vx * dt;
       b.y += b.vy * dt;
-      if (b.life <= 0) {
+      if (b.kind === 'molotov') {
+        b.z += b.vz * dt;
+        b.vz -= LOB_GRAVITY * dt;
+        if (b.z > 0 && b.life > 0) continue;
+        b.z = 0;
+        b.life = 0;
+      }
+      if (b.life <= 0 || (b.kind === 'molotov' && b.z <= 0 && b.vz <= 0)) {
         b.active = false;
         if (b.reticleIdx >= 0) this.reticles[b.reticleIdx].active = false;
         if (b.kind === 'scan') {
           this.events.push({ type: 'scanImpact', x: b.x, y: b.y });
         } else if (b.kind === 'electric') {
           this.burst(b.x, b.y, 5, '#70e7ff');
+        } else if (b.kind === 'molotov') {
+          this.igniteMolotov(b);
         } else {
           this.spawnImpact(b.x, b.y, b.vx, b.vy, false, 'landing', false);
           this.burst(b.x, b.y, 5, '#c9e6cf');
         }
         continue;
       }
-      // guards body-block
+      // guards body-block (friendly fire never triggers it)
       let blocked = false;
       if (this.abilityLevel('guard') >= 4) {
         for (const g of this.guards) {
@@ -3965,7 +4141,9 @@ export class Sim {
       if (dist2(b.x, b.y, p.x, p.y) < 20 * 20) {
         b.active = false;
         if (b.reticleIdx >= 0) this.reticles[b.reticleIdx].active = false;
-        if (b.kind === 'scan') {
+        if (b.kind === 'molotov') {
+          this.igniteMolotov(b);
+        } else if (b.kind === 'scan') {
           this.hurtPlayer(b.dmg, 0, 0, 0.6);
           this.events.push({ type: 'scanImpact', x: p.x, y: p.y });
         } else if (b.kind === 'electric') {
@@ -3976,6 +4154,24 @@ export class Sim {
           this.hurtPlayer(b.dmg);
           this.spawnImpact(p.x, p.y, b.vx, b.vy, false, 'landing', false);
           this.burst(p.x, p.y, 5, '#c9e6cf');
+        }
+      }
+    }
+
+    /* fire zones */
+    for (const z of this.fireZones) {
+      if (!z.active) continue;
+      if (worldFrozen) continue;
+      z.life -= dt;
+      if (z.life <= 0) {
+        z.active = false;
+        continue;
+      }
+      z.tick -= dt;
+      if (z.tick <= 0) {
+        z.tick = 0.5;
+        if (dist2(p.x, p.y, z.x, z.y) < (z.r + 16) * (z.r + 16)) {
+          this.hurtPlayer(z.dps * 0.5);
         }
       }
     }
@@ -4351,6 +4547,17 @@ export class Sim {
         const pull = 84; // exactly 20% of the former 420 pickup pull
         pk.vx += ((p.x - pk.x) / d) * pull * dt * 4;
         pk.vy += ((p.y - pk.y) / d) * pull * dt * 4;
+      } else if (pk.kind === 'heal') {
+        // The sports drink is a deliberate ground decision: it pulls only
+        // within a much smaller radius and with far less force, so the
+        // player must come much closer to collect it.
+        const healRadius = Math.min(52, pr * 0.4);
+        if (d2 < healRadius * healRadius) {
+          const d = Math.sqrt(d2) || 1;
+          const pull = 110;
+          pk.vx += ((p.x - pk.x) / d) * pull * dt * 4;
+          pk.vy += ((p.y - pk.y) / d) * pull * dt * 4;
+        }
       } else if (!anchoredSpecial && d2 < pr * pr) {
         const d = Math.sqrt(d2) || 1;
         const pull = pk.kind === 'coin' || pk.kind === 'trophy' ? 500 : 420;
@@ -4378,15 +4585,16 @@ export class Sim {
           this.events.push({ type: 'xp' });
         } else if (pk.kind === 'heal') {
           p.hp = Math.min(p.maxHp, p.hp + pk.value);
-          this.events.push({ type: 'xp' });
-          this.burst(p.x, p.y, 10, '#37d67a');
+          p.healT = HEAL_FX_DURATION;
+          this.events.push({ type: 'heal' });
+          this.burst(p.x, p.y, 4, '#8fbf9a');
         } else if (pk.kind === 'trophy') {
-          this.coins += pk.value;
+          this.coins += pk.value * rewardCoinMul(this.rewardBuff);
           this.pendingBossAbilities += 2;
           this.events.push({ type: 'trophy', coins: pk.value, tier: pk.tier, abilityPicks: 2 });
           this.confetti(p.x, p.y, 28 + pk.tier * 8);
         } else if (pk.kind === 'coin') {
-          this.coins += pk.value;
+          this.coins += pk.value * rewardCoinMul(this.rewardBuff);
           this.events.push({ type: 'coin' });
         } else if (pk.kind === 'magnet') {
           this.activateMagnet();
@@ -4647,7 +4855,7 @@ export class Sim {
 
   /** Result summary for the end-of-run screen. */
   result(won: boolean): { time: number; kills: number; level: number; coins: number; bonus: number } {
-    const bonus = Math.round(this.kills * 0.15 + (this.time / 60) * 6 + (won ? 100 : 0));
+    const bonus = Math.round((this.kills * 0.15 + (this.time / 60) * 6 + (won ? 100 : 0)) * rewardScoreMul(this.rewardBuff));
     return { time: this.time, kills: this.kills, level: this.player.level, coins: this.coins, bonus };
   }
 

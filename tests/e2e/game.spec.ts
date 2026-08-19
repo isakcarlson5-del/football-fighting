@@ -252,10 +252,12 @@ test('movement review keeps every enemy skin and advances grounded gait by real 
 test('captain charge shows a stable 500ms lane before committed travel and braking', async ({ page }) => {
   const errors = await collectErrors(page);
   await page.goto('/?debug=1&stage=captain-charge&arena=world-cup-hybrid-25d');
+  // The 500ms windup window re-opens every 6.8s, so a slow page load under
+  // parallel load must be able to catch the next cycle.
   await expect.poll(() => page.evaluate(() => {
     const boss = window.__FF.getSim()!.enemies.find((enemy: { active: boolean; boss: string }) => enemy.active && enemy.boss === 'captain');
     return boss?.chargeWindupT ?? 0;
-  })).toBeGreaterThan(0);
+  }), { timeout: 20_000 }).toBeGreaterThan(0);
   const anticipated = await page.evaluate(() => {
     const boss = window.__FF.getSim()!.enemies.find((enemy: { active: boolean; boss: string }) => enemy.active && enemy.boss === 'captain')!;
     return { x: boss.x, windup: boss.chargeWindupT, laneLoaded: performance.getEntriesByType('resource').some((entry) => entry.name.endsWith('/art/vfx/bull-charge-lane-strip.png')) };

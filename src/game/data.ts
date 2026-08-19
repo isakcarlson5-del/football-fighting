@@ -31,7 +31,7 @@ export type AbilityId =
 /** Permanent base pace: responsive enough to thread late-game gaps while
  *  enemies retain pressure through density, charges and ranged attacks. */
 export const PLAYER_PACE_MULT = 1.6;
-export const ENEMY_PACE_MULT = 1.42;
+export const ENEMY_PACE_MULT = 1.55;
 export const FREEZE_DURATION = 4.0;
 
 /** Attack-lane semantics: every offensive ability plays differently by lane. */
@@ -49,7 +49,8 @@ export type AbilityRole =
   | 'defensive-timing'
   | 'aerial-denial'
   | 'zone-control'
-  | 'hybrid-break';
+  | 'hybrid-break'
+  | 'ground-fire';
 
 export const ABILITY_ROLE_LABELS: Record<AbilityRole, string> = {
   'directed-burst': 'Directed burst',
@@ -62,6 +63,7 @@ export const ABILITY_ROLE_LABELS: Record<AbilityRole, string> = {
   'aerial-denial': 'Aerial denial',
   'zone-control': 'Zone control',
   'hybrid-break': 'Hybrid break',
+  'ground-fire': 'Ground fire',
 };
 
 export interface AbilityLevel {
@@ -293,11 +295,11 @@ export const PLAYERS: PlayerDef[] = [
     startAbility: 'strike',
     trait: 'La Pulga',
     traitDesc: 'Precision Strike kicks +1 extra ball.',
-    skin: 0xf0c8a0,
+    skin: 0xeba980,
     hair: '#4a3222',
     hairStyle: 'short',
     beard: true,
-    kit: { shirt: '#9fd8f0', shorts: '#ffffff', socks: '#9fd8f0', trim: '#ffffff' },
+    kit: { shirt: '#2e86de', shorts: '#ffffff', socks: '#2e86de', trim: '#ffffff' },
   },
   {
     id: 'ronaldo',
@@ -396,68 +398,68 @@ export interface EnemyDef {
 
 export const ENEMIES: Record<Exclude<EnemyId, 'official' | 'captain' | 'drumboss'>, EnemyDef> = {
   invader: {
-    id: 'invader', name: 'Pitch Invader', hp: 20, speed: 55, damage: 7, xp: 2,
-    radius: 16, unlockAt: 0, weight: 100, coinChance: 0.22, behavior: 'chase', scale: 1,
+    id: 'invader', name: 'Pitch Invader', hp: 26, speed: 62, damage: 7, xp: 2,
+    radius: 15, unlockAt: 0, weight: 100, coinChance: 0.22, behavior: 'chase', scale: 0.88,
   },
   sprinter: {
-    id: 'sprinter', name: 'Scarf Sprinter', hp: 14, speed: 98, damage: 6, xp: 2,
-    radius: 14, unlockAt: 25, weight: 55, coinChance: 0.2, behavior: 'chase', scale: 0.92,
+    id: 'sprinter', name: 'Scarf Sprinter', hp: 16, speed: 106, damage: 6, xp: 2,
+    radius: 13, unlockAt: 25, weight: 55, coinChance: 0.2, behavior: 'chase', scale: 0.8,
   },
   lobber: {
-    id: 'lobber', name: 'Bottle Lobber', hp: 17, speed: 52, damage: 7, xp: 2,
-    radius: 15, unlockAt: 55, weight: 32, coinChance: 0.3, behavior: 'ranged', scale: 0.95,
+    id: 'lobber', name: 'Molotov Lobber', hp: 19, speed: 56, damage: 7, xp: 2,
+    radius: 14, unlockAt: 55, weight: 32, coinChance: 0.3, behavior: 'ranged', scale: 0.84,
   },
   flare: {
-    id: 'flare', name: 'Flare Runner', hp: 22, speed: 88, damage: 8, xp: 3,
-    radius: 15, unlockAt: 85, weight: 30, coinChance: 0.24, behavior: 'leaper', scale: 0.95,
+    id: 'flare', name: 'Flare Runner', hp: 24, speed: 96, damage: 8, xp: 3,
+    radius: 14, unlockAt: 85, weight: 30, coinChance: 0.24, behavior: 'leaper', scale: 0.84,
   },
   flag: {
-    id: 'flag', name: 'Flag Bearer', hp: 30, speed: 58, damage: 5, xp: 4,
-    radius: 16, unlockAt: 120, weight: 24, coinChance: 0.26, behavior: 'support', scale: 1.15,
+    id: 'flag', name: 'Flag Bearer', hp: 33, speed: 62, damage: 5, xp: 4,
+    radius: 15, unlockAt: 120, weight: 24, coinChance: 0.26, behavior: 'support', scale: 1.0,
   },
   foam: {
-    id: 'foam', name: 'Foam Finger Fan', hp: 55, speed: 44, damage: 13, xp: 3,
-    radius: 18, unlockAt: 155, weight: 30, coinChance: 0.3, behavior: 'chase', scale: 1.18, push: 260,
+    id: 'foam', name: 'Foam Finger Fan', hp: 58, speed: 48, damage: 13, xp: 3,
+    radius: 17, unlockAt: 155, weight: 30, coinChance: 0.3, behavior: 'chase', scale: 1.04, push: 260,
   },
   steward: {
-    id: 'steward', name: 'Rogue Steward', hp: 62, speed: 40, damage: 14, xp: 3,
-    radius: 19, unlockAt: 190, weight: 30, coinChance: 0.38, behavior: 'chase', scale: 1.15, push: 200,
+    id: 'steward', name: 'Rogue Steward', hp: 66, speed: 44, damage: 14, xp: 3,
+    radius: 18, unlockAt: 190, weight: 30, coinChance: 0.38, behavior: 'chase', scale: 1.0, push: 200,
   },
   drummer: {
-    id: 'drummer', name: 'Drumline Bruiser', hp: 85, speed: 36, damage: 16, xp: 5,
-    radius: 20, unlockAt: 225, weight: 22, coinChance: 0.34, behavior: 'thumper', scale: 1.25,
+    id: 'drummer', name: 'Drumline Bruiser', hp: 90, speed: 40, damage: 16, xp: 5,
+    radius: 19, unlockAt: 225, weight: 22, coinChance: 0.34, behavior: 'thumper', scale: 1.1,
   },
   vuvuzela: {
-    id: 'vuvuzela', name: 'Vuvuzela Blaster', hp: 40, speed: 50, damage: 9, xp: 4,
-    radius: 15, unlockAt: 270, weight: 24, coinChance: 0.3, behavior: 'cone', scale: 1.15,
+    id: 'vuvuzela', name: 'Vuvuzela Blaster', hp: 44, speed: 54, damage: 9, xp: 4,
+    radius: 14, unlockAt: 270, weight: 24, coinChance: 0.3, behavior: 'cone', scale: 1.0,
   },
   mascot: {
-    id: 'mascot', name: 'Rival Mascot', hp: 130, speed: 46, damage: 18, xp: 8,
-    radius: 24, unlockAt: 315, weight: 14, coinChance: 0.6, behavior: 'chase', scale: 1.45, push: 300,
+    id: 'mascot', name: 'Rival Mascot', hp: 140, speed: 52, damage: 18, xp: 8,
+    radius: 23, unlockAt: 315, weight: 14, coinChance: 0.6, behavior: 'chase', scale: 1.3, push: 300,
   },
   banner: {
-    id: 'banner', name: 'Banner Wall', hp: 220, speed: 26, damage: 10, xp: 9,
-    radius: 30, unlockAt: 360, weight: 12, coinChance: 0.5, behavior: 'wall', scale: 1.6,
+    id: 'banner', name: 'Banner Wall', hp: 240, speed: 28, damage: 10, xp: 9,
+    radius: 29, unlockAt: 360, weight: 12, coinChance: 0.5, behavior: 'wall', scale: 1.45,
   },
   paparazzo: {
-    id: 'paparazzo', name: 'Flash Paparazzo', hp: 34, speed: 92, damage: 8, xp: 5,
-    radius: 14, unlockAt: 405, weight: 20, coinChance: 0.3, behavior: 'flanker', scale: 0.9,
+    id: 'paparazzo', name: 'Flash Paparazzo', hp: 38, speed: 100, damage: 8, xp: 5,
+    radius: 13, unlockAt: 405, weight: 20, coinChance: 0.3, behavior: 'flanker', scale: 0.78,
   },
   chant: {
-    id: 'chant', name: 'Chant Leader', hp: 70, speed: 48, damage: 10, xp: 7,
-    radius: 17, unlockAt: 460, weight: 14, coinChance: 0.4, behavior: 'summoner', scale: 1.05,
+    id: 'chant', name: 'Chant Leader', hp: 76, speed: 52, damage: 10, xp: 7,
+    radius: 16, unlockAt: 460, weight: 14, coinChance: 0.4, behavior: 'summoner', scale: 0.92,
   },
   bull: {
-    id: 'bull', name: 'Terrace Bull', hp: 190, speed: 62, damage: 24, xp: 11,
-    radius: 28, unlockAt: 210, weight: 12, coinChance: 0.58, behavior: 'charger', scale: 1.48, push: 430,
+    id: 'bull', name: 'Terrace Bull', hp: 210, speed: 68, damage: 24, xp: 11,
+    radius: 27, unlockAt: 210, weight: 12, coinChance: 0.58, behavior: 'charger', scale: 1.32, push: 430,
   },
   drone: {
-    id: 'drone', name: 'Shock Drone', hp: 78, speed: 74, damage: 14, xp: 8,
-    radius: 20, unlockAt: 145, weight: 16, coinChance: 0.42, behavior: 'aerial', scale: 1.12,
+    id: 'drone', name: 'Shock Drone', hp: 86, speed: 80, damage: 14, xp: 8,
+    radius: 19, unlockAt: 145, weight: 16, coinChance: 0.42, behavior: 'aerial', scale: 1.0,
   },
   varcam: {
-    id: 'varcam', name: 'VAR Skycam', hp: 118, speed: 64, damage: 10, xp: 11,
-    radius: 22, unlockAt: 330, weight: 9, coinChance: 0.5, behavior: 'aerial', scale: 1.22,
+    id: 'varcam', name: 'VAR Skycam', hp: 130, speed: 70, damage: 10, xp: 11,
+    radius: 21, unlockAt: 330, weight: 9, coinChance: 0.5, behavior: 'aerial', scale: 1.08,
   },
 };
 
@@ -480,16 +482,16 @@ export interface BossDef {
 
 export const BOSSES: Record<BossId, BossDef> = {
   drumboss: {
-    id: 'drumboss', tier: 'minor', name: 'The Riot Drummer', title: 'MINOR BOSS · 4:00', hp: 2200, speed: 57,
-    damage: 26, xp: 80, radius: 38, coins: 120, scale: 2.08,
+    id: 'drumboss', tier: 'minor', name: 'The Riot Drummer', title: 'MINOR BOSS · 4:00', hp: 4300, speed: 60,
+    damage: 46, xp: 80, radius: 38, coins: 120, scale: 2.08,
   },
   official: {
-    id: 'official', tier: 'major', name: 'The Crooked Official', title: 'MINIBOSS · 7:00', hp: 4800, speed: 64,
-    damage: 31, xp: 135, radius: 48, coins: 220, scale: 2.5,
+    id: 'official', tier: 'major', name: 'The Crooked Official', title: 'MINIBOSS · 7:00', hp: 9200, speed: 68,
+    damage: 58, xp: 135, radius: 48, coins: 220, scale: 2.5,
   },
   captain: {
-    id: 'captain', tier: 'major', name: 'The Ultra Captain', title: 'MAJOR BOSS · 9:00', hp: 6200, speed: 72,
-    damage: 40, xp: 240, radius: 58, coins: 420, scale: 3,
+    id: 'captain', tier: 'major', name: 'The Ultra Captain', title: 'MAJOR BOSS · 9:00', hp: 12400, speed: 77,
+    damage: 76, xp: 240, radius: 58, coins: 420, scale: 3,
   },
 };
 
@@ -511,27 +513,27 @@ export interface CurvePoint {
  *  are exact, including the inferred 30/s full-time value. Entity pools and
  *  per-step budgets remain the safety valve rather than flattening the curve. */
 export const SPAWN_RATE_POINTS: readonly CurvePoint[] = [
-  { second: 0, value: 0.6 },
-  { second: 120, value: 1.9 },
-  { second: 300, value: 6.5 },
-  { second: 450, value: 14 },
-  { second: 600, value: 30 },
+  { second: 0, value: 0.8 },
+  { second: 120, value: 1.92 },
+  { second: 300, value: 5.2 },
+  { second: 450, value: 11.2 },
+  { second: 600, value: 24 },
 ];
 
 export const HP_SCALE_POINTS: readonly CurvePoint[] = [
-  { second: 0, value: 0.82 },
-  { second: 120, value: 0.95 },
+  { second: 0, value: 1.5 },
+  { second: 120, value: 1.8 },
   { second: 300, value: 3.2 },
   { second: 450, value: 5.8 },
   { second: 600, value: 9.2 },
 ];
 
 export const DAMAGE_SCALE_POINTS: readonly CurvePoint[] = [
-  { second: 0, value: 0.76 },
-  { second: 120, value: 0.9 },
-  { second: 300, value: 1.25 },
-  { second: 450, value: 1.7 },
-  { second: 600, value: 2.3 },
+  { second: 0, value: 0.9 },
+  { second: 120, value: 1.05 },
+  { second: 300, value: 1.42 },
+  { second: 450, value: 1.95 },
+  { second: 600, value: 2.62 },
 ];
 
 export const SPEED_SCALE_POINTS: readonly CurvePoint[] = [
