@@ -23,6 +23,8 @@ const RELEASE_EXCLUDED_DIRECTORIES = [
   // but do not ship two complete 384-frame sets in the portal payload.
   'art/players/directional-v2',
   'art/players/directional-v3',
+  // Crazy Games listing art — not loaded by the game.
+  'art/store',
 ] as const;
 
 async function directoryBytes(path: string): Promise<number> {
