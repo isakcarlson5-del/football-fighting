@@ -288,13 +288,15 @@ input:focus-visible,
 .leaderboard-panel {
   position: absolute;
   z-index: 2;
-  right: 22px;
-  bottom: 58px;
-  width: min(318px, 30vw);
-  padding: 16px;
-  border-color: rgba(255, 210, 63, 0.5);
-  background: rgba(11, 16, 32, 0.9);
-  backdrop-filter: blur(10px);
+  right: 18px;
+  bottom: 52px;
+  width: min(380px, 34vw);
+  max-height: min(62vh, 560px);
+  padding: 18px 18px 16px;
+  border-color: rgba(255, 210, 63, 0.38);
+  background: rgba(11, 16, 32, 0.82);
+  backdrop-filter: blur(14px);
+  overflow: hidden;
 }
 .leaderboard-head {
   display: flex;
@@ -361,7 +363,10 @@ input:focus-visible,
 }
 .leaderboard-list {
   display: grid;
-  gap: 5px;
+  gap: 6px;
+  max-height: min(42vh, 380px);
+  overflow-y: auto;
+  padding-right: 4px;
 }
 .leaderboard-row {
   display: grid;
@@ -602,6 +607,18 @@ input:focus-visible,
   box-shadow: 0 0 0 3px var(--gold), var(--shadow);
   transform: translateY(-4px);
 }
+.char-card.locked {
+  opacity: 0.78;
+}
+.char-card .signing {
+  font-size: 11px;
+  line-height: 1.35;
+  color: rgba(245, 241, 230, 0.72);
+  text-align: center;
+}
+.char-card .char-sign {
+  width: 100%;
+}
 .char-card .portrait {
   width: 128px;
   height: 128px;
@@ -775,8 +792,8 @@ input:focus-visible,
   background: rgba(10, 13, 24, 0.82);
   border: 3px solid #2e3a5c;
   border-radius: 14px;
-  padding: 4px 20px;
-  min-width: 108px;
+  padding: 6px 26px;
+  min-width: 168px;
   text-align: center;
   display: flex;
   flex-direction: column;

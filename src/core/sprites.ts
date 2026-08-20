@@ -244,8 +244,8 @@ function punchWhiteGapsInFrame(
   x0: number,
   frameWidth: number,
 ): void {
-  const y0 = Math.floor(height * 0.32);
-  const y1 = Math.floor(height * 0.72);
+  const y0 = Math.floor(height * 0.18);
+  const y1 = Math.floor(height * 0.92);
   const at = (x: number, y: number) => (y * stride + x0 + x) * 4;
   const seen = new Uint8Array(frameWidth * height);
   const stack: number[] = [];
@@ -288,8 +288,8 @@ function punchWhiteGapsInFrame(
       const compH = maxY - minY + 1;
       const compW = maxX - minX + 1;
       const count = cells.length / 2;
-      if (!touchesSkin || count > 200) continue;
-      if (compH > 26 || compW > 24) continue;
+      if (!touchesSkin || count > 900) continue;
+      if (compH > 48 || compW > 42) continue;
       let fillR = 210;
       let fillG = 150;
       let fillB = 100;

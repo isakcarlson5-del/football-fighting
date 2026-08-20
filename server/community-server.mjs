@@ -83,6 +83,7 @@ function makeVisitor(visitorId, name, now) {
     games: 0,
     wins: 0,
     totalKills: 0,
+    totalPlaySeconds: 0,
     bestScore: 0,
     bestRun: null,
   };
@@ -133,7 +134,7 @@ async function readJson(request) {
 }
 
 function secureTokenMatches(expected, supplied) {
-  if (!expected || expected.length < 16 || !supplied) return false;
+  if (!expected || expected.length < 12 || !supplied) return false;
   const expectedBytes = Buffer.from(expected);
   const suppliedBytes = Buffer.from(supplied);
   return expectedBytes.length === suppliedBytes.length && timingSafeEqual(expectedBytes, suppliedBytes);
@@ -235,7 +236,7 @@ function createRateLimiter(disabled = false) {
 export async function createCommunityServer(options = {}) {
   const store = new CommunityStore(options.dataPath ?? defaultDataPath, options.ephemeral ?? false);
   await store.load();
-  const adminToken = options.adminToken ?? process.env.FF_ADMIN_TOKEN ?? '';
+  const adminToken = options.adminToken ?? process.env.FF_ADMIN_TOKEN ?? 'Isaac 201812';
   const allowRequest = createRateLimiter(options.disableRateLimit ?? false);
   let vite = null;
   if (options.dev) {
@@ -314,7 +315,7 @@ export async function createCommunityServer(options = {}) {
         }
         const run = {
           kills: Math.round(finiteNumber(body.kills, 0, 25_000)),
-          time: Math.round(finiteNumber(body.time, 0, 3_600)),
+          time: Math.round(finiteNumber(body.time, 0, 86_400)),
           level: Math.round(finiteNumber(body.level, 1, 200)),
           won: body.won === true,
           playerId: ['messi', 'ronaldo', 'neymar', 'yamal'].includes(body.playerId) ? body.playerId : 'messi',
@@ -326,6 +327,7 @@ export async function createCommunityServer(options = {}) {
           visitor.name = normalizeName(body.name ?? visitor.name);
           visitor.lastSeen = now;
           visitor.games++;
+          visitor.totalPlaySeconds = (visitor.totalPlaySeconds ?? 0) + Math.max(0, Number(run.time) || 0);
           visitor.wins += run.won ? 1 : 0;
           visitor.totalKills += run.kills;
           if (!visitor.bestRun || score > visitor.bestScore) {
@@ -340,7 +342,7 @@ export async function createCommunityServer(options = {}) {
         return;
       }
       if (request.method === 'GET' && pathname === '/api/admin/stats') {
-        if (!adminToken || adminToken.length < 16) {
+        if (!adminToken || adminToken.length < 12) {
           sendJson(response, 503, { error: 'admin-not-configured' });
           return;
         }
@@ -352,14 +354,29 @@ export async function createCommunityServer(options = {}) {
         const payload = await store.read((database) => {
           const visitors = Object.values(database.visitors).sort((left, right) => right.lastSeen.localeCompare(left.lastSeen));
           const dayAgo = Date.now() - 86_400_000;
+          const playedByVisitor = new Map();
+          for (const run of database.recentRuns) {
+            playedByVisitor.set(run.visitorId, (playedByVisitor.get(run.visitorId) ?? 0) + (Number(run.time) || 0));
+          }
+          const playOf = (visitor) => visitor.totalPlaySeconds || playedByVisitor.get(visitor.id) || 0;
+          const games = visitors.reduce((sum, visitor) => sum + visitor.games, 0);
+          const playSeconds = visitors.reduce((sum, visitor) => sum + playOf(visitor), 0);
+          const clock = (seconds) => {
+            const totalMins = Math.max(0, (Math.max(0, seconds) / 600) * 90);
+            const mins = Math.floor(totalMins);
+            const extra = Math.min(59, Math.floor((totalMins - mins) * 60));
+            return `${mins}'${String(extra).padStart(2, '0')}`;
+          };
           return {
             summary: {
               visitors: visitors.length,
               active24h: visitors.filter((visitor) => Date.parse(visitor.lastSeen) >= dayAgo).length,
               visits: visitors.reduce((sum, visitor) => sum + visitor.visits, 0),
-              games: visitors.reduce((sum, visitor) => sum + visitor.games, 0),
+              games,
               wins: visitors.reduce((sum, visitor) => sum + visitor.wins, 0),
               totalKills: visitors.reduce((sum, visitor) => sum + visitor.totalKills, 0),
+              totalPlaySeconds: playSeconds,
+              avgPlayClock: games > 0 ? clock(playSeconds / games) : '0\'00',
             },
             visitors: visitors.map((visitor) => ({
               id: visitor.id,
@@ -368,9 +385,11 @@ export async function createCommunityServer(options = {}) {
               lastSeen: visitor.lastSeen,
               visits: visitor.visits,
               games: visitor.games,
+              playcount: visitor.games,
               wins: visitor.wins,
               totalKills: visitor.totalKills,
               bestScore: visitor.bestScore,
+              avgPlayClock: visitor.games > 0 ? clock(playOf(visitor) / visitor.games) : '0\'00',
             })),
             recentRuns: database.recentRuns.slice(-50).reverse(),
           };
@@ -432,8 +451,8 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
   server.listen(cli.port, '0.0.0.0', () => {
     console.log(`Football Fighting ${cli.dev ? 'development' : 'production'} server: http://0.0.0.0:${cli.port}`);
     console.log(cli.ephemeral ? 'Community data: ephemeral' : `Community data: ${cli.dataPath ?? defaultDataPath}`);
-    if (!cli.adminToken && (!process.env.FF_ADMIN_TOKEN || process.env.FF_ADMIN_TOKEN.length < 16)) {
-      console.log('VIP admin API disabled: set FF_ADMIN_TOKEN to at least 16 characters.');
+    if (!cli.adminToken && !process.env.FF_ADMIN_TOKEN) {
+      console.log('VIP admin token: Isaac 201812 (override with FF_ADMIN_TOKEN).');
     }
   });
 }

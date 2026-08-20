@@ -4,15 +4,17 @@
  */
 
 import { blurHudKeyboardFocus } from '../core/input';
-import { clamp, matchClock } from '../core/math';
+import { clamp, matchClock, matchClockPrecise } from '../core/math';
 import { abilityIcon, ABILITY_GLYPHS } from '../core/sprites';
 import {
   ABILITIES,
   ABILITY_ROLE_LABELS,
   BOSSES,
   META_TRACKS,
+  PLAYER_SELECT_ORDER,
   PLAYERS,
   SKINS,
+  STARTER_PLAYER_ID,
   metaCost,
   type AbilityId,
   type BossId,
@@ -50,6 +52,7 @@ export interface UiHooks {
   onUpgradePicked(opt: UpgradeOption): void;
   onBuyTrack(id: MetaTrackId): void;
   onBuySkin(id: string): void;
+  onBuyPlayer(id: string): void;
   onEquipSkin(playerId: string, skinId: string | null): void;
   onToggleMute(): void;
   onToggleReducedVfx(): void;
@@ -139,7 +142,7 @@ export class UI {
    *  from clobbering a just-restored control (mute toggle, purchase ring,
    *  skin equip). Consumed by the next bindMenuNav call. */
   private skipNextAutofocus = false;
-  selectedPlayer = PLAYERS[0].id;
+  selectedPlayer = STARTER_PLAYER_ID;
 
   constructor(root: HTMLElement, hooks: UiHooks, save: Save) {
     this.root = root;
@@ -426,7 +429,7 @@ export class UI {
         <span class="coin-chip"><span class="dot"></span>${this.save.data.coins}</span>
         <button class="btn small secondary" data-act="mute">${this.save.data.muted ? 'Unmute' : 'Mute'}</button>
       </div>
-      <div class="best-stats">BEST: ${matchClock(s.bestTime)} survived &nbsp;·&nbsp; ${s.totalKills} career KOs &nbsp;·&nbsp; ${s.wins} full-time wins</div>
+      <div class="best-stats">BEST: ${matchClockPrecise(s.bestTime)} survived &nbsp;·&nbsp; ${s.totalKills} career KOs &nbsp;·&nbsp; ${s.runs} matches</div>
       <section class="leaderboard-panel panel" aria-labelledby="leaderboard-title">
         <div class="leaderboard-head">
           <div><span class="leaderboard-kicker">Online table</span><h2 id="leaderboard-title">Leaderboard</h2></div>
@@ -493,7 +496,7 @@ export class UI {
       const name = document.createElement('b');
       name.textContent = entry.name;
       const run = document.createElement('small');
-      run.textContent = `${entry.kills} KOs · ${matchClock(entry.time)} · Lv${entry.level}${entry.won ? ' · FT' : ''}`;
+      run.textContent = `${entry.kills} KOs · ${matchClockPrecise(entry.time)} · Lv${entry.level}`;
       identity.append(name, run);
       const score = document.createElement('strong');
       score.textContent = entry.score.toLocaleString();
@@ -512,7 +515,7 @@ export class UI {
       <div class="vip-shell panel">
         <div class="vip-head"><div><span>Private operations</span><h1 id="vip-title">VIP Admin</h1></div><button type="button" data-act="vip-close" aria-label="Close VIP admin">×</button></div>
         <form class="vip-login">
-          <label>Admin token<input type="password" autocomplete="current-password" minlength="16" required></label>
+          <label>Admin token<input type="password" autocomplete="current-password" minlength="12" required></label>
           <button type="submit" class="btn small">Unlock stats</button>
         </form>
         <div class="vip-status" role="status">Visitor identities are anonymous. Raw IP addresses are not stored.</div>
@@ -559,10 +562,10 @@ export class UI {
     const metrics = document.createElement('div');
     metrics.className = 'vip-metrics';
     for (const [label, value] of [
+      ['Playcount', data.summary.games],
       ['Visitors', data.summary.visitors],
       ['Visits', data.summary.visits],
-      ['Games', data.summary.games],
-      ['Wins', data.summary.wins],
+      ['Avg match', data.summary.avgPlayClock ?? '—'],
       ['KOs', data.summary.totalKills],
     ] as const) {
       const metric = document.createElement('div');
@@ -588,7 +591,7 @@ export class UI {
       identity.append(name, id);
       const counts = document.createElement('span');
       counts.className = 'vip-visitor-counts';
-      counts.textContent = `${visitor.visits} visits · ${visitor.games} games · ${visitor.wins} wins · ${visitor.totalKills} KOs · best ${visitor.bestScore.toLocaleString()}`;
+      counts.textContent = `${visitor.playcount ?? visitor.games} plays · avg ${visitor.avgPlayClock ?? '—'} · ${visitor.visits} visits · ${visitor.totalKills} KOs · best ${visitor.bestScore.toLocaleString()}`;
       row.append(identity, counts);
       visitors.appendChild(row);
     }
@@ -629,19 +632,17 @@ export class UI {
       });
       return;
     }
-    const cards = PLAYERS.map((p) => {
-      const equipped = this.save.equippedSkin(p.id);
+    const roster = PLAYER_SELECT_ORDER
+      .map((id) => PLAYERS.find((player) => player.id === id))
+      .filter((player): player is (typeof PLAYERS)[number] => !!player);
+    const cards = roster.map((p) => {
+      const owned = this.save.ownsPlayer(p.id);
       const maxSpeed = 130;
       const maxHp = 130;
       const sel = p.id === this.selectedPlayer ? 'selected' : '';
-      const skinSwatches = SKINS.filter((s) => s.player === p.id && this.save.ownsSkin(s.id))
-        .map(
-          (s) =>
-            `<button type="button" role="radio" aria-checked="${s.id === equipped}" aria-label="${s.name}" class="skin-swatch ${s.id === equipped ? 'selected' : ''}" data-skin="${s.id}" data-player="${p.id}" title="${s.name}" style="background:${s.kit.shirt}"></button>`,
-        )
-        .join('');
+      const lock = owned ? '' : ' locked';
       return `
-      <div class="char-card ${sel}" data-player="${p.id}" role="radio" aria-checked="${p.id === this.selectedPlayer}" aria-label="Select ${p.name}" tabindex="${p.id === this.selectedPlayer ? '0' : '-1'}">
+      <div class="char-card ${sel}${lock}" data-player="${p.id}" role="radio" aria-checked="${p.id === this.selectedPlayer}" aria-label="${owned ? `Select ${p.name}` : `Sign ${p.name}`}" tabindex="${p.id === this.selectedPlayer ? '0' : '-1'}">
         <div class="portrait run-preview" role="img" aria-label="${p.name} running east">
           <span class="runner-sprite" style="--run-strip:url('${documentAssetUrl(`art/players/directional-v4/${p.id}/e.webp`)}')"></span>
         </div>
@@ -654,10 +655,10 @@ export class UI {
         </div>
         <div class="trait"><b style="color:${ABILITIES[p.startAbility].color}">${p.trait}:</b> ${p.traitDesc}</div>
         <div class="starts-with"><img src="${iconUrl(p.startAbility)}" alt=""><span>Starts with ${ABILITIES[p.startAbility].name}<small>${ABILITY_ROLE_LABELS[ABILITIES[p.startAbility].role]} · ${ABILITIES[p.startAbility].lane.toUpperCase()} · ${ABILITIES[p.startAbility].rangeBand.toUpperCase()} · ${abilityCadenceLabel(p.startAbility, 1)}</small></span></div>
-        <div class="skin-row" role="radiogroup" aria-label="${p.name} kits">
-          <button type="button" role="radio" aria-checked="${!equipped}" aria-label="Default kit" class="skin-swatch ${!equipped ? 'selected' : ''}" data-skin="" data-player="${p.id}" title="Default kit" style="background:${p.kit.shirt};border-style:${!equipped ? 'solid' : 'dashed'}"></button>
-          ${skinSwatches}
-        </div>
+        <div class="signing">${p.signingBonus}</div>
+        ${owned
+          ? ''
+          : `<button type="button" class="btn small char-sign" data-buy-player="${p.id}" ${this.save.data.coins < p.cost ? 'disabled' : ''}>Sign for ${p.cost} coins</button>`}
       </div>`;
     }).join('');
     el.innerHTML = `
@@ -669,7 +670,9 @@ export class UI {
       </div>
     `;
     const selectCard = (card: Element, restoreFocus: boolean) => {
-      this.selectedPlayer = (card as HTMLElement).dataset.player!;
+      const id = (card as HTMLElement).dataset.player!;
+      if (!this.save.ownsPlayer(id)) return;
+      this.selectedPlayer = id;
       el.querySelectorAll<HTMLElement>('.char-card').forEach((candidate) => {
         const selected = candidate === card;
         candidate.classList.toggle('selected', selected);
@@ -681,23 +684,21 @@ export class UI {
     el.querySelectorAll('.char-card').forEach((card) => {
       card.addEventListener('click', (ev) => {
         const target = ev.target as HTMLElement;
-        if (target.classList.contains('skin-swatch')) return;
+        if (target.closest('[data-buy-player]')) return;
         selectCard(card, true);
       });
     });
-    el.querySelectorAll('.skin-swatch').forEach((sw) => {
-      sw.addEventListener('click', (ev) => {
-        ev.stopPropagation();
-        const t = sw as HTMLElement;
-        const pid = t.dataset.player!;
-        const sid = t.dataset.skin || null;
-        this.focusAfterRender = `data-skin="${t.dataset.skin ?? ''}" data-player="${pid}"`;
-        this.hooks.onEquipSkin(pid, sid);
-        this.showSelect();
+    el.querySelectorAll('[data-buy-player]').forEach((button) => {
+      button.addEventListener('click', (event) => {
+        event.stopPropagation();
+        this.hooks.onBuyPlayer((button as HTMLElement).dataset.buyPlayer!);
       });
     });
     el.querySelector('[data-act="back"]')!.addEventListener('click', () => this.hooks.onQuitToMenu());
-    el.querySelector('[data-act="start"]')!.addEventListener('click', () => this.hooks.onPlay(this.selectedPlayer));
+    el.querySelector('[data-act="start"]')!.addEventListener('click', () => {
+      if (!this.save.ownsPlayer(this.selectedPlayer)) this.selectedPlayer = STARTER_PLAYER_ID;
+      this.hooks.onPlay(this.selectedPlayer);
+    });
     this.root.appendChild(el);
     this.restoreFocusAfterRender(['data-skin'], false);
     this.bindMenuNav(el, true);
@@ -1220,6 +1221,7 @@ export class UI {
   /* ---------------- club (shop + skins) ---------------- */
 
   showClub(tab: 'upgrades' | 'skins'): void {
+    tab = 'upgrades';
     this.clear();
     const el = document.createElement('div');
     el.className = 'screen';
@@ -1228,8 +1230,7 @@ export class UI {
       <h1 class="screen-title">The Club</h1>
       <div class="coin-chip"><span class="dot"></span>${this.save.data.coins}</div>
       <div class="shop-tabs" role="tablist" aria-label="Club sections">
-        <button id="club-tab-upgrades" role="tab" aria-controls="club-panel" aria-selected="${tab === 'upgrades'}" class="btn small ${tab === 'upgrades' ? 'active' : 'secondary'}" data-tab="upgrades">Training Ground</button>
-        <button id="club-tab-skins" role="tab" aria-controls="club-panel" aria-selected="${tab === 'skins'}" class="btn small ${tab === 'skins' ? 'active' : 'secondary'}" data-tab="skins">Kit Room</button>
+        <button id="club-tab-upgrades" role="tab" aria-controls="club-panel" aria-selected="true" class="btn small active" data-tab="upgrades">Training Ground</button>
       </div>
     `;
     let body = '';

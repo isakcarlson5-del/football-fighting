@@ -34,8 +34,8 @@ import {
 } from './data';
 import type { Save } from './meta';
 
-export const ARENA_W = 2600;
-export const ARENA_H = 1416; // tuned playfield height; the renderer maps the arena plate's grass rect onto this exactly
+export const ARENA_W = 2808;
+export const ARENA_H = 1700; // ~30% more grass to run on; extra depth on the long sides. Texture resolution is unchanged.
 
 /** Ordinary director ingress is reduced while a boss owns the encounter.
  * Boss-authored summons remain untouched, so each fight keeps its identity
@@ -1136,8 +1136,8 @@ export class Sim {
     this.player = {
       x: ARENA_W / 2,
       y: ARENA_H / 2,
-      hp: def.maxHp,
-      maxHp: def.maxHp,
+      hp: def.maxHp + mb.maxHp,
+      maxHp: def.maxHp + mb.maxHp,
       level: 1,
       xp: 0,
       xpNext: xpForLevel(1),
@@ -3112,9 +3112,9 @@ export class Sim {
     if (!this.debugBossIntroHold) this.bossIntroT = Math.max(0, this.bossIntroT - dt);
     this.magnetT = Math.max(0, this.magnetT - dt);
     const worldDt = worldFrozen ? 0 : dt;
-    // Regulation time ends at 90'. Gameplay may continue in sudden death, but
-    // result rewards and the HUD must not invent minutes beyond full time.
-    this.time = Math.min(RUN_LENGTH, this.time + worldDt);
+    // The clock never stops the match. After 90' difficulty keeps using the
+    // existing endless ramp; only a knockout ends the run.
+    this.time += worldDt;
     this.tickRewardBuffs(dt);
     for (let i = this.deferred.length - 1; i >= 0; i--) {
       this.deferred[i].t -= playerCombatDt;
@@ -4633,20 +4633,7 @@ export class Sim {
     }
 
     this.updateFx(dt);
-
-    /* victory */
-    this.suddenDeath = this.time >= RUN_LENGTH && !this.bossFinaleResolved;
-    if (
-      this.time >= RUN_LENGTH
-      && this.bossFinaleResolved
-      && this.pendingBossAbilities === 0
-      && this.over === 'playing'
-    ) {
-      this.over = 'won';
-      this.suddenDeath = false;
-      this.confetti(p.x, p.y, 80);
-      this.events.push({ type: 'victory' });
-    }
+    this.suddenDeath = false;
   }
 
   /** Shared boss melee: wind-up swing when the player is in reach. */

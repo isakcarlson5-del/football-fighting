@@ -16,6 +16,9 @@ export interface PlayerDef {
   startAbility: AbilityId;
   trait: string;
   traitDesc: string;
+  /** 0 = starter. Messi and Ronaldo share the top fee. */
+  cost: number;
+  signingBonus: string;
   /** Visual identity */
   skin: number; // skin tone
   hair: string; // hair color
@@ -23,6 +26,9 @@ export interface PlayerDef {
   beard: boolean;
   kit: { shirt: string; shorts: string; socks: string; trim: string };
 }
+
+export const STARTER_PLAYER_ID = 'yamal';
+export const PLAYER_SELECT_ORDER = ['yamal', 'neymar', 'messi', 'ronaldo'] as const;
 
 export type AbilityId =
   | 'strike' | 'curveball' | 'bootseekers'
@@ -295,6 +301,8 @@ export const PLAYERS: PlayerDef[] = [
     startAbility: 'strike',
     trait: 'La Pulga',
     traitDesc: 'Precision Strike kicks +1 extra ball.',
+    cost: 800,
+    signingBonus: 'Club signing: +8% shot power on every player.',
     skin: 0xeba980,
     hair: '#4a3222',
     hairStyle: 'short',
@@ -312,6 +320,8 @@ export const PLAYERS: PlayerDef[] = [
     startAbility: 'whistle',
     trait: 'Siuuu',
     traitDesc: 'Captain\u2019s Whistle has +25% radius. Hits like a truck.',
+    cost: 800,
+    signingBonus: 'Club signing: +12 max HP on every player.',
     skin: 0xd9a066,
     hair: '#1e1a16',
     hairStyle: 'slick',
@@ -329,6 +339,8 @@ export const PLAYERS: PlayerDef[] = [
     startAbility: 'dash',
     trait: 'Joga Bonito',
     traitDesc: 'Nutmeg Dash recharges 25% faster. Electric pace.',
+    cost: 350,
+    signingBonus: 'Club signing: +5% pace on every player.',
     skin: 0xc68863,
     hair: '#242021',
     hairStyle: 'fade',
@@ -346,6 +358,8 @@ export const PLAYERS: PlayerDef[] = [
     startAbility: 'orbit',
     trait: 'Golden Boy',
     traitDesc: 'Orbiting Press starts with +1 ball. +20% XP gain.',
+    cost: 0,
+    signingBonus: 'Starter. Free to take onto the pitch.',
     skin: 0xa06b42,
     hair: '#16120f',
     hairStyle: 'curl',
@@ -576,23 +590,28 @@ export function powerPressure(abilityRanks: number, statRanks: number): number {
 /** Convex run progress keeps the opening readable, then steepens once a build
  *  has enough upgrades to clear dense groups. */
 export function difficultyProgress(t: number): number {
-  const u = Math.max(0, Math.min(1, t / RUN_LENGTH));
-  return 0.18 * u + 0.82 * Math.pow(u, 2.25);
+  if (t <= RUN_LENGTH) {
+    const u = Math.max(0, Math.min(1, t / RUN_LENGTH));
+    return 0.18 * u + 0.82 * Math.pow(u, 2.25);
+  }
+  const extra = (t - RUN_LENGTH) / RUN_LENGTH;
+  const u = 1 + extra;
+  return 0.18 * u + 0.82 * Math.pow(Math.min(u, 2.4), 2.25);
 }
 
 /** Enemy hp multiplier over run time and current build strength. Pressure is
  *  intentionally modest: the clock remains the primary source of difficulty. */
 export function hpScale(t: number, pressure = 0): number {
-  const endless = 1 + endlessMinutes(t) * 0.1;
+  const endless = 1 + Math.min(40, endlessMinutes(t)) * 0.1;
   return sampleCurve(HP_SCALE_POINTS, t) * endless * (1 + Math.max(0, Math.min(1, pressure)) * 0.18);
 }
 
 /** Continuous enemies-per-second director curve. After full time the base
  *  grows linearly by 10% per minute, with the reference endless +0.8/s ramp. */
 export function spawnRate(t: number, pressure = 0): number {
-  const minutes = endlessMinutes(t);
+  const minutes = Math.min(40, endlessMinutes(t));
   const base = sampleCurve(SPAWN_RATE_POINTS, t) * (1 + minutes * 0.1) + minutes * 0.8;
-  return base * (1 + Math.max(0, Math.min(1, pressure)) * 0.18);
+  return Math.min(34, base * (1 + Math.max(0, Math.min(1, pressure)) * 0.18));
 }
 
 /** Compatibility helper for tooling that reasons in spawn intervals. */

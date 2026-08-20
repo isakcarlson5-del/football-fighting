@@ -79,9 +79,9 @@ const HYBRID_LIGHT_CAST_X = ART_DIRECTION_PROFILE.lightCast.x;
 const HYBRID_LIGHT_CAST_Y = ART_DIRECTION_PROFILE.lightCast.y;
 export const HYBRID_LIGHT_CAST = Object.freeze({ x: HYBRID_LIGHT_CAST_X, y: HYBRID_LIGHT_CAST_Y });
 const HYBRID_PENALTY_DEPTH = 330;
-const HYBRID_PENALTY_HEIGHT = 820;
+const HYBRID_PENALTY_HEIGHT = 984;
 const HYBRID_GOAL_AREA_DEPTH = 130;
-const HYBRID_GOAL_AREA_HEIGHT = 420;
+const HYBRID_GOAL_AREA_HEIGHT = 504;
 const HYBRID_PENALTY_SPOT_DEPTH = 230;
 const HYBRID_PENALTY_ARC_RADIUS = 150;
 
@@ -2508,6 +2508,11 @@ export class Renderer {
     const skinId = save.equippedSkin(def.id);
     const skin = skinId ? SKINS.find((s) => s.id === skinId) : undefined;
     const tint = skin?.kit.shirt;
+    const idleStrip = getStripAtlas(`${def.id}-idle`, tint);
+    if (idleStrip?.bodyH) this.playerIdleBodyH.set(def.id, idleStrip.bodyH);
+    else {
+      void loadStripAtlas(`${def.id}-idle`, playerArtUrl(`art/players/${def.id}-idle.png`), tint, { measureBody: true });
+    }
     if (kicking) {
       const kickStrip = getStripAtlas(`${def.id}-kick`, tint);
       if (kickStrip) return { atlas: kickStrip, kind: 'kick' };
@@ -2668,7 +2673,7 @@ export class Renderer {
     if (!this.plate) this.drawCrowd(ctx, toSX, toSY, sx + b.x0, sy / TILT + b.y0, vw, vh / TILT, time);
     if (this.liveStadium) this.drawLiveShowpieceStadium(ctx, b, sx, sy, vw, vh, time);
     if (this.hybridDepth) this.drawHybridStadiumParallax(ctx, b, sx, sy, vw, vh);
-    if (this.liveStadium) this.drawLiveCrowd(ctx, b, sx, sy, vw, vh, time);
+    this.drawLiveCrowd(ctx, b, sx, sy, vw, vh, time);
     if (this.liveStadium) this.drawPitchEdgeOcclusion(ctx, toSX, toSY);
     if (this.hybridDepth) this.drawHybridPitchRimBack(ctx, toSX, toSY);
     if (this.hybridDepth) this.drawHybridTechnicalZone(ctx, toSX, toSY, time);
@@ -2677,7 +2682,9 @@ export class Renderer {
       // The dense survivor endgame owns the frame budget. The baked nap and
       // tuft clusters remain fully detailed, while only the tiny animated
       // glints thin out as the enemy pool grows.
-      const windFibreBudget = sim.enemies.length > 110 ? 26 : sim.enemies.length > 70 ? 52 : 86;
+      const lowRam = typeof navigator !== 'undefined'
+        && Number((navigator as Navigator & { deviceMemory?: number }).deviceMemory || 8) <= 4;
+      const windFibreBudget = lowRam ? 12 : sim.enemies.length > 110 ? 26 : sim.enemies.length > 70 ? 52 : 86;
       this.drawTurfWindFibres(ctx, toSX, toSY, time, windFibreBudget);
     }
     if (this.liveStadium) this.drawLiveCornerFlags(ctx, toSX, toSY, time);
@@ -3577,8 +3584,18 @@ export class Renderer {
         const bodyH = atlas.bodyH ?? atlas.fh;
         const refBodyH = this.playerIdleBodyH.get(def.id) ?? bodyH;
         if (vis.kind === 'idle' || vis.kind === 'run-held') this.playerIdleBodyH.set(def.id, bodyH);
-        const sizeComp = clamp(refBodyH / bodyH, 0.92, 1.18);
-        const sc = PLAYER_ENTITY_SCALE * (80 / atlas.fh) * sizeComp * (this.hybridDepth ? hybridEntityDepthScale(p.y) : 1);
+        // Idle silhouette is the size contract. North/run art is authored
+        // smaller in-frame; never draw the hero smaller than standing still.
+        const sizeComp = vis.kind === 'run-directional' && refBodyH > 0
+          ? Math.max(1, refBodyH / Math.max(1, bodyH))
+          : clamp(refBodyH / bodyH, 0.96, 1.22);
+        const facing = vis.kind === 'run-directional'
+          ? MOVEMENT_DIRECTIONS[((p.visualDir % 8) + 8) % 8]
+          : 'e';
+        const foreshorten = facing === 'n' || facing === 's' ? 1.42
+          : facing === 'nw' || facing === 'ne' || facing === 'sw' || facing === 'se' ? 1.16
+          : 1;
+        const sc = PLAYER_ENTITY_SCALE * (80 / atlas.fh) * sizeComp * foreshorten * (this.hybridDepth ? hybridEntityDepthScale(p.y) : 1);
         const dw = atlas.fw * sc;
         const dh = atlas.fh * sc;
         playerOcclusionPose = {
@@ -4503,7 +4520,13 @@ export class Renderer {
         ctx.stroke();
       }
       ctx.fillStyle = shirt;
-      ctx.fillRect(x - bodyW / 2, y - bodyH * 0.72, bodyW, bodyH);
+      ctx.beginPath();
+      ctx.roundRect(x - bodyW / 2, y - bodyH * 0.72, bodyW, bodyH, 1.8 * scale);
+      ctx.fill();
+      ctx.fillStyle = 'rgba(255,255,255,0.12)';
+      ctx.beginPath();
+      ctx.ellipse(x - bodyW * 0.16, y - bodyH * 0.52, bodyW * 0.18, bodyH * 0.22, 0, 0, TAU);
+      ctx.fill();
       ctx.lineCap = 'round';
       ctx.lineWidth = armW;
       const arm = (sx: number, sy: number, ex: number, ey: number, color = '#e8c9a0'): void => {
@@ -4599,7 +4622,9 @@ export class Renderer {
     const farCeiling = Math.max(36, top - 56);
     const farSpan = farRail - farCeiling;
     const farRows = farSpan >= 16 ? Math.min(4, Math.max(2, Math.floor(farSpan / 12))) : 0;
-    const farCols = 58;
+    const lowRam = typeof navigator !== 'undefined'
+      && Number((navigator as Navigator & { deviceMemory?: number }).deviceMemory || 8) <= 4;
+    const farCols = lowRam ? 36 : 58;
     const farStep = farRows > 0 ? farSpan / farRows : 12;
     for (let row = 0; row < farRows; row++) {
       for (let col = 0; col < farCols; col++) {
@@ -5721,9 +5746,9 @@ export class Renderer {
     const width = Math.max(1, right - left);
     const height = Math.max(1, bottom - top);
     ctx.save();
-    const topShade = ctx.createLinearGradient(0, top, 0, top + 21);
-    topShade.addColorStop(0, 'rgba(3,15,8,0.115)');
-    topShade.addColorStop(0.34, 'rgba(3,15,8,0.045)');
+    const topShade = ctx.createLinearGradient(0, top, 0, top + 28);
+    topShade.addColorStop(0, 'rgba(3,15,8,0.07)');
+    topShade.addColorStop(0.45, 'rgba(3,15,8,0.028)');
     topShade.addColorStop(1, 'rgba(3,15,8,0)');
     ctx.fillStyle = topShade;
     ctx.fillRect(left, top, width, 22);

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { abilityCadenceLabel, approachVelocity, ARENA_W, bossApproachIngressMultiplier, bossDirectorIngressMultiplier, bossHealthMultiplier, BOSS_INTRO_DURATION, BOSS_MELEE_LUNGE_DURATION, directorPopulationIngressMultiplier, ENEMY_MELEE_LUNGE_DURATION, enemyAirLift, enemyHitFeedbackStrength, enemyRunCycleDistance, enemyRunTargetFps, enemyXpRewardMultiplier, guardAuthoredRunVector, guardFormationOffset, guardRunPresentation, hybridBossBodyContact, hybridBossSceneryPad, hybridEnemySceneryPad, hystereticMovementOctant, MELEE_CONTACT_PROGRESS, PLAYER_RUN_CYCLE_DISTANCE, PLAYER_RUN_FPS, PLAYER_RUN_FRAMES, PLAYER_VISUAL_Y_SCALE, REWARD_EVENT_CHANCE, REWARD_EVENT_DURATION, REWARD_EVENT_LABEL, REWARD_EVENT_MIN_TIME, resolveHybridBossBodyContact, rewardCoinMul, rewardEventChance, rewardScoreMul, rewardXpMul, Sim, statProgressLabel, stepMovementOctant, upgradeDraftWeight } from '../../src/game/sim';
+import { abilityCadenceLabel, approachVelocity, ARENA_H, ARENA_W, bossApproachIngressMultiplier, bossDirectorIngressMultiplier, bossHealthMultiplier, BOSS_INTRO_DURATION, BOSS_MELEE_LUNGE_DURATION, directorPopulationIngressMultiplier, ENEMY_MELEE_LUNGE_DURATION, enemyAirLift, enemyHitFeedbackStrength, enemyRunCycleDistance, enemyRunTargetFps, enemyXpRewardMultiplier, guardAuthoredRunVector, guardFormationOffset, guardRunPresentation, hybridBossBodyContact, hybridBossSceneryPad, hybridEnemySceneryPad, hystereticMovementOctant, MELEE_CONTACT_PROGRESS, PLAYER_RUN_CYCLE_DISTANCE, PLAYER_RUN_FPS, PLAYER_RUN_FRAMES, PLAYER_VISUAL_Y_SCALE, REWARD_EVENT_CHANCE, REWARD_EVENT_DURATION, REWARD_EVENT_LABEL, REWARD_EVENT_MIN_TIME, resolveHybridBossBodyContact, rewardCoinMul, rewardEventChance, rewardScoreMul, rewardXpMul, Sim, statProgressLabel, stepMovementOctant, upgradeDraftWeight } from '../../src/game/sim';
 import { ABILITIES, ABILITY_IDS, BOSS0_AT, BOSS1_AT, BOSSES, ENEMIES, PLAYERS, RUN_LENGTH } from '../../src/game/data';
 import { Save } from '../../src/game/meta';
 import { aerialLaunchVisual, ART_DIRECTION_PROFILE, bossArrivalVisual, combatPresentationBudget, corpseCollapseVisual, dampedTurfDisplacement, directionalFrameBlend, enemyHealthBarPriority, enemyHealthBarStyle, enemyPoseFrame, guardPoseFrame, HYBRID_LIGHT_CAST, hybridCentreMarkingGeometry, hybridCornerFlagDepthScale, hybridEntityDepthScale, hybridEntityShadowGeometry, hybridGoalNetBreathe, hybridHostileProjectileElevation, hybridPitchMarkingGeometry, hybridStadiumParallax, matchdayWipeoutVisual, movementDirection, orbitPainterDepthY, orbitTrailArcGeometry, pickupVisibleBounds, placeEnemyHealthBar, playerOcclusionStrength, playerStepCue, reducedCombatPresentationBudget, type HealthBarCollisionRect } from '../../src/game/render';
@@ -329,9 +329,9 @@ describe('sim core loop', () => {
       step(hybrid, 1);
       expect(boss.x).toBeGreaterThanOrEqual(80 + hybridBossSceneryPad(bossId));
       expect(boss.y).toBeGreaterThanOrEqual(52 + hybridBossSceneryPad(bossId));
-      boss.y = 1416;
+      boss.y = ARENA_H;
       step(hybrid, 1);
-      expect(boss.y).toBeLessThanOrEqual(1416 - 52 - hybridEnemySceneryPad(boss, 'near'));
+      expect(boss.y).toBeLessThanOrEqual(ARENA_H - 52 - hybridEnemySceneryPad(boss, 'near'));
     }
 
     hybrid.debugSpawn('drone', 0, 0);
@@ -573,26 +573,26 @@ describe('sim core loop', () => {
     const left = hybridPitchMarkingGeometry('left');
     const right = hybridPitchMarkingGeometry('right');
     expect(left.penaltyLineX).toBe(370);
-    expect(right.penaltyLineX).toBe(2230);
+    expect(right.penaltyLineX).toBe(ARENA_W - 370);
     expect(left.goalAreaLineX).toBe(170);
-    expect(right.goalAreaLineX).toBe(2430);
+    expect(right.goalAreaLineX).toBe(ARENA_W - 170);
     expect(left.penaltySpotX).toBe(270);
-    expect(right.penaltySpotX).toBe(2330);
+    expect(right.penaltySpotX).toBe(ARENA_W - 270);
     expect(left.penaltyTop).toBe(right.penaltyTop);
     expect(left.penaltyBottom).toBe(right.penaltyBottom);
-    expect(left.penaltyLineX + right.penaltyLineX).toBe(2600);
-    expect(left.penaltySpotX + right.penaltySpotX).toBe(2600);
+    expect(left.penaltyLineX + right.penaltyLineX).toBe(ARENA_W);
+    expect(left.penaltySpotX + right.penaltySpotX).toBe(ARENA_W);
     expect(left.arcStart).toBeCloseTo(-right.arcEnd + Math.PI, 12);
     expect(left.arcEnd).toBeCloseTo(-right.arcStart + Math.PI, 12);
   });
 
   it('registers the worn hybrid centre construction to the pitch geometry', () => {
     const centre = hybridCentreMarkingGeometry();
-    expect(centre.lineX).toBe(1300);
+    expect(centre.lineX).toBe(ARENA_W / 2);
     expect(centre.circleX).toBe(centre.lineX);
-    expect(centre.circleY).toBe(1416 / 2);
+    expect(centre.circleY).toBe(ARENA_H / 2);
     expect(centre.top).toBe(40);
-    expect(centre.bottom).toBe(1416 - 40);
+    expect(centre.bottom).toBe(ARENA_H - 40);
     expect(centre.radius).toBe(190);
   });
 
@@ -636,17 +636,17 @@ describe('sim core loop', () => {
 
   it('gives fixed hybrid corner flags restrained near-edge depth without moving their anchors', () => {
     expect(hybridCornerFlagDepthScale(0)).toBeCloseTo(0.92, 6);
-    expect(hybridCornerFlagDepthScale(1416 / 2)).toBeCloseTo(1, 6);
-    expect(hybridCornerFlagDepthScale(1416)).toBeCloseTo(1.08, 6);
+    expect(hybridCornerFlagDepthScale(ARENA_H / 2)).toBeCloseTo(1, 6);
+    expect(hybridCornerFlagDepthScale(ARENA_H)).toBeCloseTo(1.08, 6);
     expect(hybridCornerFlagDepthScale(Number.NaN)).toBeCloseTo(1, 6);
   });
 
   it('clamps the hybrid rear-bowl parallax to a subtle screen-space offset', () => {
-    expect(hybridStadiumParallax(1300, 1300)).toBe(0);
-    expect(hybridStadiumParallax(1500, 1300)).toBeCloseTo(4.8, 6);
-    expect(hybridStadiumParallax(0, 1300)).toBe(-8);
-    expect(hybridStadiumParallax(2600, 1300)).toBe(8);
-    expect(hybridStadiumParallax(Number.NaN, 1300)).toBe(0);
+    expect(hybridStadiumParallax(ARENA_W / 2, ARENA_W / 2)).toBe(0);
+    expect(hybridStadiumParallax(ARENA_W / 2 + 200, ARENA_W / 2)).toBeCloseTo(4.8, 6);
+    expect(hybridStadiumParallax(0, ARENA_W / 2)).toBe(-8);
+    expect(hybridStadiumParallax(ARENA_W, ARENA_W / 2)).toBe(8);
+    expect(hybridStadiumParallax(Number.NaN, ARENA_W / 2)).toBe(0);
   });
 
   it('keeps every hybrid cast shadow aligned down-right from the upper-left key light', () => {
@@ -685,14 +685,14 @@ describe('sim core loop', () => {
 
   it('keeps hybrid billboard depth restrained and monotonic across the pitch', () => {
     expect(hybridEntityDepthScale(0)).toBeCloseTo(0.96, 12);
-    expect(hybridEntityDepthScale(1416 / 2)).toBeCloseTo(1, 12);
-    expect(hybridEntityDepthScale(1416)).toBeCloseTo(1.04, 12);
+    expect(hybridEntityDepthScale(ARENA_H / 2)).toBeCloseTo(1, 12);
+    expect(hybridEntityDepthScale(ARENA_H)).toBeCloseTo(1.04, 12);
     expect(hybridEntityDepthScale(350)).toBeLessThan(hybridEntityDepthScale(1050));
     expect(hybridEntityDepthScale(Number.NaN)).toBe(1);
   });
 
   it('keeps every Orbiting Press ball behind the player painter layer', () => {
-    const playerY = 708;
+    const playerY = ARENA_H / 2;
     expect(orbitPainterDepthY(playerY, playerY - 120)).toBe(playerY - 120);
     expect(orbitPainterDepthY(playerY, playerY)).toBeLessThan(playerY);
     expect(orbitPainterDepthY(playerY, playerY + 120)).toBeLessThan(playerY);
@@ -1186,7 +1186,7 @@ describe('sim core loop', () => {
     expect(sim.over).toBe('lost');
   });
 
-  it('surviving to full time wins only after every scheduled boss is resolved', () => {
+  it('keeps playing after 90 minutes instead of awarding full time', () => {
     const sim = makeSim();
     sim.player.hp = 99999;
     sim.player.maxHp = 99999;
@@ -1196,8 +1196,8 @@ describe('sim core loop', () => {
     sim.boss2Spawned = true;
     sim.time = RUN_LENGTH - 1;
     step(sim, 90);
-    expect(sim.over).toBe('won');
-    expect(sim.time).toBe(RUN_LENGTH);
+    expect(sim.over).toBe('playing');
+    expect(sim.time).toBeGreaterThan(RUN_LENGTH);
     expect(sim.suddenDeath).toBe(false);
   });
 
@@ -1215,9 +1215,9 @@ describe('sim core loop', () => {
     sim.time = RUN_LENGTH - 0.05;
 
     step(sim, 120);
-    expect(sim.time).toBe(RUN_LENGTH);
+    expect(sim.time).toBeGreaterThan(RUN_LENGTH);
     expect(sim.over).toBe('playing');
-    expect(sim.suddenDeath).toBe(true);
+    expect(sim.suddenDeath).toBe(false);
     expect(sim.bossAlive?.boss).toBe('captain');
     expect(sim.enemies.filter((enemy) => enemy.active && !enemy.boss)).toHaveLength(0);
 
@@ -1233,7 +1233,7 @@ describe('sim core loop', () => {
       sim.pendingBossAbilities--;
     }
     step(sim, 1);
-    expect(sim.over).toBe('won');
+    expect(sim.over).toBe('playing');
     expect(sim.suddenDeath).toBe(false);
   });
 
@@ -1246,7 +1246,7 @@ describe('sim core loop', () => {
 
     step(sim, 1);
     expect(sim.over).toBe('playing');
-    expect(sim.suddenDeath).toBe(true);
+    expect(sim.suddenDeath).toBe(false);
     expect(sim.bossAlive?.boss).toBe('official');
     expect(sim.boss1Spawned).toBe(true);
     expect(sim.boss2Spawned).toBe(false);
@@ -1270,7 +1270,7 @@ describe('sim core loop', () => {
       sim.pendingBossAbilities--;
     }
     step(sim, 1);
-    expect(sim.over).toBe('won');
+    expect(sim.over).toBe('playing');
   });
 
   it('seven-minute miniboss spawns and is clearly flagged', () => {

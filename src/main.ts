@@ -9,7 +9,7 @@ import { Input } from './core/input';
 import { consumeFixedSteps } from './core/timing';
 import { CommunityClient, normalizeLeaderboardName } from './core/community';
 import { loadStripAtlas, primePlayerStrips } from './core/sprites';
-import { ABILITIES, BOSS1_AT, BOSS2_AT, PLAYERS, META_TRACKS, RUN_LENGTH, metaCost, type AbilityId, type MetaTrackId, type StatId } from './game/data';
+import { ABILITIES, BOSS1_AT, BOSS2_AT, PLAYERS, META_TRACKS, RUN_LENGTH, STARTER_PLAYER_ID, metaCost, type AbilityId, type MetaTrackId, type StatId } from './game/data';
 import { Save } from './game/meta';
 import { Renderer, type ArenaGrassRect, type CombatPresentationMetrics, type EntityScreenRect } from './game/render';
 import { ARENA_H, ARENA_W, BOSS_INTRO_DURATION, BOSS_MELEE_LUNGE_DURATION, DASH_ANTICIPATION_DURATION, DASH_RECOVERY_DURATION, ENEMY_MELEE_LUNGE_DURATION, KICK_CONTACT_DELAY, KICK_DURATION, MELEE_RECOVERY_DURATION, Sim, type UpgradeOption } from './game/sim';
@@ -44,7 +44,7 @@ let appState: AppState = 'menu';
 let runState: RunState = 'playing';
 let rewardMode: RewardMode = 'levelup';
 let sim: Sim | null = null;
-let playerDef = PLAYERS[0];
+let playerDef = PLAYERS.find((player) => player.id === STARTER_PLAYER_ID) ?? PLAYERS[0];
 let overTimer = -1;
 let resultShown = false;
 let menuArtUrl: string | null = null;
@@ -178,7 +178,7 @@ function showUpgradeDraft(
 ): void {
   const draftSim = sim;
   if (!draftSim) return;
-  input.keys.clear();
+  input.clear();
   ui.showLevelUp(
     options,
     () => {
@@ -193,7 +193,11 @@ function showUpgradeDraft(
 
 const ui = new UI(uiRoot, {
   onPlay(playerId) {
-    playerDef = PLAYERS.find((p) => p.id === playerId) ?? PLAYERS[0];
+    if (!save.ownsPlayer(playerId)) {
+      ui.showSelect();
+      return;
+    }
+    playerDef = PLAYERS.find((p) => p.id === playerId) ?? PLAYERS.find((p) => p.id === STARTER_PLAYER_ID) ?? PLAYERS[0];
     startRun();
   },
   onOpenClub() {
@@ -245,7 +249,7 @@ const ui = new UI(uiRoot, {
         showUpgradeDraft(sim.rollUpgrades(), () => sim!.rollUpgrades());
       } else {
         runState = 'playing';
-        input.keys.clear();
+        input.clear();
         ui.releaseGameplayFocus();
       }
       return;
@@ -255,7 +259,7 @@ const ui = new UI(uiRoot, {
       showUpgradeDraft(sim.rollUpgrades(), () => sim!.rollUpgrades());
     } else {
       runState = 'playing';
-      input.keys.clear();
+      input.clear();
       ui.releaseGameplayFocus();
     }
   },
@@ -264,9 +268,13 @@ const ui = new UI(uiRoot, {
     if (track) save.buyRank(id, metaCost(track, save.rank(id)));
     ui.showClub('upgrades');
   },
+  onBuyPlayer(id: string) {
+    save.buyPlayer(id);
+    ui.showSelect();
+  },
   onBuySkin(id: string) {
     save.buySkin(id);
-    ui.showClub('skins');
+    ui.showClub('upgrades');
   },
   onEquipSkin(playerId: string, skinId: string | null) {
     save.equipSkin(playerId, skinId);

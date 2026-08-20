@@ -1,6 +1,6 @@
 /** Local save-data: coins, meta ranks, skins, stats, settings. */
 
-import { META_TRACKS, SKINS, type MetaTrackId } from './data';
+import { META_TRACKS, PLAYERS, SKINS, STARTER_PLAYER_ID, type MetaTrackId } from './data';
 
 const KEY = 'ff_save_v1';
 export const SAVE_VERSION = 2;
@@ -10,8 +10,9 @@ export interface SaveData {
   coins: number;
   ranks: Record<MetaTrackId, number>;
   ownedSkins: string[];
+  ownedPlayers: string[];
   equipped: Record<string, string>; // playerId -> skinId
-  stats: { runs: number; wins: number; totalKills: number; bestTime: number; bestLevel: number };
+  stats: { runs: number; wins: number; totalKills: number; bestTime: number; bestLevel: number; totalPlaySeconds: number };
   leaderboardName: string;
   muted: boolean;
   reducedVfx: boolean;
@@ -25,8 +26,9 @@ function defaults(): SaveData {
     coins: 0,
     ranks: { power: 0, move: 0, magnet: 0, guard: 0 },
     ownedSkins: [],
+    ownedPlayers: [STARTER_PLAYER_ID],
     equipped: {},
-    stats: { runs: 0, wins: 0, totalKills: 0, bestTime: 0, bestLevel: 0 },
+    stats: { runs: 0, wins: 0, totalKills: 0, bestTime: 0, bestLevel: 0, totalPlaySeconds: 0 },
     leaderboardName: 'Guest',
     muted: true,
     reducedVfx: false,
@@ -62,6 +64,12 @@ function normalizeSave(value: unknown): SaveData {
     ownedSkins: Array.isArray(raw.ownedSkins)
       ? [...new Set(raw.ownedSkins.filter((id): id is string => typeof id === 'string'))]
       : [],
+    ownedPlayers: Array.isArray((raw as { ownedPlayers?: unknown }).ownedPlayers)
+      ? [...new Set([
+        STARTER_PLAYER_ID,
+        ...((raw as { ownedPlayers?: unknown[] }).ownedPlayers ?? []).filter((id): id is string => typeof id === 'string'),
+      ])]
+      : [STARTER_PLAYER_ID],
     equipped,
     stats: {
       runs: Math.round(finite(stats.runs, 0)),
@@ -69,6 +77,7 @@ function normalizeSave(value: unknown): SaveData {
       totalKills: Math.round(finite(stats.totalKills, 0)),
       bestTime: Math.round(finite(stats.bestTime, 0)),
       bestLevel: Math.round(finite(stats.bestLevel, 0)),
+      totalPlaySeconds: Math.round(finite((stats as { totalPlaySeconds?: number }).totalPlaySeconds, 0)),
     },
     leaderboardName: typeof raw.leaderboardName === 'string'
       ? raw.leaderboardName.trim().slice(0, 20) || base.leaderboardName
@@ -150,12 +159,27 @@ export class Save {
     return id && this.ownsSkin(id) ? id : null;
   }
 
-  /** Meta-derived permanent bonuses. */
+  ownsPlayer(id: string): boolean {
+    return id === STARTER_PLAYER_ID || this.data.ownedPlayers.includes(id);
+  }
+
+  buyPlayer(id: string): boolean {
+    const def = PLAYERS.find((player) => player.id === id);
+    if (!def || def.cost <= 0 || this.ownsPlayer(id) || this.data.coins < def.cost) return false;
+    this.data.coins -= def.cost;
+    this.data.ownedPlayers.push(id);
+    this.persist();
+    return true;
+  }
+
+  /** Meta-derived permanent bonuses, including purchased-player signings. */
   bonuses() {
     const r = this.data.ranks;
+    const owned = new Set(this.data.ownedPlayers);
     return {
-      power: 1 + (r.power * 6) / 100,
-      speed: 1 + (r.move * 4) / 100,
+      power: 1 + (r.power * 6) / 100 + (owned.has('messi') ? 0.08 : 0),
+      speed: 1 + (r.move * 4) / 100 + (owned.has('neymar') ? 0.05 : 0),
+      maxHp: owned.has('ronaldo') ? 12 : 0,
       magnet: 1 + (r.magnet * 15) / 100,
       guardDamage: 1 + (r.guard * 12) / 100,
       guardExtra: (r.guard >= 3 ? 1 : 0) + (r.guard >= 5 ? 1 : 0),
@@ -174,6 +198,7 @@ export class Save {
     s.totalKills += opts.kills;
     s.bestTime = Math.max(s.bestTime, Math.round(opts.time));
     s.bestLevel = Math.max(s.bestLevel, opts.level);
+    s.totalPlaySeconds += Math.round(opts.time);
     this.persist();
   }
 }

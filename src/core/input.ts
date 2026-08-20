@@ -52,6 +52,8 @@ export class Input {
   joyX = 0;
   joyY = 0;
   private pressed = new Set<string>();
+  /** Keys held through an overlay must wait for a real keyup before moving. */
+  private stale = new Set<string>();
 
   constructor(target: Window) {
     target.addEventListener('keydown', (e) => {
@@ -63,15 +65,28 @@ export class Input {
       const overlay = gameplayOverlayOpen();
       const movement = MOVEMENT_KEYS.includes(k);
       if (!typing && (movement || k === ' ')) e.preventDefault();
-      if (overlay && movement) return;
+      if (overlay && movement) {
+        this.stale.add(k);
+        this.keys.delete(k);
+        return;
+      }
+      if (this.stale.has(k)) return;
       if (movement) blurHudKeyboardFocus();
       if (!this.keys.has(k)) this.pressed.add(k);
       this.keys.add(k);
     });
     target.addEventListener('keyup', (e) => {
-      this.keys.delete(e.key.toLowerCase());
+      const k = e.key.toLowerCase();
+      this.keys.delete(k);
+      this.stale.delete(k);
     });
-    target.addEventListener('blur', () => this.keys.clear());
+    target.addEventListener('blur', () => this.clear());
+  }
+
+  clear(): void {
+    this.keys.clear();
+    this.stale.clear();
+    this.pressed.clear();
   }
 
   /** True only on the frame the key went down. Call endFrame() after sim. */

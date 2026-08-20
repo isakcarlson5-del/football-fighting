@@ -34,6 +34,8 @@ export interface VipVisitor {
   wins: number;
   totalKills: number;
   bestScore: number;
+  playcount?: number;
+  avgPlayClock?: string;
 }
 
 export interface VipAdminStats {
@@ -44,6 +46,8 @@ export interface VipAdminStats {
     games: number;
     wins: number;
     totalKills: number;
+    avgPlayClock?: string;
+    totalPlaySeconds?: number;
   };
   visitors: VipVisitor[];
   recentRuns: Array<{
@@ -143,7 +147,7 @@ export class CommunityClient {
   }
 
   async getLeaderboard(): Promise<LeaderboardResult> {
-    const result = await this.request<{ entries: LeaderboardEntry[] }>('leaderboard?limit=8');
+    const result = await this.request<{ entries: LeaderboardEntry[] }>('leaderboard?limit=16');
     return result ? { online: true, entries: result.entries } : { online: false, entries: [] };
   }
 

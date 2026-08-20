@@ -31,8 +31,16 @@ export function angleLerp(a: number, b: number, t: number): number {
   return a + d * t;
 }
 
-/** Format run seconds as a football match clock: 600s -> 90'. */
+/** Format run seconds as a football match clock: 600s -> 90', then 91' and up. */
 export function matchClock(seconds: number): string {
-  const mins = clamp(Math.floor((seconds / 600) * 90), 0, 90);
+  const mins = Math.max(0, Math.floor((Math.max(0, seconds) / 600) * 90));
   return `${mins}'`;
+}
+
+/** Leaderboard/VIP clock with seconds of the current football minute. */
+export function matchClockPrecise(seconds: number): string {
+  const totalMins = Math.max(0, (Math.max(0, seconds) / 600) * 90);
+  const mins = Math.floor(totalMins);
+  const extra = Math.min(59, Math.floor((totalMins - mins) * 60));
+  return `${mins}'${String(extra).padStart(2, '0')}`;
 }

@@ -284,6 +284,7 @@ describe('pacing curves', () => {
     expect(matchClock(0)).toBe("0'");
     expect(matchClock(300)).toBe("45'");
     expect(matchClock(600)).toBe("90'");
+    expect(matchClock(800)).toBe("120'");
   });
   it('meta costs grow exponentially', () => {
     for (const t of META_TRACKS) {
