@@ -1201,7 +1201,7 @@ describe('sim core loop', () => {
     expect(sim.suddenDeath).toBe(false);
   });
 
-  it('holds at 90 minutes in sudden death until a living final boss falls', () => {
+  it('killing the captain after 90 minutes still does not end the match', () => {
     const sim = makeSim();
     sim.player.hp = sim.player.maxHp = 99_999;
     sim.player.abilities = {};
