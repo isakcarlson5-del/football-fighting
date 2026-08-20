@@ -1851,6 +1851,14 @@ kbd {
   .reward-event-label { max-width: 78px; font-size: 8px; }
 }
 @media (max-width: 420px) {
+  #hud-top {
+    gap: 4px;
+    padding: 6px 50px 6px 6px;
+  }
+  #match-clock {
+    min-width: 96px;
+    padding: 4px 10px;
+  }
   #reward-event {
     top: calc(70px + env(safe-area-inset-top));
     width: 112px;
@@ -1865,6 +1873,27 @@ kbd {
 }
 
 @media (max-width: 720px) {
+  #hud-top {
+    gap: 6px;
+    padding: 6px 56px 6px 8px;
+  }
+  #match-clock {
+    min-width: 108px;
+    padding: 5px 14px;
+    font-size: clamp(20px, 6.4vw, 28px);
+    border-width: 2.5px;
+  }
+  .hud-chip {
+    padding: 6px 9px;
+    font-size: 12px;
+    gap: 4px;
+  }
+  .hud-chip .lbl { font-size: 8px; }
+  #pause-btn {
+    top: calc(12px + env(safe-area-inset-top));
+    width: 40px;
+    height: 40px;
+  }
   .select-screen,
   #pause-screen,
   #club-screen,

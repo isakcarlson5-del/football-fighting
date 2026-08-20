@@ -112,24 +112,42 @@ test('pause overlay: arrows navigate, Enter resumes, Escape also closes', async 
   expect(errors).toEqual([]);
 });
 
-test('club: tabs switch with arrows/Home/End and focus reaches Back', async ({ page }) => {
+test('pause: P closes from a volume slider and WASD then moves', async ({ page }) => {
+  const errors = await collectErrors(page);
+  await page.click('[data-act="play"]');
+  await page.click('[data-act="start"]');
+  await expect(page.locator('#hud')).toBeVisible();
+  await page.evaluate(() => {
+    const sim = window.__FF.getSim()!;
+    sim.debugDirectorPaused = true;
+    sim.player.hp = sim.player.maxHp = 9999;
+  });
+  await page.click('#pause-btn');
+  await expect(page.locator('#pause-screen')).toBeVisible();
+  await page.locator('#pause-screen input[data-vol="music"]').focus();
+  await page.keyboard.press('p');
+  await expect(page.locator('#pause-screen')).toHaveCount(0);
+  const beforeY = await page.evaluate(() => window.__FF.getSim()!.player.y);
+  await page.keyboard.down('KeyW');
+  await page.waitForTimeout(180);
+  const after = await page.evaluate(() => {
+    const sim = window.__FF.getSim()!;
+    return { y: sim.player.y, ay: window.__FF.getInputState().ay };
+  });
+  await page.keyboard.up('KeyW');
+  expect(after.ay).toBeLessThan(0);
+  expect(after.y).toBeLessThan(beforeY);
+  expect(errors).toEqual([]);
+});
+
+test('club: Training Ground is the only tab and focus reaches Back', async ({ page }) => {
   const errors = await collectErrors(page);
   await page.click('[data-act="club"]');
   await expect(page.locator('#club-screen')).toBeVisible();
-  // the active tab is focused when the screen opens; tab arrows switch panels
-  // (own handler)
   await expect(page.locator('#club-tab-upgrades')).toBeFocused();
-  await page.keyboard.press('ArrowRight');
-  await expect(page.locator('#club-tab-skins')).toHaveAttribute('aria-selected', 'true');
-  // Home/End jump; each switch re-renders, so the next arrow refocuses
-  await page.keyboard.press('Home');
-  await expect(page.locator('#club-tab-upgrades')).toHaveAttribute('aria-selected', 'true');
-  await page.keyboard.press('End');
-  await expect(page.locator('#club-tab-skins')).toHaveAttribute('aria-selected', 'true');
-  // arrows reach the panel contents
+  await expect(page.locator('#club-tab-skins')).toHaveCount(0);
   await page.keyboard.press('ArrowDown');
   await expect(page.locator('#club-screen button:focus')).toHaveCount(1);
-  // walking down eventually lands on Back, Enter returns to the menu
   await expect.poll(async () => {
     await page.keyboard.press('ArrowDown');
     return page.evaluate(() => document.activeElement?.getAttribute('data-act') ?? null);

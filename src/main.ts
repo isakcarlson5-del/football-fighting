@@ -611,7 +611,13 @@ window.addEventListener('pointercancel', endJoy);
 /* ---------------- keyboard shortcuts ---------------- */
 
 window.addEventListener('keydown', (e) => {
-  if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLSelectElement) return;
+  // Text fields keep their caret. Range sliders (pause volume) must not eat
+  // P/Escape, or Half-Time cannot close and WASD looks stuck afterwards.
+  const typing =
+    e.target instanceof HTMLTextAreaElement ||
+    e.target instanceof HTMLSelectElement ||
+    (e.target instanceof HTMLInputElement && e.target.type !== 'range' && e.target.type !== 'button' && e.target.type !== 'submit');
+  if (typing) return;
   const k = e.key.toLowerCase();
   if (appState === 'run') {
     if (k === 'escape' || k === 'p') {

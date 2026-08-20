@@ -220,11 +220,19 @@ const nearWhite = (r: number, g: number, b: number, a: number): boolean => {
   return min > 168 && max - min < 52 && r * 0.2126 + g * 0.7152 + b * 0.0722 > 180;
 };
 
+/** Leftover chroma-key green in the arm crease. Not kit green: those regions
+ *  are large and sit on the shorts, below the torso band. */
+const chromaSpill = (r: number, g: number, b: number, a: number): boolean =>
+  a > 30 && g > 78 && g > r + 10 && g > b + 6;
+
+const isArmpitGap = (r: number, g: number, b: number, a: number): boolean =>
+  nearWhite(r, g, b, a) || chromaSpill(r, g, b, a);
+
 const skinTone = (r: number, g: number, b: number, a: number): boolean =>
   a > 80 && r > 125 && r > g * 1.04 && g > b && r - b > 28;
 
-/** Punch leftover white blobs in the arm/hand crease to real transparency
- *  so the live background shows through, on every loaded body strip. */
+/** Fill leftover white/chroma blobs in the arm crease with nearby body paint.
+ *  Restricted to the torso band so white shorts (Messi) stay authored. */
 export function punchSkinAdjacentWhiteGaps(
   pixels: Uint8ClampedArray,
   width: number,
@@ -244,8 +252,11 @@ function punchWhiteGapsInFrame(
   x0: number,
   frameWidth: number,
 ): void {
-  const y0 = Math.floor(height * 0.18);
-  const y1 = Math.floor(height * 0.92);
+  // Arms and torso only. Flooding into the shorts merges tiny armpit holes
+  // with the whole white kit, so those holes were skipped and shorts were
+  // sometimes painted with skin.
+  const y0 = Math.floor(height * 0.20);
+  const y1 = Math.max(y0 + 1, Math.floor(height * 0.58));
   const at = (x: number, y: number) => (y * stride + x0 + x) * 4;
   const seen = new Uint8Array(frameWidth * height);
   const stack: number[] = [];
@@ -255,7 +266,7 @@ function punchWhiteGapsInFrame(
       const seenAt = y * frameWidth + x;
       if (seen[seenAt]) continue;
       const i = at(x, y);
-      if (!nearWhite(pixels[i], pixels[i + 1], pixels[i + 2], pixels[i + 3])) continue;
+      if (!isArmpitGap(pixels[i], pixels[i + 1], pixels[i + 2], pixels[i + 3])) continue;
       stack.length = 0;
       cells.length = 0;
       stack.push(x, y);
@@ -276,11 +287,11 @@ function punchWhiteGapsInFrame(
         for (let n = 0; n < 4; n++) {
           const nx = cx + (n === 0 ? 1 : n === 1 ? -1 : 0);
           const ny = cy + (n === 2 ? 1 : n === 3 ? -1 : 0);
-          if (nx < 0 || ny < 0 || nx >= frameWidth || ny >= height) continue;
+          if (nx < 0 || ny < y0 || nx >= frameWidth || ny >= y1) continue;
           const ni = at(nx, ny);
           if (skinTone(pixels[ni], pixels[ni + 1], pixels[ni + 2], pixels[ni + 3])) touchesSkin = true;
           if (seen[ny * frameWidth + nx]) continue;
-          if (!nearWhite(pixels[ni], pixels[ni + 1], pixels[ni + 2], pixels[ni + 3])) continue;
+          if (!isArmpitGap(pixels[ni], pixels[ni + 1], pixels[ni + 2], pixels[ni + 3])) continue;
           seen[ny * frameWidth + nx] = 1;
           stack.push(nx, ny);
         }
@@ -293,6 +304,7 @@ function punchWhiteGapsInFrame(
       let fillR = 210;
       let fillG = 150;
       let fillB = 100;
+      let foundSkin = false;
       for (let c = 0; c < cells.length; c += 2) {
         const cx = cells[c];
         const cy = cells[c + 1];
@@ -302,10 +314,19 @@ function punchWhiteGapsInFrame(
             const ny = cy + oy;
             if (nx < 0 || ny < 0 || nx >= frameWidth || ny >= height) continue;
             const ni = at(nx, ny);
-            if (skinTone(pixels[ni], pixels[ni + 1], pixels[ni + 2], pixels[ni + 3])) {
-              fillR = pixels[ni];
-              fillG = pixels[ni + 1];
-              fillB = pixels[ni + 2];
+            const nr = pixels[ni];
+            const ng = pixels[ni + 1];
+            const nb = pixels[ni + 2];
+            const na = pixels[ni + 3];
+            if (skinTone(nr, ng, nb, na)) {
+              fillR = nr;
+              fillG = ng;
+              fillB = nb;
+              foundSkin = true;
+            } else if (!foundSkin && na > 180 && !isArmpitGap(nr, ng, nb, na)) {
+              fillR = nr;
+              fillG = ng;
+              fillB = nb;
             }
           }
         }

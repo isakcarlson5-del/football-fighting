@@ -150,18 +150,46 @@ describe('generated strip grounding', () => {
     for (let y = 0; y < h; y++) {
       for (let x = 0; x < w; x++) put(x, y, 0, 0, 0, 0);
     }
-    for (let y = 3; y <= 6; y++) {
+    for (let y = 2; y <= 3; y++) {
       put(1, y, 210, 150, 100, 255);
       put(2, y, 250, 248, 246, 255);
       put(5, y, 250, 248, 246, 255);
     }
     punchSkinAdjacentWhiteGaps(pixels, w, h, w);
-    const filled = (4 * w + 2) * 4;
+    const filled = (2 * w + 2) * 4;
     expect(pixels[filled + 3]).toBe(255);
     expect(pixels[filled]).toBeGreaterThan(180);
     expect(pixels[filled] - pixels[filled + 2]).toBeGreaterThan(20);
-    expect(pixels[(4 * w + 5) * 4 + 3]).toBe(255);
-    expect(pixels[(4 * w + 5) * 4]).toBeGreaterThan(240);
+    expect(pixels[(2 * w + 5) * 4 + 3]).toBe(255);
+    expect(pixels[(2 * w + 5) * 4]).toBeGreaterThan(240);
+  });
+
+  it('fills torso armpit holes but does not paint authored white shorts', () => {
+    const w = 24;
+    const h = 32;
+    const pixels = new Uint8ClampedArray(w * h * 4);
+    const put = (x: number, y: number, r: number, g: number, b: number, a: number) => {
+      const i = (y * w + x) * 4;
+      pixels[i] = r;
+      pixels[i + 1] = g;
+      pixels[i + 2] = b;
+      pixels[i + 3] = a;
+    };
+    for (let y = 8; y <= 16; y++) {
+      put(8, y, 210, 150, 100, 255);
+      put(9, y, 250, 248, 246, 255);
+    }
+    for (let y = 22; y <= 28; y++) {
+      put(8, y, 210, 150, 100, 255);
+      for (let x = 9; x <= 16; x++) put(x, y, 250, 248, 246, 255);
+    }
+    punchSkinAdjacentWhiteGaps(pixels, w, h, w);
+    const armpit = (12 * w + 9) * 4;
+    expect(pixels[armpit + 3]).toBe(255);
+    expect(pixels[armpit] - pixels[armpit + 2]).toBeGreaterThan(20);
+    const shorts = (25 * w + 12) * 4;
+    expect(pixels[shorts]).toBeGreaterThan(240);
+    expect(pixels[shorts + 1]).toBeGreaterThan(240);
   });
 });
 
