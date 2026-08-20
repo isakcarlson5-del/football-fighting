@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
+import { ARENA_H, ARENA_W } from '../../src/game/sim';
 
 declare const process: { env: Record<string, string | undefined> };
 
@@ -148,11 +149,11 @@ test('natural late-game match sustains real pacing, input and drafts through a v
       for (const direction of directions) {
         const futureX = p.x + direction.x * 310;
         const futureY = p.y + direction.y * 310;
-        const edgeX = Math.min(futureX, 2600 - futureX);
-        const edgeY = Math.min(futureY, 1416 - futureY);
+        const edgeX = Math.min(futureX, ARENA_W - futureX);
+        const edgeY = Math.min(futureY, ARENA_H - futureY);
         if (edgeX < 360) direction.score += (360 - edgeX) * 0.12;
         if (edgeY < 250) direction.score += (250 - edgeY) * 0.12;
-        direction.score += Math.hypot(futureX - 1300, futureY - 708) / 1_800;
+        direction.score += Math.hypot(futureX - ARENA_W / 2, futureY - ARENA_H / 2) / 1_800;
         const continuity = direction.x * p.moveDx + direction.y * p.moveDy;
         direction.score += (1 - continuity) * 0.16;
       }

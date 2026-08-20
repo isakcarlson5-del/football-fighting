@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
+import { ARENA_H, ARENA_W } from '../../src/game/sim';
 
 /** Full user-flow e2e suite driving the real game in a real browser. */
 
@@ -477,7 +478,7 @@ test('all calibrated arena views load their intended plate and remain playable',
     }));
     expect(state.app).toEqual({ app: 'run', run: 'playing' });
     expect(state.moving).toBe(true);
-    expect(state.x).toBeGreaterThan(1300);
+    expect(state.x).toBeGreaterThan(ARENA_W / 2);
   }
   expect(errors).toEqual([]);
 });
@@ -640,7 +641,7 @@ test('hybrid goal crowd fixture keeps its separate arena route and dense staged 
     return {
       state: window.__FF.getState(),
       playerX: sim.player.x,
-      centred: Math.abs(sim.player.y - 1416 / 2) < 1,
+      centred: Math.abs(sim.player.y - ARENA_H / 2) < 1,
       nearGoal: active.filter((enemy: { x: number }) => enemy.x >= 2350).length,
       leftmost: Math.min(...active.map((enemy: { x: number }) => enemy.x)),
       damaged: active.filter((enemy: { hp: number; maxHp: number }) => enemy.hp < enemy.maxHp).length,
@@ -671,8 +672,8 @@ test('hybrid edge fixture pins the player against the physical near turf lip', a
       enemies: sim.enemies.filter((enemy: { active: boolean }) => enemy.active).length,
     };
   });
-  expect(staged.x).toBe(1300);
-  expect(staged.y).toBe(1348);
+  expect(staged.x).toBe(ARENA_W / 2);
+  expect(staged.y).toBe(ARENA_H - 32);
   expect(staged.enemies).toBe(0);
   expect(errors).toEqual([]);
 });
@@ -696,10 +697,10 @@ test('hybrid near-edge grounding fixture keeps physical pickups settled above th
         .sort((a: { x: number }, b: { x: number }) => a.x - b.x),
     };
   });
-  expect(staged.player).toEqual({ x: 1300, y: 1416 - 280 });
+  expect(staged.player).toEqual({ x: ARENA_W / 2, y: ARENA_H - 280 });
   expect(staged.pickups.map((pickup: { kind: string }) => pickup.kind)).toEqual(['trophy', 'magnet', 'bomb']);
   expect(staged.pickups.every((pickup: { y: number; speed: number }) => (
-    Math.abs(pickup.y - (1416 - 72)) < 0.1 && pickup.speed < 0.1
+    Math.abs(pickup.y - (ARENA_H - 72)) < 0.1 && pickup.speed < 0.1
   ))).toBe(true);
   expect(errors).toEqual([]);
 });
@@ -719,7 +720,7 @@ test('every pickup family shares the measured near-edge ground anchor', async ({
     'xp', 'coin', 'heal', 'trophy', 'magnet', 'bomb', 'freeze',
   ]);
   expect(pickups.every((pickup: { y: number; speed: number }) => (
-    Math.abs(pickup.y - (1416 - 72)) < 0.1 && pickup.speed < 0.1
+    Math.abs(pickup.y - (ARENA_H - 72)) < 0.1 && pickup.speed < 0.1
   ))).toBe(true);
   expect(errors).toEqual([]);
 });
@@ -727,8 +728,8 @@ test('every pickup family shares the measured near-edge ground anchor', async ({
 test('hybrid mirrored fixtures expose the left goal and far pitch lip', async ({ page }) => {
   const errors = await collectErrors(page);
   for (const [stage, expectedX, expectedY] of [
-    ['hybrid-left-goal', 118, 1416 / 2],
-    ['hybrid-far-edge-preview', 2600 / 2, 68],
+    ['hybrid-left-goal', 118, ARENA_H / 2],
+    ['hybrid-far-edge-preview', ARENA_W / 2, 68],
   ] as const) {
     await page.goto(`/?debug=1&stage=${stage}&arena=world-cup-hybrid-25d`);
     await expect.poll(() => page.evaluate(() => window.__FF.getState())).toEqual({ app: 'run', run: 'playing' });
@@ -745,10 +746,10 @@ test('hybrid mirrored fixtures expose the left goal and far pitch lip', async ({
 test('hybrid raised goal and board scenery remain outside physical traversal', async ({ page }) => {
   const errors = await collectErrors(page);
   for (const [stage, move, side, expected] of [
-    ['hybrid-left-goal', 'w', null, { x: 112, y: 1416 / 2 }],
-    ['hybrid-board-corner', 'e', 'right', { x: 2600 - 112, y: 118 }],
-    ['hybrid-far-edge-preview', 'n', null, { x: 2600 / 2, y: 68 }],
-    ['hybrid-edge-preview', 's', null, { x: 2600 / 2, y: 1416 - 68 }],
+    ['hybrid-left-goal', 'w', null, { x: 112, y: ARENA_H / 2 }],
+    ['hybrid-board-corner', 'e', 'right', { x: ARENA_W - 112, y: 118 }],
+    ['hybrid-far-edge-preview', 'n', null, { x: ARENA_W / 2, y: 68 }],
+    ['hybrid-edge-preview', 's', null, { x: ARENA_W / 2, y: ARENA_H - 68 }],
   ] as const) {
     const sideQuery = side ? `&side=${side}` : '';
     await page.goto(`/?debug=1&stage=${stage}&move=${move}${sideQuery}&arena=world-cup-hybrid-25d`);
@@ -781,8 +782,8 @@ test('all hybrid boss bodies keep radius-aware clearance from both goal cages', 
       }, bossId);
       const expectedInset = 80 + visualPad;
       expect(staged.radius).toBe(radius);
-      expect(staged.x).toBe(side === 'left' ? expectedInset : 2600 - expectedInset);
-      expect(staged.y).toBe(1416 / 2);
+      expect(staged.x).toBe(side === 'left' ? expectedInset : ARENA_W - expectedInset);
+      expect(staged.y).toBe(ARENA_H / 2);
     }
   }
   expect(errors).toEqual([]);
@@ -798,8 +799,8 @@ test('hybrid drone billboard and elevated shadow stay clear of both goal cages',
       const enemy = window.__FF.getSim()!.enemies.find((entry: { active: boolean; def: { id: string } }) => entry.active && entry.def.id === 'drone')!;
       return { x: enemy.x, y: enemy.y };
     });
-    expect(drone.x).toBe(side === 'left' ? 134 : 2600 - 134);
-    expect(drone.y).toBe(1416 / 2);
+    expect(drone.x).toBe(side === 'left' ? 134 : ARENA_W - 134);
+    expect(drone.y).toBe(ARENA_H / 2);
   }
   expect(errors).toEqual([]);
 });
@@ -949,7 +950,7 @@ test('hybrid live boards stay behind a dense far-touchline lineup', async ({ pag
       fps: window.__FF.getFps(),
     };
   });
-  expect(staged.player).toEqual({ x: 1300, y: 74 });
+  expect(staged.player).toEqual({ x: ARENA_W / 2, y: 74 });
   expect(staged.enemies).toBe(20);
   expect(staged.nearFarTouchline).toBe(20);
   expect(staged.fps).toBeGreaterThan(40);
@@ -958,7 +959,7 @@ test('hybrid live boards stay behind a dense far-touchline lineup', async ({ pag
 
 test('hybrid board returns expose mirrored far corners', async ({ page }) => {
   const errors = await collectErrors(page);
-  for (const [side, expectedX] of [['left', 112], ['right', 2488]] as const) {
+  for (const [side, expectedX] of [['left', 72], ['right', ARENA_W - 72]] as const) {
     await page.goto(`/?debug=1&stage=hybrid-board-corner&side=${side}&arena=world-cup-hybrid-25d`);
     await expect.poll(() => page.evaluate(() => window.__FF.getState())).toEqual({ app: 'run', run: 'playing' });
     const position = await page.evaluate(() => {
@@ -974,9 +975,9 @@ test('all four hybrid corner-flag fixtures keep symmetric physical anchor positi
   const errors = await collectErrors(page);
   for (const [side, edge, expected] of [
     ['left', 'far', { x: 150, y: 150 }],
-    ['right', 'far', { x: 2450, y: 150 }],
-    ['left', 'near', { x: 150, y: 1266 }],
-    ['right', 'near', { x: 2450, y: 1266 }],
+    ['right', 'far', { x: ARENA_W - 150, y: 150 }],
+    ['left', 'near', { x: 150, y: ARENA_H - 150 }],
+    ['right', 'near', { x: ARENA_W - 150, y: ARENA_H - 150 }],
   ] as const) {
     await page.goto(`/?debug=1&stage=hybrid-corner-flag&side=${side}&edge=${edge}&arena=world-cup-hybrid-25d`);
     await expect.poll(() => page.evaluate(() => window.__FF.getState())).toEqual({ app: 'run', run: 'playing' });
@@ -998,7 +999,7 @@ test('hybrid technical-zone fixture keeps the player clear of both dugouts and b
     const player = window.__FF.getSim()!.player;
     return { x: player.x, y: player.y };
   });
-  expect(staged.x).toBe(1300);
+  expect(staged.x).toBe(ARENA_W / 2);
   expect(staged.y).toBe(360);
   expect(errors).toEqual([]);
 });
@@ -1036,7 +1037,7 @@ test('hybrid goal and edge remain readable in a narrow mobile viewport', async (
         const stagedPlayer = window.__FF.getSim()!.player;
         return { x: stagedPlayer.x, y: stagedPlayer.y };
       });
-      expect(player).toEqual({ x: 118, y: 1416 / 2 });
+      expect(player).toEqual({ x: 118, y: ARENA_H / 2 });
     }
   }
   expect(errors).toEqual([]);
@@ -1052,7 +1053,7 @@ test('hybrid live penalty markings expose symmetric review fixtures', async ({ p
       return { x: sim.player.x, y: sim.player.y };
     });
     expect(staged.x).toBe(expectedX);
-    expect(staged.y).toBe(1416 / 2);
+    expect(staged.y).toBe(ARENA_H / 2);
   }
   expect(errors).toEqual([]);
 });
@@ -1068,7 +1069,7 @@ test('hybrid centre marking exposes a stable grounded review fixture', async ({ 
       mode: window.__FF.getArenaRenderMode(),
     };
   });
-  expect(staged.player).toEqual({ x: 1300, y: 1416 / 2 + 126 });
+  expect(staged.player).toEqual({ x: ARENA_W / 2, y: ARENA_H / 2 + 126 });
   expect(staged.mode).toEqual({ liveStadium: true, hybridDepth: true });
   expect(errors).toEqual([]);
 });
@@ -1151,7 +1152,7 @@ test('hybrid penalty markings remain performant under dense combat overlap', asy
     };
   });
   expect(staged.x).toBe(1950);
-  expect(staged.y).toBe(1416 / 2);
+  expect(staged.y).toBe(ARENA_H / 2);
   expect(staged.enemies).toBe(24);
   expect(staged.fps).toBeGreaterThan(40);
   expect(errors).toEqual([]);
@@ -1348,7 +1349,7 @@ test('death shows the result screen and pays out coins', async ({ page }) => {
   await expect(page.locator('[data-act="again"]')).toBeVisible();
 });
 
-test('surviving to full time shows the victory screen', async ({ page }) => {
+test('the match keeps playing after 90 minutes and never auto-wins', async ({ page }) => {
   await page.click('[data-act="play"]');
   await page.click('[data-act="start"]');
   await page.waitForTimeout(300);
@@ -1359,67 +1360,47 @@ test('surviving to full time shows the victory screen', async ({ page }) => {
     sim.boss2Spawned = true;
     window.__FF.setTime(598);
   });
-  await page.waitForSelector('.victory-screen', { timeout: 15000 });
-  await expect(page.locator('.screen-title')).toContainText('Full Time');
-});
-
-test('full time holds in a readable sudden death until the living final boss falls', async ({ page }) => {
-  const errors = await collectErrors(page);
-  await page.setViewportSize({ width: 390, height: 844 });
-  await page.goto('/?debug=1&stage=full-time-boss&arena=world-cup-hybrid-25d');
-  const clock = page.locator('#match-clock');
-  await expect(clock).toHaveClass(/sudden-death/);
-  await expect(clock.locator('.clock-value')).toHaveText("90'");
-  await expect(clock.locator('.clock-phase')).toHaveText('Sudden Death');
-  await expect(page.locator('#boss-plate')).toBeVisible();
-  await expect(page.locator('.victory-screen')).toHaveCount(0);
-  // The two-actor camera eases into the wider portrait frame instead of
-  // snapping. Its settled frame must contain the complete boss quickly.
-  await expect.poll(
-    () => page.evaluate(() => window.__FF.getBossScreenRect()?.right ?? Number.POSITIVE_INFINITY),
-    { timeout: 1500 },
-  ).toBeLessThanOrEqual(395);
-
-  const before = await page.evaluate(() => {
+  await page.waitForTimeout(400);
+  const after = await page.evaluate(() => {
     const sim = window.__FF.getSim()!;
-    const rect = document.getElementById('match-clock')!.getBoundingClientRect();
-    const bossRect = window.__FF.getBossScreenRect();
     return {
-      time: sim.time,
       over: sim.over,
-      suddenDeath: sim.suddenDeath,
-      boss: sim.bossAlive?.boss,
-      clock: { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom },
-      bossRect,
+      time: sim.time,
+      clock: document.querySelector('#match-clock .clock-value')?.textContent,
     };
   });
-  expect(before).toMatchObject({ time: 600, over: 'playing', suddenDeath: true, boss: 'captain' });
-  expect(before.clock.left).toBeGreaterThanOrEqual(0);
-  expect(before.clock.right).toBeLessThanOrEqual(390);
-  expect(before.clock.top).toBeGreaterThanOrEqual(0);
-  expect(before.clock.bottom).toBeLessThan(844 * 0.22);
-  expect(before.bossRect).not.toBeNull();
-  expect(before.bossRect!.left).toBeGreaterThanOrEqual(-5);
-  expect(before.bossRect!.right).toBeLessThanOrEqual(395);
-  expect(before.bossRect!.top).toBeGreaterThan(844 * 0.16);
-  expect(before.bossRect!.bottom).toBeLessThan(844 * 0.84);
+  expect(after.over).toBe('playing');
+  expect(after.time).toBeGreaterThan(598);
+  expect(after.clock).not.toBe("90'");
+  await expect(page.locator('.victory-screen')).toHaveCount(0);
+});
 
-  await page.waitForTimeout(350);
-  expect(await page.evaluate(() => window.__FF.getSim()!.time)).toBe(600);
+test('clock at 90 stays readable on mobile and the match is still live', async ({ page }) => {
+  const errors = await collectErrors(page);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.click('[data-act="play"]');
+  await page.click('[data-act="start"]');
+  await page.waitForFunction(() => window.__FF?.getSim?.());
   await page.evaluate(() => {
     const sim = window.__FF.getSim()!;
-    const bossIndex = sim.enemies.findIndex((enemy: { active: boolean; boss: string }) => enemy.active && enemy.boss === 'captain');
-    sim.damageEnemy(bossIndex, sim.enemies[bossIndex].hp + 1);
+    sim.debugDirectorPaused = true;
+    sim.player.hp = sim.player.maxHp = 400;
+    sim.time = 600;
+    document.getElementById('banner')?.classList.remove('show');
   });
-  await page.waitForSelector('#levelup-screen', { timeout: 5000 });
-  expect(await page.evaluate(() => window.__FF.getSim()!.pendingBossAbilities)).toBe(2);
-  await page.locator('.upgrade-card').first().click();
-  await expect.poll(() => page.evaluate(() => window.__FF.getSim()!.pendingBossAbilities)).toBe(1);
-  await page.waitForSelector('#levelup-screen .upgrade-card', { timeout: 5000 });
-  await page.locator('.upgrade-card').first().click();
-  await expect.poll(() => page.evaluate(() => window.__FF.getSim()!.pendingBossAbilities)).toBe(0);
-  await page.waitForSelector('.victory-screen', { timeout: 5000 });
-  await expect(page.locator('.screen-title')).toContainText('Full Time');
+  const clock = page.locator('#match-clock');
+  await expect(clock.locator('.clock-value')).toHaveText("90'");
+  await expect(clock).not.toHaveClass(/sudden-death/);
+  await expect(page.locator('.victory-screen')).toHaveCount(0);
+  const box = await page.evaluate(() => {
+    const rect = document.getElementById('match-clock')!.getBoundingClientRect();
+    return { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom };
+  });
+  expect(box.left).toBeGreaterThanOrEqual(0);
+  expect(box.right).toBeLessThanOrEqual(390);
+  expect(box.top).toBeGreaterThanOrEqual(0);
+  expect(box.bottom).toBeLessThan(844 * 0.22);
+  expect(await page.evaluate(() => window.__FF.getSim()!.over)).toBe('playing');
   expect(errors).toEqual([]);
 });
 
@@ -1710,12 +1691,9 @@ test('mobile viewport stays zoomable and HUD exposes live progress semantics', a
 test('club sections expose a keyboard-operable tab interface', async ({ page }) => {
   await page.click('[data-act="club"]');
   const training = page.getByRole('tab', { name: 'Training Ground' });
-  const kits = page.getByRole('tab', { name: 'Kit Room' });
   await expect(training).toHaveAttribute('aria-selected', 'true');
-  await training.focus();
-  await page.keyboard.press('ArrowRight');
-  await expect(kits).toHaveAttribute('aria-selected', 'true');
-  await expect(page.locator('#club-panel')).toHaveAttribute('aria-labelledby', 'club-tab-skins');
+  await expect(page.getByRole('tab', { name: 'Kit Room' })).toHaveCount(0);
+  await expect(page.locator('#club-panel')).toHaveAttribute('aria-labelledby', 'club-tab-upgrades');
 });
 
 test('reduced VFX and haptics settings apply live and persist after reload', async ({ page }) => {
